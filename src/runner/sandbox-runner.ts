@@ -75,12 +75,21 @@ ws.on("message", async (data: Buffer) => {
     sendEvent("agent.started", { taskDescription: task });
 
     try {
-      const fullPrompt = context + "\n\n## Task\n" + task;
+      // Control plane already includes the task in `context`; passing it again duplicates the Task section.
+      const fullPrompt = context;
       const result = await new Promise<string>((resolve, reject) => {
-        const proc = spawn("opencode", ["run", "--model", MODEL, fullPrompt], {
-          cwd: "/home/user/repo",
-          env: { ...process.env },
-        });
+        // Use --print-logs so opencode flushes its log lines (otherwise it
+        // buffers when stdout is a pipe). Close stdin explicitly so the CLI
+        // doesn't wait for interactive input.
+        const proc = spawn(
+          "opencode",
+          ["run", "--print-logs", "--model", MODEL, fullPrompt],
+          {
+            cwd: "/home/user/repo",
+            env: { ...process.env },
+            stdio: ["ignore", "pipe", "pipe"],
+          },
+        );
         let stdout = "";
         let stderr = "";
         proc.stdout.on("data", (chunk: Buffer) => {
