@@ -41,10 +41,14 @@ ws.on("open", () => {
 });
 
 ws.on("message", async (data: Buffer) => {
+  const raw = data.toString();
+  console.log(`[fake-runner] << ${raw.slice(0, 150)}`);
+
   let msg: { type: string; command?: { commandId: string; type: string; payload: Record<string, unknown> } };
   try {
-    msg = JSON.parse(data.toString());
+    msg = JSON.parse(raw);
   } catch {
+    console.log("[fake-runner] Failed to parse message");
     return;
   }
 

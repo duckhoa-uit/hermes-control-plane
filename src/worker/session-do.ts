@@ -133,6 +133,7 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
   // ---- WebSocket: Client ----
 
   async handleClientWS(ws: WebSocket): Promise<void> {
+    ws.accept();
     const conn: WSConnection = { ws, tag: WS_TAGS.CLIENT, lastSeq: -1 };
     this.connections.add(conn);
 
@@ -153,6 +154,8 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
   // ---- WebSocket: Runner ----
 
   async handleRunnerWS(ws: WebSocket, token: string): Promise<void> {
+    ws.accept();
+
     if (token !== this.runnerToken) {
       ws.close(4001, "Invalid runner token");
       return;
