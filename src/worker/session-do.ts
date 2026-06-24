@@ -1,0 +1,533 @@
+// ============================================================
+// SessionDurableObject - one per agent session
+// Owns: state machine, event log, WS hub, approval gates,
+//       heartbeat/stall detection, command dispatch
+// ============================================================
+
+import { DurableObject } from "cloudflare:workers";
+import type {
+  Session,
+  SessionStatus,
+  HermesEvent,
+  HermesEventType,
+  EventSource,
+  RunnerCommand,
+  RunnerMessage,
+  ClientMessage,
+  ProjectProfile,
+  SessionArtifacts,
+} from "../core/types";
+import { EventLog } from "../core/event-log";
+import { canTransition, isTerminal } from "../core/state-machine";
+import { generateCommandId, generateRunnerToken, generateRequestId } from "../core/id";
+import { HEARTBEAT_INTERVAL_MS, HEARTBEAT_TIMEOUT_MS, WS_TAGS } from "../core/constants";
+
+interface WSConnection {
+  ws: WebSocket;
+  tag: typeof WS_TAGS.CLIENT | typeof WS_TAGS.RUNNER;
+  lastSeq: number;
+}
+
+export class SessionDurableObject extends DurableObject<CloudflareEnv> {
+  private session: Session | null = null;
+  private profile: ProjectProfile | null = null;
+  private eventLog = new EventLog();
+  private connections = new Set<WSConnection>();
+  private runnerConn: WSConnection | null = null;
+  private runnerToken: string | null = null;
+  private pendingApprovals = new Map<string, { action: string; commandId: string }>();
+  private artifacts: SessionArtifacts | null = null;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+
+  // ---- Lifecycle ----
+
+  async init(profile: ProjectProfile, taskDescription: string): Promise<Session> {
+    if (this.session) {
+      throw new Error(`Session already initialized: ${this.session.id}`);
+    }
+
+    const sessionId = this.ctx.id.toString();
+    const now = Date.now();
+
+    this.session = {
+      id: sessionId,
+      projectId: profile.id,
+      taskDescription,
+      status: "created",
+      branch: `hermes/${sessionId.slice(-8)}`,
+      createdAt: now,
+      updatedAt: now,
+      runnerConnected: false,
+    };
+    this.profile = profile;
+    this.runnerToken = generateRunnerToken();
+
+    this.appendEvent("session.created", "system", { taskDescription, projectId: profile.id });
+    await this.persist();
+
+    return this.session;
+  }
+
+  getSession(): Session | null {
+    return this.session;
+  }
+
+  getRunnerToken(): string | null {
+    return this.runnerToken;
+  }
+
+  getEvents(sinceSeq?: number): HermesEvent[] {
+    return sinceSeq !== undefined
+      ? this.eventLog.getSince(sinceSeq)
+      : this.eventLog.getAll();
+  }
+
+  getArtifacts(): SessionArtifacts | null {
+    return this.artifacts;
+  }
+
+  // ---- State transitions ----
+
+  private transition(to: SessionStatus, errorMsg?: string): void {
+    if (!this.session) throw new Error("Session not initialized");
+
+    if (!canTransition(this.session.status, to)) {
+      throw new Error(`Invalid transition: ${this.session.status} -> ${to}`);
+    }
+
+    const from = this.session.status;
+    this.session.status = to;
+    this.session.updatedAt = Date.now();
+    if (errorMsg) this.session.errorMessage = errorMsg;
+
+    this.appendEvent("session.status_changed", "system", { from, to, error: errorMsg });
+  }
+
+  // ---- Event log ----
+
+  private appendEvent(
+    type: HermesEventType,
+    source: EventSource,
+    payload: Record<string, unknown> = {},
+  ): HermesEvent {
+    if (!this.session) throw new Error("Session not initialized");
+    const event = this.eventLog.append(this.session.id, type, source, payload);
+    this.broadcastEvent(event);
+    return event;
+  }
+
+  private broadcastEvent(event: HermesEvent): void {
+    const msg = JSON.stringify({ type: "event", event });
+    for (const conn of this.connections) {
+      if (conn.lastSeq < event.seq) {
+        try {
+          conn.ws.send(msg);
+          conn.lastSeq = event.seq;
+        } catch {
+          this.connections.delete(conn);
+        }
+      }
+    }
+  }
+
+  // ---- WebSocket: Client ----
+
+  async handleClientWS(ws: WebSocket): Promise<void> {
+    const conn: WSConnection = { ws, tag: WS_TAGS.CLIENT, lastSeq: -1 };
+    this.connections.add(conn);
+
+    // Replay events to new client
+    const replay = this.eventLog.getAll();
+    if (replay.length > 0) {
+      ws.send(JSON.stringify({ type: "replay", events: replay }));
+      conn.lastSeq = this.eventLog.getLatestSeq();
+    }
+
+    ws.send(JSON.stringify({ type: "session_state", session: this.session }));
+
+    ws.addEventListener("message", (e) => this.handleClientMessage(conn, e));
+    ws.addEventListener("close", () => this.connections.delete(conn));
+    ws.addEventListener("error", () => this.connections.delete(conn));
+  }
+
+  // ---- WebSocket: Runner ----
+
+  async handleRunnerWS(ws: WebSocket, token: string): Promise<void> {
+    if (token !== this.runnerToken) {
+      ws.close(4001, "Invalid runner token");
+      return;
+    }
+    if (!this.session) {
+      ws.close(4002, "Session not found");
+      return;
+    }
+
+    const conn: WSConnection = { ws, tag: WS_TAGS.RUNNER, lastSeq: -1 };
+    this.connections.add(conn);
+    this.runnerConn = conn;
+
+    this.session.runnerConnected = true;
+    this.session.lastHeartbeat = Date.now();
+
+    if (canTransition(this.session.status, "runner_connecting")) {
+      this.transition("runner_connecting");
+    }
+
+    this.appendEvent("runner.connected", "runner");
+    this.startHeartbeatCheck();
+
+    // Runner connected -> ready -> send initial prompt
+    if (this.session.status === "runner_connecting") {
+      this.transition("ready");
+      this.sendInitialPrompt();
+    }
+
+    ws.addEventListener("message", (e) => this.handleRunnerMessage(conn, e));
+    ws.addEventListener("close", () => {
+      this.connections.delete(conn);
+      if (this.runnerConn === conn) {
+        this.runnerConn = null;
+        this.appendEvent("runner.disconnected", "runner");
+        this.stopHeartbeatCheck();
+      }
+    });
+    ws.addEventListener("error", () => this.connections.delete(conn));
+  }
+
+  // ---- Client message handling ----
+
+  private handleClientMessage(conn: WSConnection, e: MessageEvent): void {
+    let msg: ClientMessage;
+    try {
+      msg = JSON.parse(e.data as string);
+    } catch {
+      return;
+    }
+
+    switch (msg.type) {
+      case "client.subscribe":
+        break;
+      case "client.approve":
+        this.handleApproval(true, msg.payload);
+        break;
+      case "client.deny":
+        this.handleApproval(false, msg.payload);
+        break;
+      case "client.abort":
+        this.handleAbort();
+        break;
+      case "client.create_pr":
+        this.handleCreatePR();
+        break;
+    }
+  }
+
+  private handleApproval(approved: boolean, payload?: Record<string, unknown>): void {
+    const requestId = payload?.requestId as string;
+    if (!requestId) return;
+
+    const pending = this.pendingApprovals.get(requestId);
+    if (!pending) return;
+
+    this.pendingApprovals.delete(requestId);
+    this.appendEvent("approval.resolved", "user", { requestId, approved });
+
+    if (this.session?.status === "needs_approval") {
+      this.transition("running");
+    }
+
+    this.sendRunnerCommand(approved ? "approval.grant" : "approval.deny", {
+      requestId,
+      originalAction: pending.action,
+    });
+  }
+
+  private handleAbort(): void {
+    if (!this.session || isTerminal(this.session.status)) return;
+
+    this.sendRunnerCommand("session.shutdown", {});
+    if (canTransition(this.session.status, "aborted")) {
+      this.transition("aborted", "User aborted session");
+    }
+  }
+
+  private handleCreatePR(): void {
+    if (!this.session || this.session.status !== "review_ready") return;
+
+    this.transition("creating_pr");
+    this.sendRunnerCommand("pr.create", { branch: this.session.branch });
+  }
+
+  // ---- Runner message handling ----
+
+  private handleRunnerMessage(conn: WSConnection, e: MessageEvent): void {
+    let msg: RunnerMessage;
+    try {
+      msg = JSON.parse(e.data as string);
+    } catch {
+      return;
+    }
+
+    switch (msg.type) {
+      case "runner.heartbeat":
+        if (this.session) this.session.lastHeartbeat = Date.now();
+        break;
+      case "runner.event":
+        if (msg.payload) {
+          this.appendEvent(
+            msg.payload.eventType as HermesEventType,
+            "opencode",
+            (msg.payload.eventPayload as Record<string, unknown>) ?? {},
+          );
+        }
+        break;
+      case "runner.command_ack":
+        break;
+      case "runner.command_error":
+        break;
+      case "runner.complete":
+        this.handleRunnerComplete(msg.payload);
+        break;
+      case "runner.error":
+        if (this.session) {
+          this.transition("failed", (msg.payload?.error as string) ?? "Runner error");
+        }
+        break;
+    }
+  }
+
+  private handleRunnerComplete(payload?: Record<string, unknown>): void {
+    if (!this.session) return;
+
+    this.artifacts = {
+      sessionId: this.session.id,
+      summary: payload?.summary as string | undefined,
+      diff: payload?.diff as string | undefined,
+      changedFiles: (payload?.changedFiles as string[]) ?? [],
+      testResult: payload?.testResult as SessionArtifacts["testResult"],
+    };
+
+    if (this.artifacts.diff) {
+      this.appendEvent("git.diff.ready", "runner", { diff: this.artifacts.diff });
+    }
+
+    this.transition("review_ready");
+  }
+
+  // ---- Runner commands ----
+
+  private sendRunnerCommand(type: RunnerCommand["type"], payload: Record<string, unknown>): void {
+    if (!this.runnerConn) return;
+
+    const command: RunnerCommand = {
+      commandId: generateCommandId(),
+      type,
+      payload,
+      createdAt: Date.now(),
+    };
+
+    this.runnerConn.ws.send(JSON.stringify({ type: "command", command }));
+  }
+
+  private sendInitialPrompt(): void {
+    if (!this.session || !this.profile) return;
+
+    const contextPackage = this.renderContextPackage();
+
+    this.transition("running");
+    this.appendEvent("agent.started", "system", { taskDescription: this.session.taskDescription });
+
+    this.sendRunnerCommand("agent.prompt", {
+      taskDescription: this.session.taskDescription,
+      context: contextPackage,
+      model: this.profile.model,
+      allowedTools: this.profile.allowedTools,
+    });
+  }
+
+  private renderContextPackage(): string {
+    if (!this.session || !this.profile) return "";
+
+    const lines: string[] = [
+      `# Hermes Task Context`,
+      ``,
+      `## Project: ${this.profile.name}`,
+      `## Repository: ${this.profile.repoUrl}`,
+      `## Branch: ${this.session.branch}`,
+      ``,
+      `## Task`,
+      `${this.session.taskDescription}`,
+      ``,
+    ];
+
+    if (this.profile.agentsContext) {
+      lines.push(`## Project Instructions`, this.profile.agentsContext, ``);
+    }
+
+    return lines.join("\n");
+  }
+
+  // ---- Approval requests ----
+
+  requestApproval(action: string, details: Record<string, unknown>): string {
+    const requestId = generateRequestId();
+    const commandId = generateCommandId();
+
+    this.pendingApprovals.set(requestId, { action, commandId });
+
+    if (this.session?.status === "running") {
+      this.transition("needs_approval");
+    }
+
+    this.appendEvent("approval.requested", "runner", { requestId, action, ...details });
+
+    return requestId;
+  }
+
+  // ---- Heartbeat ----
+
+  private startHeartbeatCheck(): void {
+    this.stopHeartbeatCheck();
+    this.heartbeatTimer = setInterval(() => this.checkHeartbeat(), HEARTBEAT_INTERVAL_MS);
+  }
+
+  private stopHeartbeatCheck(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+  }
+
+  private checkHeartbeat(): void {
+    if (!this.session || isTerminal(this.session.status)) {
+      this.stopHeartbeatCheck();
+      return;
+    }
+
+    const now = Date.now();
+    const lastBeat = this.session.lastHeartbeat ?? this.session.updatedAt;
+
+    if (now - lastBeat > HEARTBEAT_TIMEOUT_MS) {
+      this.appendEvent("system.stalled", "system", { lastHeartbeat: lastBeat });
+
+      if (canTransition(this.session.status, "stalled")) {
+        this.transition("stalled", "Heartbeat timeout");
+        if (canTransition("stalled", "failed")) {
+          this.transition("failed", "Runner stalled");
+        }
+      }
+    }
+  }
+
+  // ---- PR created callback ----
+
+  onPRCreated(prUrl: string): void {
+    if (!this.artifacts) {
+      this.artifacts = { sessionId: this.session?.id ?? "", changedFiles: [] };
+    }
+    this.artifacts.prUrl = prUrl;
+
+    this.appendEvent("pr.created", "runner", { url: prUrl });
+
+    if (this.session?.status === "creating_pr" && canTransition("creating_pr", "completed")) {
+      this.transition("completed");
+      this.appendEvent("session.completed", "system", { prUrl });
+    }
+
+    this.stopHeartbeatCheck();
+  }
+
+  // ---- Persistence ----
+
+  private async persist(): Promise<void> {
+    if (!this.session) return;
+    await this.ctx.storage.put("session", this.session);
+    if (this.profile) await this.ctx.storage.put("profile", this.profile);
+    await this.ctx.storage.put("events", this.eventLog.getAll());
+  }
+
+  async restore(): Promise<void> {
+    const session = await this.ctx.storage.get<Session>("session");
+    const profile = await this.ctx.storage.get<ProjectProfile>("profile");
+
+    if (session) this.session = session;
+    if (profile) this.profile = profile;
+  }
+
+  // ---- HTTP fetch (routes from Worker) ----
+
+  override async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const path = url.pathname;
+
+    // Restore from storage if needed
+    if (!this.session) {
+      await this.restore();
+    }
+
+    const corsHeaders = {
+      "Access-Control-Allow-Origin": "*",
+      "Content-Type": "application/json",
+    };
+
+    // ---- Internal routes (from Worker API) ----
+
+    if (path === "/init" && request.method === "POST") {
+      const { profile, taskDescription } = await request.json<{
+        profile: ProjectProfile;
+        taskDescription: string;
+      }>();
+      const session = await this.init(profile, taskDescription);
+      return new Response(JSON.stringify(session), { headers: corsHeaders });
+    }
+
+    if (path === "/state" && request.method === "GET") {
+      return new Response(
+        JSON.stringify({
+          session: this.session,
+          events: this.eventLog.getAll(),
+          artifacts: this.artifacts,
+        }),
+        { headers: corsHeaders },
+      );
+    }
+
+    if (path === "/approve" && request.method === "POST") {
+      const body = await request.json<{ requestId: string }>();
+      this.handleApproval(true, { requestId: body.requestId });
+      return new Response(JSON.stringify({ ok: true }), { headers: corsHeaders });
+    }
+
+    if (path === "/abort" && request.method === "POST") {
+      this.handleAbort();
+      return new Response(JSON.stringify({ ok: true }), { headers: corsHeaders });
+    }
+
+    if (path === "/create-pr" && request.method === "POST") {
+      this.handleCreatePR();
+      return new Response(JSON.stringify({ ok: true }), { headers: corsHeaders });
+    }
+
+    // ---- WebSocket upgrade ----
+    if (request.headers.get("Upgrade") === "websocket") {
+      const role = url.searchParams.get("role") ?? "client";
+      const token = url.searchParams.get("token") ?? "";
+
+      const pair = new WebSocketPair();
+      const [client, server] = Object.values(pair);
+
+      if (role === "runner") {
+        await this.handleRunnerWS(server, token);
+      } else {
+        await this.handleClientWS(server);
+      }
+
+      return new Response(null, { status: 101, webSocket: client });
+    }
+
+    return new Response(JSON.stringify({ error: "Not found" }), {
+      status: 404,
+      headers: corsHeaders,
+    });
+  }
+}

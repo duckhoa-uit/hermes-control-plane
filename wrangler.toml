@@ -1,0 +1,25 @@
+name = "hermes-control-plane"
+main = "src/worker/index.ts"
+compatibility_date = "2025-06-20"
+
+[[durable_objects.bindings]]
+name = "SESSION_DO"
+class_name = "SessionDurableObject"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["SessionDurableObject"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "hermes-db"
+database_id = "local"
+
+[[r2_buckets]]
+binding = "ARTIFACTS"
+bucket_name = "hermes-artifacts"
+
+[vars]
+E2B_TEMPLATE = "opencode"
+MAX_SESSION_RUNTIME_MS = 2700000
+HEARTBEAT_TIMEOUT_MS = 60000
