@@ -16,11 +16,15 @@ import type {
   ClientMessage,
   ProjectProfile,
   SessionArtifacts,
+  SandboxHandle,
+  SandboxProvider,
 } from "../core/types";
 import { EventLog } from "../core/event-log";
 import { canTransition, isTerminal } from "../core/state-machine";
 import { generateCommandId, generateRunnerToken, generateRequestId } from "../core/id";
 import { HEARTBEAT_INTERVAL_MS, HEARTBEAT_TIMEOUT_MS, WS_TAGS } from "../core/constants";
+import { E2BProvider } from "../providers/e2b";
+import { MockSandboxProvider } from "../providers/mock";
 
 interface WSConnection {
   ws: WebSocket;
@@ -38,10 +42,17 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
   private pendingApprovals = new Map<string, { action: string; commandId: string }>();
   private artifacts: SessionArtifacts | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private sandboxHandle: SandboxHandle | null = null;
+  private sandboxProvider: SandboxProvider | null = null;
+  private controlBaseUrl: string | null = null;
 
   // ---- Lifecycle ----
 
-  async init(profile: ProjectProfile, taskDescription: string): Promise<Session> {
+  async init(
+    profile: ProjectProfile,
+    taskDescription: string,
+    controlBaseUrl: string,
+  ): Promise<Session> {
     if (this.session) {
       throw new Error(`Session already initialized: ${this.session.id}`);
     }
@@ -61,11 +72,113 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     };
     this.profile = profile;
     this.runnerToken = generateRunnerToken();
+    this.controlBaseUrl = controlBaseUrl;
 
     this.appendEvent("session.created", "system", { taskDescription, projectId: profile.id });
     await this.persist();
 
+    // Kick off sandbox provisioning in the background. The HTTP response
+    // returns immediately; status will advance via events as the sandbox
+    // boots and the runner connects back over WebSocket.
+    this.ctx.waitUntil(this.provisionSandbox());
+
     return this.session;
+  }
+
+  // ---- Sandbox lifecycle ----
+
+  private getSandboxProvider(): SandboxProvider {
+    if (this.sandboxProvider) return this.sandboxProvider;
+    const apiKey = this.env.E2B_API_KEY;
+    if (apiKey) {
+      this.sandboxProvider = new E2BProvider(apiKey, this.env.E2B_TEMPLATE ?? "opencode");
+    } else {
+      // No E2B key -> in-memory mock (lets the test harness drive a fake runner).
+      this.sandboxProvider = new MockSandboxProvider();
+    }
+    return this.sandboxProvider;
+  }
+
+  private async provisionSandbox(): Promise<void> {
+    if (!this.session || !this.profile || !this.runnerToken || !this.controlBaseUrl) return;
+    if (!this.profile.repoUrl) {
+      // Nothing to clone; skip provisioning and let an external runner
+      // (e.g. fake-runner used in tests) connect on its own.
+      return;
+    }
+
+    try {
+      if (canTransition(this.session.status, "provisioning")) {
+        this.transition("provisioning");
+      }
+      this.appendEvent("sandbox.provisioning", "system", {
+        template: this.env.E2B_TEMPLATE ?? "opencode",
+      });
+
+      const provider = this.getSandboxProvider();
+      const handle = await provider.create({
+        sessionId: this.session.id,
+        runnerToken: this.runnerToken,
+        controlWsUrl: this.controlBaseUrl,
+        repoUrl: this.profile.repoUrl,
+        branch: this.profile.defaultBranch,
+        setupScript: this.profile.setupScript,
+        env: this.profile.env,
+      });
+
+      this.sandboxHandle = handle;
+      if (this.session) this.session.sandboxId = handle.sandboxId;
+      await this.persist();
+
+      this.appendEvent("sandbox.ready", "system", {
+        sandboxId: handle.sandboxId,
+        previewUrl: handle.previewUrl,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[DO] sandbox provisioning failed:", msg);
+      this.appendEvent("agent.error", "system", { error: `Sandbox provisioning failed: ${msg}` });
+      if (this.session && canTransition(this.session.status, "failed")) {
+        this.transition("failed", `Sandbox provisioning failed: ${msg}`);
+      }
+    }
+  }
+
+  private async teardownSandbox(): Promise<void> {
+    if (!this.sandboxHandle || !this.sandboxProvider) return;
+    const handle = this.sandboxHandle;
+    this.sandboxHandle = null;
+    try {
+      await this.sandboxProvider.destroy(handle);
+      this.appendEvent("sandbox.destroyed", "system", { sandboxId: handle.sandboxId });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[DO] sandbox destroy failed:", msg);
+      this.appendEvent("sandbox.destroyed", "system", {
+        sandboxId: handle.sandboxId,
+        error: msg,
+      });
+    }
+  }
+
+  async sandboxExec(command: string): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+    if (!this.sandboxHandle || !this.sandboxProvider) {
+      throw new Error("Sandbox not provisioned");
+    }
+    return this.sandboxProvider.exec(this.sandboxHandle, command);
+  }
+
+  async sandboxExposePort(port: number): Promise<string> {
+    if (!this.sandboxHandle || !this.sandboxProvider) {
+      throw new Error("Sandbox not provisioned");
+    }
+    const url = await this.sandboxProvider.exposePort(this.sandboxHandle, port);
+    this.appendEvent("sandbox.ready", "system", {
+      sandboxId: this.sandboxHandle.sandboxId,
+      previewUrl: url,
+      port,
+    });
+    return url;
   }
 
   getSession(): Session | null {
@@ -101,6 +214,11 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     if (errorMsg) this.session.errorMessage = errorMsg;
 
     this.appendEvent("session.status_changed", "system", { from, to, error: errorMsg });
+
+    // Auto-teardown sandbox on any terminal state.
+    if (isTerminal(to) && this.sandboxHandle) {
+      this.ctx.waitUntil(this.teardownSandbox());
+    }
   }
 
   // ---- Event log ----
@@ -172,12 +290,13 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     this.session.runnerConnected = true;
     this.session.lastHeartbeat = Date.now();
 
-    // Auto-transition through provisioning if still in created state
-    // (happens when testing without real sandbox provisioning)
+    // If provisioning never started (e.g. fake-runner used directly without
+    // a configured repo), fast-forward through provisioning so the state
+    // machine can reach `running`.
     if (this.session.status === "created") {
       this.transition("provisioning");
-      this.appendEvent("sandbox.provisioning", "system", { sandboxId: "auto" });
-      this.appendEvent("sandbox.ready", "system", {});
+      this.appendEvent("sandbox.provisioning", "system", { sandboxId: "external" });
+      this.appendEvent("sandbox.ready", "system", { sandboxId: "external" });
     }
 
     if (canTransition(this.session.status, "runner_connecting")) {
@@ -487,11 +606,12 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     // ---- Internal routes (from Worker API) ----
 
     if (path === "/init" && request.method === "POST") {
-      const { profile, taskDescription } = await request.json<{
+      const { profile, taskDescription, controlBaseUrl } = await request.json<{
         profile: ProjectProfile;
         taskDescription: string;
+        controlBaseUrl: string;
       }>();
-      const session = await this.init(profile, taskDescription);
+      const session = await this.init(profile, taskDescription, controlBaseUrl);
       return new Response(JSON.stringify({
         ...session,
         runnerToken: this.getRunnerToken(),
@@ -522,6 +642,33 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
 
     if (path === "/create-pr" && request.method === "POST") {
       this.handleCreatePR();
+      return new Response(JSON.stringify({ ok: true }), { headers: corsHeaders });
+    }
+
+    if (path === "/sandbox/exec" && request.method === "POST") {
+      const { command } = await request.json<{ command: string }>();
+      try {
+        const result = await this.sandboxExec(command);
+        return new Response(JSON.stringify(result), { headers: corsHeaders });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return new Response(JSON.stringify({ error: msg }), { status: 400, headers: corsHeaders });
+      }
+    }
+
+    if (path === "/sandbox/expose-port" && request.method === "POST") {
+      const { port } = await request.json<{ port: number }>();
+      try {
+        const url = await this.sandboxExposePort(port);
+        return new Response(JSON.stringify({ url }), { headers: corsHeaders });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return new Response(JSON.stringify({ error: msg }), { status: 400, headers: corsHeaders });
+      }
+    }
+
+    if (path === "/sandbox/destroy" && request.method === "POST") {
+      await this.teardownSandbox();
       return new Response(JSON.stringify({ ok: true }), { headers: corsHeaders });
     }
 

@@ -94,11 +94,22 @@ export default {
         const id = env.SESSION_DO.newUniqueId();
         const stub = env.SESSION_DO.get(id);
 
+        // The DO/sandbox runner needs a publicly reachable URL to dial back
+        // for the WS bridge. Prefer the explicit PUBLIC_BASE_URL secret (set
+        // to e.g. an ngrok URL locally, or the deployed Worker URL in prod);
+        // fall back to the request origin which is correct in production
+        // when the client hits the deployed Worker directly.
+        const controlBaseUrl = env.PUBLIC_BASE_URL?.replace(/\/$/, "") ?? url.origin;
+
         // Initialize session
         const initResp = await stub.fetch(
           new Request("https://do.internal/init", {
             method: "POST",
-            body: JSON.stringify({ profile, taskDescription: body.taskDescription }),
+            body: JSON.stringify({
+              profile,
+              taskDescription: body.taskDescription,
+              controlBaseUrl,
+            }),
             headers: { "Content-Type": "application/json" },
           }),
         );
@@ -184,6 +195,25 @@ export default {
 
         return stub.fetch(
           new Request("https://do.internal/create-pr", { method: "POST" }),
+        );
+      }
+
+      // ---- Sandbox passthrough ----
+      // POST /sessions/:id/sandbox/exec         body: { command }
+      // POST /sessions/:id/sandbox/expose-port  body: { port }
+      // POST /sessions/:id/sandbox/destroy
+      const sbxMatch = path.match(/^\/sessions\/([^/]+)\/sandbox\/(exec|expose-port|destroy)$/);
+      if (sbxMatch && request.method === "POST") {
+        const sessionId = sbxMatch[1];
+        const action = sbxMatch[2];
+        const id = env.SESSION_DO.idFromString(sessionId);
+        const stub = env.SESSION_DO.get(id);
+        return stub.fetch(
+          new Request(`https://do.internal/sandbox/${action}`, {
+            method: "POST",
+            body: request.body,
+            headers: { "Content-Type": "application/json" },
+          }),
         );
       }
 

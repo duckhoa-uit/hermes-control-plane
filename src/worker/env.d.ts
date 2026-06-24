@@ -9,6 +9,9 @@ interface CloudflareEnv {
   GITHUB_PRIVATE_KEY?: string;
   MAX_SESSION_RUNTIME_MS: number;
   HEARTBEAT_TIMEOUT_MS: number;
+  // Public base URL the sandbox runner uses to dial back over WS.
+  // Locally: an ngrok URL pointing at wrangler dev. Production: deployed Worker URL.
+  PUBLIC_BASE_URL?: string;
   // Zai (z.ai) LLM provider - OpenAI-compatible
   ZAI_API_KEY?: string;
   ZAI_MODEL?: string;

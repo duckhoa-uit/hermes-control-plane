@@ -1,6 +1,7 @@
 name = "hermes-control-plane"
 main = "src/worker/index.ts"
 compatibility_date = "2025-06-20"
+compatibility_flags = ["nodejs_compat"]
 
 [[durable_objects.bindings]]
 name = "SESSION_DO"

@@ -5,8 +5,6 @@
 // ============================================================
 
 import { Sandbox } from "e2b";
-import * as fs from "fs";
-import * as path from "path";
 import type {
   SandboxProvider,
   CreateSandboxInput,
@@ -14,12 +12,12 @@ import type {
   CommandResult,
 } from "../core/types";
 
-// Read the standalone runner script at module load time
-const RUNNER_CODE = fs.readFileSync(
-  path.join(__dirname, "..", "runner", "sandbox-runner.ts"),
-  "utf-8",
-);
-const RUNNER_B64 = Buffer.from(RUNNER_CODE).toString("base64");
+// The runner source is bundled as a Text module by Wrangler (see
+// scripts/bundle-runner.ts which generates the .ts.txt sibling). This
+// avoids any fs/__dirname usage so the provider works inside a
+// Cloudflare Worker / Durable Object with `nodejs_compat`.
+import RUNNER_CODE from "../runner/sandbox-runner.ts.txt";
+const RUNNER_B64 = btoa(RUNNER_CODE);
 
 export class E2BProvider implements SandboxProvider {
   constructor(private apiKey: string, private template: string = "opencode") {}
