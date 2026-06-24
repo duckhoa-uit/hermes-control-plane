@@ -1,3 +1,4 @@
+it's worked!
 # Hermes Control Plane
 
 Control plane for AI coding agents. Orchestrates sandboxed OpenCode sessions via Cloudflare Durable Objects, with E2B as the sandbox provider.
