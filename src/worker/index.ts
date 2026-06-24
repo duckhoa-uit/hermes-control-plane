@@ -45,6 +45,9 @@ export default {
     };
 
     try {
+      // Debug: log all requests
+      console.log(`[debug] ${request.method} ${path} Upgrade=${request.headers.get("Upgrade")}`);
+
       // ---- Health ----
       if (path === "/health" || path === "/") {
         return new Response(
@@ -109,6 +112,24 @@ export default {
         });
       }
 
+      // ---- WebSocket: any /sessions/:id/ws upgrade ----
+      // Client: GET /sessions/:id/stream (role=client)
+      // Runner: GET /sessions/:id/runner?token=xxx (role=runner)
+      const isWSUpgrade = request.headers.get("Upgrade") === "websocket";
+      const wsMatch = path.match(/^\/sessions\/([^/]+)\/(stream|runner)$/);
+
+      if (isWSUpgrade && wsMatch) {
+        const sessionId = wsMatch[1];
+        const wsType = wsMatch[2]; // "stream" or "runner"
+        const id = env.SESSION_DO.idFromString(sessionId);
+        const stub = env.SESSION_DO.get(id);
+
+        console.log(`[worker] WS upgrade: type=${wsType} sessionId=${sessionId.slice(0,8)}... calling stub.fetch`);
+        const wsResp = await stub.fetch(request);
+        console.log(`[worker] WS response status: ${wsResp.status} webSocket: ${!!wsResp.webSocket}`);
+        return wsResp;
+      }
+
       // ---- Get session state ----
       // GET /sessions/:id
       if (path.startsWith("/sessions/") && request.method === "GET") {
@@ -120,16 +141,6 @@ export default {
         const data = await resp.json();
 
         return new Response(JSON.stringify(data), { headers: corsHeaders });
-      }
-
-      // ---- WebSocket: client stream ----
-      // GET /sessions/:id/stream
-      if (path.includes("/stream") && request.headers.get("Upgrade") === "websocket") {
-        const sessionId = path.split("/")[2];
-        const id = env.SESSION_DO.idFromString(sessionId);
-        const stub = env.SESSION_DO.get(id);
-
-        return stub.fetch(request);
       }
 
       // ---- Approve action ----

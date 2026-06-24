@@ -169,6 +169,14 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     this.session.runnerConnected = true;
     this.session.lastHeartbeat = Date.now();
 
+    // Auto-transition through provisioning if still in created state
+    // (happens when testing without real sandbox provisioning)
+    if (this.session.status === "created") {
+      this.transition("provisioning");
+      this.appendEvent("sandbox.provisioning", "system", { sandboxId: "auto" });
+      this.appendEvent("sandbox.ready", "system", {});
+    }
+
     if (canTransition(this.session.status, "runner_connecting")) {
       this.transition("runner_connecting");
     }
@@ -444,14 +452,17 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     await this.ctx.storage.put("session", this.session);
     if (this.profile) await this.ctx.storage.put("profile", this.profile);
     await this.ctx.storage.put("events", this.eventLog.getAll());
+    if (this.runnerToken) await this.ctx.storage.put("runnerToken", this.runnerToken);
   }
 
   async restore(): Promise<void> {
     const session = await this.ctx.storage.get<Session>("session");
     const profile = await this.ctx.storage.get<ProjectProfile>("profile");
+    const token = await this.ctx.storage.get<string>("runnerToken");
 
     if (session) this.session = session;
     if (profile) this.profile = profile;
+    if (token) this.runnerToken = token;
   }
 
   // ---- HTTP fetch (routes from Worker) ----
@@ -478,7 +489,10 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
         taskDescription: string;
       }>();
       const session = await this.init(profile, taskDescription);
-      return new Response(JSON.stringify(session), { headers: corsHeaders });
+      return new Response(JSON.stringify({
+        ...session,
+        runnerToken: this.getRunnerToken(),
+      }), { headers: corsHeaders });
     }
 
     if (path === "/state" && request.method === "GET") {
@@ -509,8 +523,13 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     }
 
     // ---- WebSocket upgrade ----
-    if (request.headers.get("Upgrade") === "websocket") {
-      const role = url.searchParams.get("role") ?? "client";
+    const upgradeHeader = request.headers.get("Upgrade");
+    console.log(`[DO fetch] path=${url.pathname} upgrade=${upgradeHeader} role=${url.searchParams.get("role")}`);
+    if (upgradeHeader === "websocket") {
+      // Determine role from path: /sessions/:id/runner = runner, /sessions/:id/stream = client
+      const pathParts = url.pathname.split("/");
+      const wsRole = pathParts[pathParts.length - 1] === "runner" ? "runner" : "client";
+      const role = wsRole;
       const token = url.searchParams.get("token") ?? "";
 
       const pair = new WebSocketPair();

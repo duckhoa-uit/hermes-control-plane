@@ -4,7 +4,7 @@
 // responds to commands. No E2B or OpenCode needed.
 // ============================================================
 
-import { generateRunnerToken } from "../core/id";
+import { WebSocket } from "ws";
 
 const CONTROL_WS_URL = process.argv[2] ?? "ws://localhost:8787";
 const SESSION_ID = process.argv[3] ?? "";
@@ -17,14 +17,19 @@ if (!SESSION_ID || !RUNNER_TOKEN) {
 
 console.log(`[fake-runner] Connecting to ${CONTROL_WS_URL} for session ${SESSION_ID}`);
 
-const url = new URL(CONTROL_WS_URL);
-url.searchParams.set("role", "runner");
+// Runner connects to /sessions/:id/runner?token=<token>
+// Convert http(s):// to ws(s):// for WebSocket
+const wsBaseUrl = CONTROL_WS_URL
+  .replace(/^http:\/\//, "ws://")
+  .replace(/^https:\/\//, "wss://")
+  .replace(/\/$/, "");
+const url = new URL(`${wsBaseUrl}/sessions/${SESSION_ID}/runner`);
 url.searchParams.set("token", RUNNER_TOKEN);
 
 const ws = new WebSocket(url.toString());
 let heartbeat: ReturnType<typeof setInterval> | null = null;
 
-ws.addEventListener("open", () => {
+ws.on("open", () => {
   console.log("[fake-runner] Connected to control plane");
 
   // Start heartbeat
@@ -35,10 +40,10 @@ ws.addEventListener("open", () => {
   }, 5000);
 });
 
-ws.addEventListener("message", async (e) => {
+ws.on("message", async (data: Buffer) => {
   let msg: { type: string; command?: { commandId: string; type: string; payload: Record<string, unknown> } };
   try {
-    msg = JSON.parse(e.data as string);
+    msg = JSON.parse(data.toString());
   } catch {
     return;
   }
@@ -145,13 +150,13 @@ ws.addEventListener("message", async (e) => {
   }
 });
 
-ws.addEventListener("close", (ev: CloseEvent) => {
-  console.log(`[fake-runner] WS closed: ${ev.code} ${ev.reason}`);
+ws.on("close", (code: number, reason: Buffer) => {
+  console.log(`[fake-runner] WS closed: ${code} ${reason.toString()}`);
   if (heartbeat) clearInterval(heartbeat);
 });
 
-ws.addEventListener("error", (err: Event) => {
-  console.error("[fake-runner] WS error:", err);
+ws.on("error", (err: Error) => {
+  console.error("[fake-runner] WS error:", err.message);
 });
 
 function sleep(ms: number): Promise<void> {
