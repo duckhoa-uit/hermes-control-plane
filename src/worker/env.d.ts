@@ -9,4 +9,8 @@ interface CloudflareEnv {
   GITHUB_PRIVATE_KEY?: string;
   MAX_SESSION_RUNTIME_MS: number;
   HEARTBEAT_TIMEOUT_MS: number;
+  // Zai (z.ai) LLM provider - OpenAI-compatible
+  ZAI_API_KEY?: string;
+  ZAI_BASE_URL?: string;
+  ZAI_MODEL?: string;
 }

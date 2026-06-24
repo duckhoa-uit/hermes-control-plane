@@ -15,7 +15,7 @@ const DEFAULT_PROFILE: ProjectProfile = {
   name: "Default Project",
   repoUrl: "",
   defaultBranch: "main",
-  model: "claude-sonnet-4-20250514",
+  model: "zai-glm-4.6",
   allowedTools: ["read", "edit", "bash", "grep", "glob"],
   approvalPolicy: {
     autoAllow: ["file.read", "file.edit", "test.run"],
@@ -64,12 +64,21 @@ export default {
           profile?: Partial<ProjectProfile>;
         }>();
 
-        // Build profile
+        // Build profile, inject Zai LLM config from env
+        const zaiEnv: Record<string, string> = {};
+        if (env.ZAI_API_KEY) zaiEnv.OPENAI_API_KEY = env.ZAI_API_KEY;
+        if (env.ZAI_BASE_URL) zaiEnv.OPENAI_BASE_URL = env.ZAI_BASE_URL;
+        if (env.ZAI_MODEL) zaiEnv.OPENCODE_MODEL = env.ZAI_MODEL;
+
         const profile: ProjectProfile = {
           ...DEFAULT_PROFILE,
           ...body.profile,
           id: body.projectId,
           repoUrl: body.repoUrl ?? DEFAULT_PROFILE.repoUrl,
+          env: {
+            ...zaiEnv,
+            ...(body.profile?.env ?? {}),
+          },
         };
 
         // Create DO stub
