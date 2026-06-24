@@ -15,7 +15,7 @@ const DEFAULT_PROFILE: ProjectProfile = {
   name: "Default Project",
   repoUrl: "",
   defaultBranch: "main",
-  model: "zai-glm-4.6",
+  model: "zai-coding-plan/glm-5.2",
   allowedTools: ["read", "edit", "bash", "grep", "glob"],
   approvalPolicy: {
     autoAllow: ["file.read", "file.edit", "test.run"],
@@ -67,11 +67,17 @@ export default {
           profile?: Partial<ProjectProfile>;
         }>();
 
-        // Build profile, inject Zai LLM config from env
+        // Build profile, inject Zai LLM config from env.
+        // OpenCode supports the `zai-coding-plan` provider natively
+        // (via models.dev) - api endpoint is https://api.z.ai/api/coding/paas/v4.
+        // We just pass ZHIPU_API_KEY and a "provider/model" model id.
+        // No custom opencode.json or baseURL override is needed.
         const zaiEnv: Record<string, string> = {};
-        if (env.ZAI_API_KEY) zaiEnv.OPENAI_API_KEY = env.ZAI_API_KEY;
-        if (env.ZAI_BASE_URL) zaiEnv.OPENAI_BASE_URL = env.ZAI_BASE_URL;
-        if (env.ZAI_MODEL) zaiEnv.OPENCODE_MODEL = env.ZAI_MODEL;
+        if (env.ZAI_API_KEY) zaiEnv.ZHIPU_API_KEY = env.ZAI_API_KEY;
+        if (env.ZAI_MODEL) {
+          const m = env.ZAI_MODEL.includes("/") ? env.ZAI_MODEL : `zai-coding-plan/${env.ZAI_MODEL}`;
+          zaiEnv.OPENCODE_MODEL = m;
+        }
 
         const profile: ProjectProfile = {
           ...DEFAULT_PROFILE,

@@ -46,34 +46,39 @@ bun run src/testing/api-client.ts http://localhost:8787 create-pr <session-id>
 
 ## 4. Zai (z.ai) LLM Provider
 
-Zai provides an OpenAI-compatible API. OpenCode uses it directly via `OPENAI_API_KEY` + `OPENAI_BASE_URL`.
+OpenCode supports Z.AI natively via the [`zai-coding-plan` provider](https://opencode.ai/docs/providers/#zai)
+(endpoint `https://api.z.ai/api/coding/paas/v4`). No custom `opencode.json` or
+`OPENAI_*` overrides are needed — just the API key and a `provider/model` id.
 
 ### Get Zai API Key
 
 1. Go to https://z.ai (or https://open.bigmodel.cn for international)
-2. Sign up / log in
-3. Go to API Keys section
-4. Create a new API key
-5. Copy the key
+2. Sign up / log in to a GLM Coding Plan
+3. Create an API key and copy it
 
 ### Configure
 
 Add to `.dev.vars`:
 ```
 ZAI_API_KEY=your-zai-api-key
-ZAI_BASE_URL=https://api.z.ai/api/ping/v1
-ZAI_MODEL=glm-4.6
+ZAI_MODEL=glm-5.2
 ```
 
-The Worker automatically injects these as `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENCODE_MODEL` into the sandbox environment when creating a session. No Anthropic or OpenAI key needed.
+When a session is created, the Worker injects:
+- `ZHIPU_API_KEY` = `ZAI_API_KEY` (the env var OpenCode's native `zai-coding-plan` provider reads)
+- `OPENCODE_MODEL` = `zai-coding-plan/<model>` (e.g. `zai-coding-plan/glm-5.2`)
 
-### Available Zai Models
+Then the sandbox runner spawns `opencode run --model "$OPENCODE_MODEL" ...`,
+and OpenCode resolves the provider from [models.dev](https://models.dev).
 
-| Model | Best for |
-|-------|----------|
-| `glm-4.6` | General coding, balanced speed/quality |
-| `glm-4.5-air` | Fast, lightweight tasks |
-| `glm-4-plus` | Complex reasoning |
+### Available Zai Coding Plan Models
+
+| Model | Notes |
+|-------|-------|
+| `glm-5.2` | Latest, 1M context |
+| `glm-5.1` | 200K context |
+| `glm-4.7` | 200K context |
+| `glm-4.5-air` | Fast, lightweight |
 
 ## 5. GitHub App Setup (For PR Creation)
 
@@ -168,12 +173,11 @@ OpenCode runs inside the E2B sandbox. The `opencode` template is pre-installed.
 
 The runner bridge (`src/runner/bridge.ts`) starts `opencode run` inside the sandbox.
 
-For OpenCode to work, it needs a model API key. With Zai, this is injected automatically:
-- `OPENAI_API_KEY` = your Zai key
-- `OPENAI_BASE_URL` = Zai endpoint
-- `OPENCODE_MODEL` = glm-4.6
+For OpenCode to work, it needs a model API key. With Zai, this is injected automatically by the Worker:
+- `ZHIPU_API_KEY` = your Zai API key (env var read by OpenCode's native `zai-coding-plan` provider)
+- `OPENCODE_MODEL` = `zai-coding-plan/<model>` (e.g. `zai-coding-plan/glm-5.2`)
 
-You can also override per-session:
+You can override per-session via the `profile.env` field:
 
 ```bash
 curl -X POST http://localhost:8787/sessions \
@@ -183,10 +187,10 @@ curl -X POST http://localhost:8787/sessions \
     "taskDescription": "Fix tests",
     "repoUrl": "https://github.com/me/repo",
     "profile": {
-      "model": "glm-4.6",
+      "model": "glm-5.2",
       "env": {
-        "OPENAI_API_KEY": "your-custom-key",
-        "OPENAI_BASE_URL": "https://api.z.ai/api/ping/v1"
+        "ZHIPU_API_KEY": "your-custom-key",
+        "OPENCODE_MODEL": "zai-coding-plan/glm-5.2"
       }
     }
   }'
@@ -198,10 +202,9 @@ curl -X POST http://localhost:8787/sessions \
 # ---- E2B Sandbox ----
 E2B_API_KEY=e2b_xxxxxxxxxxxxxxxxxxxx
 
-# ---- Zai LLM ----
+# ---- Zai LLM (uses OpenCode native `zai-coding-plan` provider) ----
 ZAI_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxx
-ZAI_BASE_URL=https://api.z.ai/api/ping/v1
-ZAI_MODEL=glm-4.6
+ZAI_MODEL=glm-5.2
 
 # ---- GitHub App ----
 GITHUB_APP_ID=123456

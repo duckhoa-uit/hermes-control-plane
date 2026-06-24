@@ -2,10 +2,10 @@
 E2B_API_KEY=
 
 # ---- Zai (z.ai) LLM Provider ----
-# Zai cung cấp API OpenAI-compatible, OpenCode dùng được trực tiếp
+# OpenCode hỗ trợ provider `zai-coding-plan` natively (endpoint
+# https://api.z.ai/api/coding/paas/v4). Chỉ cần API key + model id.
 ZAI_API_KEY=
-ZAI_BASE_URL=https://api.z.ai/api/ping/v1
-ZAI_MODEL=glm-4.6
+ZAI_MODEL=glm-5.2
 
 # ---- GitHub App (optional, chỉ cần khi test PR thật) ----
 GITHUB_APP_ID=

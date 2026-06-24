@@ -32,9 +32,9 @@ export class E2BProvider implements SandboxProvider {
         HERMES_SESSION_ID: input.sessionId,
         HERMES_RUNNER_TOKEN: input.runnerToken,
         HERMES_CONTROL_WS: input.controlWsUrl,
-        OPENAI_API_KEY: input.env?.OPENAI_API_KEY ?? "",
-        OPENAI_BASE_URL: input.env?.OPENAI_BASE_URL ?? "",
-        OPENCODE_MODEL: input.env?.OPENCODE_MODEL ?? "glm-4.6",
+        // OpenCode reads ZHIPU_API_KEY for the native `zai` provider.
+        ZHIPU_API_KEY: input.env?.ZHIPU_API_KEY ?? "",
+        OPENCODE_MODEL: input.env?.OPENCODE_MODEL ?? "zai-coding-plan/glm-5.2",
         ...input.env,
       },
     });

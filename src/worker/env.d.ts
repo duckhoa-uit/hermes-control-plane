@@ -11,6 +11,5 @@ interface CloudflareEnv {
   HEARTBEAT_TIMEOUT_MS: number;
   // Zai (z.ai) LLM provider - OpenAI-compatible
   ZAI_API_KEY?: string;
-  ZAI_BASE_URL?: string;
   ZAI_MODEL?: string;
 }

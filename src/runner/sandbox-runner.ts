@@ -6,7 +6,7 @@ import { spawn, exec as execCb } from "child_process";
 const SESSION_ID = process.env.HERMES_SESSION_ID;
 const RUNNER_TOKEN = process.env.HERMES_RUNNER_TOKEN;
 const CONTROL_WS = process.env.HERMES_CONTROL_WS;
-const MODEL = process.env.OPENCODE_MODEL || "glm-4.6";
+const MODEL = process.env.OPENCODE_MODEL || "zai-coding-plan/glm-5.2";
 
 if (!SESSION_ID || !RUNNER_TOKEN || !CONTROL_WS) {
   console.error("Missing required env vars");

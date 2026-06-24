@@ -16,7 +16,7 @@ async function main() {
 
     case "create": {
       const taskDescription = process.argv[4] ?? "Fix failing tests";
-      const repoUrl = process.argv[5] ?? "https://github.com/test/repo";
+      const repoUrl = process.argv[5] ?? "https://github.com/duckhoa-uit/hermes-control-plane";
       const projectId = process.argv[6] ?? "test-project";
 
       const r = await fetch(`${BASE_URL}/sessions`, {
