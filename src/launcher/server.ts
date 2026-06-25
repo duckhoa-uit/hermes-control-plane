@@ -26,19 +26,29 @@ import { sweepOrphans } from "./sweeper";
 import { buildMcpHandler } from "../mcp/server";
 
 const PORT = Number(process.env.HERMES_LAUNCHER_PORT ?? 8789);
-const HERMES_BASE_URL = process.env.HERMES_BASE_URL ?? "http://localhost:8788";
+const HERMES_BASE_URL = process.env.HERMES_BASE_URL;
 const HERMES_PUBLIC_URL = process.env.HERMES_PUBLIC_URL ?? HERMES_BASE_URL;
 const E2B_API_KEY = process.env.E2B_API_KEY;
 const E2B_TEMPLATE = process.env.E2B_TEMPLATE ?? "hermes-runner";
-const ZAI_API_KEY = process.env.ZAI_API_KEY ?? "";
+const ZAI_API_KEY = process.env.ZAI_API_KEY;
+const GITHUB_USER_TOKEN = process.env.GITHUB_USER_TOKEN;
+const GITHUB_USER_LOGIN = process.env.GITHUB_USER_LOGIN;
 const MAX_CONCURRENT_SESSIONS = Number(process.env.MAX_CONCURRENT_SESSIONS ?? 10);
 // When false, the sidecar will NOT auto-trigger /create-pr on review_ready.
 // Useful for e2e tests that need to send follow-up prompts before the
 // runner exits. Default true (production behaviour).
 const AUTO_PR = (process.env.HERMES_AUTO_PR ?? "1") !== "0";
 
-if (!E2B_API_KEY) {
-  console.error("[launcher] E2B_API_KEY required");
+const requiredEnv: Array<[string, string | undefined]> = [
+  ["E2B_API_KEY", E2B_API_KEY],
+  ["ZAI_API_KEY", ZAI_API_KEY],
+  ["GITHUB_USER_TOKEN", GITHUB_USER_TOKEN],
+  ["GITHUB_USER_LOGIN", GITHUB_USER_LOGIN],
+  ["HERMES_BASE_URL", HERMES_BASE_URL],
+];
+const missing = requiredEnv.filter(([, v]) => !v).map(([k]) => k);
+if (missing.length > 0) {
+  console.error(`[launcher] required env missing: ${missing.join(", ")}`);
   process.exit(1);
 }
 
@@ -177,7 +187,7 @@ async function handleCreate(req: Request): Promise<Response> {
     provisioned = await provisionSession({
       sessionId: session.id,
       runnerToken: session.runnerToken,
-      controlWsUrl: HERMES_PUBLIC_URL,
+      controlWsUrl: HERMES_PUBLIC_URL!,
       repoUrl: body.repoUrl,
       baseBranch: body.baseBranch,
       e2bApiKey: E2B_API_KEY!,
@@ -346,7 +356,7 @@ async function main(): Promise<void> {
   try {
     const sweep = await sweepOrphans({
       e2bApiKey: E2B_API_KEY!,
-      hermesBaseUrl: HERMES_BASE_URL,
+      hermesBaseUrl: HERMES_BASE_URL!,
     });
     log(
       `startup sweep: scanned=${sweep.scanned} killed=${sweep.killed.length} kept=${sweep.kept.length}`,
@@ -359,7 +369,7 @@ async function main(): Promise<void> {
   // MCP server bundled into the launcher (the Hermes Agent — see
   // docs/DEPLOYMENT.md §12 and infra/mcp/README.md.
   const mcpHandler = buildMcpHandler({
-    workerBaseUrl: HERMES_BASE_URL,
+    workerBaseUrl: HERMES_BASE_URL!,
     launcherBaseUrl: `http://localhost:${PORT}`,
     log,
   });
