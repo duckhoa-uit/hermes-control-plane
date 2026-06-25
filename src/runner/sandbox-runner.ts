@@ -359,12 +359,18 @@ async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
     await execStrict(`git config user.name "${gitName}"`);
     await execStrict(`git checkout -B ${branch}`);
     await execStrict(`git add -A`);
-    const diff = await execCmd(`git diff --cached --name-only`);
-    if (!diff.trim()) {
-      sendError("No changes staged for PR");
-      return;
+    const stagedDiff = await execCmd(`git diff --cached --name-only`);
+    if (stagedDiff.trim()) {
+      await execStrict(`git commit -m "${title.replace(/"/g, '\"')}"`);
+    } else {
+      // Agent may have committed during the run. Accept that and push as-is
+      // if HEAD is ahead of base; otherwise there is genuinely nothing to PR.
+      const aheadCount = (await execCmd(`git rev-list --count origin/${baseBranch}..HEAD`)).trim();
+      if (aheadCount === "0" || aheadCount === "") {
+        sendError("No changes staged for PR");
+        return;
+      }
     }
-    await execStrict(`git commit -m "${title.replace(/"/g, '\"')}"`);
     const remoteUrl = usingUserIdentity
       ? `https://${token}:x-oauth-basic@github.com/${owner}/${repo}.git`
       : `https://x-access-token:${token}@github.com/${owner}/${repo}.git`;
