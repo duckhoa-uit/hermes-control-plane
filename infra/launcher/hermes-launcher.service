@@ -18,16 +18,16 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=hermes
-Group=hermes
-WorkingDirectory=/opt/hermes
+User=hermes-cp
+Group=hermes-cp
+WorkingDirectory=/opt/hermes-control-plane
 
-# All secrets and config live here. Mode 0600, owned by hermes:hermes.
+# All secrets and config live here. Mode 0600, owned by hermes-cp:hermes-cp.
 # See infra/launcher/env.example for the full list.
-EnvironmentFile=/etc/hermes/launcher.env
+EnvironmentFile=/etc/hermes-control-plane/launcher.env
 
-# bun must be on PATH for the hermes user. Default: ~/.bun/bin/bun.
-ExecStart=/home/hermes/.bun/bin/bun run /opt/hermes/launcher.js
+# bun must be on PATH for the hermes-cp user. Default: ~/.bun/bin/bun.
+ExecStart=/home/hermes-cp/.bun/bin/bun run /opt/hermes-control-plane/launcher.js
 
 Restart=always
 RestartSec=5

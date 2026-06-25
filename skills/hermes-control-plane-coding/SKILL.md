@@ -55,7 +55,7 @@ Do NOT use this skill when:
   per session; the repo must show the app under Settings → Installations.
 
 - **Operator's `GITHUB_USER_TOKEN` in the launcher env**
-  (`/etc/hermes/launcher.env`). This is the PAT whose identity the PR
+  (`/etc/hermes-control-plane/launcher.env`). This is the PAT whose identity the PR
   will be authored by — required so branch-protection rules like "PR
   review by someone other than author" work.
 

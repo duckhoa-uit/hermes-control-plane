@@ -619,7 +619,7 @@ mcp_servers:
 
 skills:
   external_dirs:
-    - /opt/hermes/src/skills               # where install.sh cloned the repo
+    - /opt/hermes-control-plane/src/skills               # where install.sh cloned the repo
 ```
 
 Restart Hermes (`exit` + `hermes` for CLI, or `systemctl restart hermes`

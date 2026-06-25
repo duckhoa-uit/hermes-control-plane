@@ -40,11 +40,11 @@ Add to the same `~/.hermes/config.yaml`:
 ```yaml
 skills:
   external_dirs:
-    - /opt/hermes/src/skills        # adjust to where you cloned this repo
+    - /opt/hermes-control-plane/src/skills        # adjust to where you cloned this repo
 ```
 
 (Use the absolute path Hermes will find at boot. The `install.sh` script
-puts the source at `/opt/hermes/src` by default.)
+puts the source at `/opt/hermes-control-plane/src` by default.)
 
 ### 3. Restart Hermes
 

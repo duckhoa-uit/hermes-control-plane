@@ -4,9 +4,9 @@ Three files in this directory:
 
 | File | Purpose |
 |---|---|
-| `install.sh` | One-shot bootstrap for a fresh Debian/Ubuntu VPS. Creates the `hermes` user, installs bun + cloudflared, clones this repo, builds `launcher.js`, drops the systemd unit, copies `env.example` to `/etc/hermes/launcher.env`. Idempotent — re-run to update the bundle from the latest `main`. |
-| `hermes-launcher.service` | systemd unit. Loads `/etc/hermes/launcher.env`, runs `bun /opt/hermes/launcher.js` as the `hermes` user, restarts on crash. |
-| `env.example` | Template for `/etc/hermes/launcher.env`. Copy + fill in real values. |
+| `install.sh` | One-shot bootstrap for a fresh Debian/Ubuntu VPS. Creates the `hermes-cp` user, installs bun + cloudflared, clones this repo, builds `launcher.js`, drops the systemd unit, copies `env.example` to `/etc/hermes-control-plane/launcher.env`. Idempotent — re-run to update the bundle from the latest `main`. |
+| `hermes-launcher.service` | systemd unit. Loads `/etc/hermes-control-plane/launcher.env`, runs `bun /opt/hermes-control-plane/launcher.js` as the `hermes-cp` user, restarts on crash. |
+| `env.example` | Template for `/etc/hermes-control-plane/launcher.env`. Copy + fill in real values. |
 
 See `docs/SETUP.md` §10.2 for the env block this file documents, and
 §10.5 for locking the launcher behind a Cloudflare Tunnel.
@@ -29,17 +29,17 @@ curl -fsSL https://raw.githubusercontent.com/duckhoa-uit/hermes-control-plane/ma
 
 `install.sh` is idempotent: re-run to refresh `launcher.js` from the latest
 `main`. The `env.example` file is only copied on first run — your filled-in
-`/etc/hermes/launcher.env` is preserved on re-runs.
+`/etc/hermes-control-plane/launcher.env` is preserved on re-runs.
 
 After it finishes, the script prints the 7 remaining manual steps:
 
-1. Edit `/etc/hermes/launcher.env` with real secrets.
-2. Drop GitHub App PEM at `/etc/hermes/app.pkcs8.pem`.
+1. Edit `/etc/hermes-control-plane/launcher.env` with real secrets.
+2. Drop GitHub App PEM at `/etc/hermes-control-plane/app.pkcs8.pem`.
 3. `sudo systemctl enable --now hermes-launcher`.
 4. Smoke-test: `curl http://localhost:8789/health`.
 5. Set up Cloudflare Tunnel for `launcher.<your-domain>` → `localhost:8789`.
 6. From your dev machine: `wrangler secret put HERMES_LAUNCHER_URL`, then `bun run deploy`.
-7. Add `HERMES_LAUNCHER_URL=http://localhost:8789` and `HERMES_SKILLS_DIR=/opt/hermes/src/skills` to Hermes' own env so the agent loads the three skills.
+7. Wire Hermes Agent → MCP server + skill: edit `~/.hermes/config.yaml` with `mcp_servers.hermes-control-plane.url: http://localhost:8789/mcp` and `skills.external_dirs: [/opt/hermes-control-plane/src/skills]`. Full runbook: [`infra/mcp/README.md`](../mcp/README.md).
 
 You should see:
 

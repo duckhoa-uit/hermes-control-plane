@@ -7,11 +7,11 @@
 #
 # What it does (idempotent):
 #   1. apt deps + bun + cloudflared
-#   2. hermes system user + /opt/hermes + /etc/hermes
-#   3. clones (or pulls) this repo into /opt/hermes/src
-#   4. builds dist/launcher.js into /opt/hermes/launcher.js
+#   2. hermes-cp system user + /opt/hermes-control-plane + /etc/hermes-control-plane
+#   3. clones (or pulls) this repo into /opt/hermes-control-plane/src
+#   4. builds dist/launcher.js into /opt/hermes-control-plane/launcher.js
 #   5. installs systemd unit (does NOT start it)
-#   6. prompts you for secrets if /etc/hermes/launcher.env doesn't exist
+#   6. prompts you for secrets if /etc/hermes-control-plane/launcher.env doesn't exist
 #   7. prints next steps for cloudflared + Worker secret
 #
 # After this script:
@@ -24,8 +24,8 @@ set -euo pipefail
 
 REPO_URL="${HERMES_REPO_URL:-https://github.com/duckhoa-uit/hermes-control-plane.git}"
 REPO_REF="${HERMES_REPO_REF:-main}"
-SRC_DIR="/opt/hermes/src"
-HERMES_USER="hermes"
+SRC_DIR="/opt/hermes-control-plane/src"
+HERMES_USER="hermes-cp"
 
 log() { printf '\033[1;32m[setup]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*"; }
@@ -68,9 +68,9 @@ else
 fi
 
 # -------- 5. layout --------
-log "creating /opt/hermes and /etc/hermes"
-install -d -o "$HERMES_USER" -g "$HERMES_USER" -m 0750 /opt/hermes
-install -d -o "$HERMES_USER" -g "$HERMES_USER" -m 0750 /etc/hermes
+log "creating /opt/hermes-control-plane and /etc/hermes-control-plane"
+install -d -o "$HERMES_USER" -g "$HERMES_USER" -m 0750 /opt/hermes-control-plane
+install -d -o "$HERMES_USER" -g "$HERMES_USER" -m 0750 /etc/hermes-control-plane
 
 # -------- 6. clone / pull --------
 if [[ -d "$SRC_DIR/.git" ]]; then
@@ -91,8 +91,8 @@ sudo -u "$HERMES_USER" -H bash -c "
   bun build src/launcher/server.ts --target=bun --outfile dist/launcher.js
 "
 install -o "$HERMES_USER" -g "$HERMES_USER" -m 0644 \
-  "$SRC_DIR/dist/launcher.js" /opt/hermes/launcher.js
-log "wrote /opt/hermes/launcher.js"
+  "$SRC_DIR/dist/launcher.js" /opt/hermes-control-plane/launcher.js
+log "wrote /opt/hermes-control-plane/launcher.js"
 
 # -------- 8. systemd unit --------
 install -m 0644 \
@@ -102,7 +102,7 @@ systemctl daemon-reload
 log "installed /etc/systemd/system/hermes-launcher.service"
 
 # -------- 9. env file (interactive only if missing) --------
-ENV_FILE=/etc/hermes/launcher.env
+ENV_FILE=/etc/hermes-control-plane/launcher.env
 if [[ -f "$ENV_FILE" ]]; then
   log "$ENV_FILE already present — not overwriting"
 else
@@ -125,7 +125,7 @@ Next steps (manual — secrets and Cloudflare cannot be automated):
 
 2.  Drop GitHub App private key (PKCS#8 PEM):
       sudo install -o $HERMES_USER -g $HERMES_USER -m 0600 \\
-        /path/to/app.pkcs8.pem /etc/hermes/app.pkcs8.pem
+        /path/to/app.pkcs8.pem /etc/hermes-control-plane/app.pkcs8.pem
 
 3.  Start the launcher:
       sudo systemctl enable --now hermes-launcher
@@ -147,10 +147,17 @@ Next steps (manual — secrets and Cloudflare cannot be automated):
       echo "https://launcher.<your-domain>" | bun x wrangler secret put HERMES_LAUNCHER_URL
       bun run deploy
 
-7.  Tell Hermes about the launcher (add to Hermes' own env):
-      HERMES_LAUNCHER_URL=http://localhost:8789
-      HERMES_SKILLS_DIR=$SRC_DIR/skills
-    Hermes loads skill.json/prompt.md from each subdirectory at boot.
+7.  Wire Hermes Agent to the MCP server + skill. Edit ~/.hermes/config.yaml:
+
+      mcp_servers:
+        hermes-control-plane:
+          url: "http://localhost:8789/mcp"
+          timeout: 300
+      skills:
+        external_dirs:
+          - $SRC_DIR/skills
+
+    Then restart Hermes. Full runbook: infra/mcp/README.md.
 
 ────────────────────────────────────────────────────────────────────
 MSG

@@ -324,9 +324,9 @@ export ZAI_MODEL=glm-5.2
 
 # GitHub App (bot fallback + repo metadata)
 export GITHUB_APP_ID=123456
-export GITHUB_PRIVATE_KEY_FILE=/etc/hermes/app.pkcs8.pem
+export GITHUB_PRIVATE_KEY_FILE=/etc/hermes-control-plane/app.pkcs8.pem
 #   ...or paste the PEM inline:
-# export GITHUB_PRIVATE_KEY="$(cat /etc/hermes/app.pkcs8.pem)"
+# export GITHUB_PRIVATE_KEY="$(cat /etc/hermes-control-plane/app.pkcs8.pem)"
 
 # P1.1 single-user OAuth — PR author = real user
 export GITHUB_USER_TOKEN=github_pat_...     # fine-grained PAT, see §5 sub-section
