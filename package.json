@@ -25,6 +25,7 @@
     "wrangler": "^4.0.0"
   },
   "dependencies": {
+    "@opencode-ai/sdk": "1.17.10",
     "e2b": "^2.30.5",
     "ws": "^8.21.0"
   }

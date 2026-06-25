@@ -1,15 +1,37 @@
-// Standalone runner that runs inside E2B sandbox
-// This file is base64-encoded and written to sandbox at creation time
+// Standalone runner that runs inside the E2B sandbox. Bundled into
+// /opt/hermes/runner.js by infra/e2b/build-template.ts and execed by the
+// supervisor once per-session secrets arrive.
+//
+// M4 shape:
+//   - Connects WS back to the SessionDurableObject (unchanged).
+//   - Owns an OpencodeClient against the locally-running `opencode serve`
+//     (the supervisor already started it; URL is OPENCODE_BASE_URL).
+//   - On agent.prompt command:
+//       1. Lazily creates an opencode session bound to /home/user/repo
+//          (first turn) or reuses the same id (follow-up turns).
+//       2. Spawns an SSE subscriber against /event?directory=REPO_DIR;
+//          maps OpenCode events to Hermes event types and bridges them
+//          over WS to the DO.
+//       3. Calls `session.prompt` (blocking HTTP) — when it returns, the
+//          turn is done; emits `runner.complete` with the AssistantMessage
+//          tokens/cost as agent.usage.
+//   - On pr.create command: unchanged (git push + REST).
+
 import { WebSocket } from "ws";
-import { spawn, exec as execCb } from "child_process";
+import { exec as execCb } from "child_process";
+import { createOpencodeClient } from "@opencode-ai/sdk";
+import { createEventMapper } from "./event-mapper";
 
 const SESSION_ID = process.env.HERMES_SESSION_ID;
 const RUNNER_TOKEN = process.env.HERMES_RUNNER_TOKEN;
 const CONTROL_WS = process.env.HERMES_CONTROL_WS;
-const MODEL = process.env.OPENCODE_MODEL || "zai-coding-plan/glm-5.2";
+const OPENCODE_BASE_URL = process.env.OPENCODE_BASE_URL || "http://127.0.0.1:4096";
+const MODEL_ID = process.env.OPENCODE_MODEL_ID || "glm-5.2";
+const PROVIDER_ID = process.env.OPENCODE_PROVIDER_ID || "zai-coding-plan";
+const REPO_DIR = "/home/user/repo";
 
 if (!SESSION_ID || !RUNNER_TOKEN || !CONTROL_WS) {
-  console.error("Missing required env vars");
+  console.error("Missing required env vars (HERMES_SESSION_ID, HERMES_RUNNER_TOKEN, HERMES_CONTROL_WS)");
   process.exit(1);
 }
 
@@ -23,7 +45,21 @@ console.log("[runner] Connecting to:", wsUrl);
 const ws = new WebSocket(wsUrl);
 let heartbeat: ReturnType<typeof setInterval> | null = null;
 
-function sendEvent(eventType: string, eventPayload: Record<string, unknown>) {
+const opencode = createOpencodeClient({ baseUrl: OPENCODE_BASE_URL });
+let opencodeSessionId: string | null = null;
+let sseAbort: AbortController | null = null;
+// Track the *opencode* turn currently in flight, so SSE events outside it
+// can be ignored (e.g. plugin.added bursts on first boot).
+// We accumulate the most recent text/tool part state so we can emit
+// transition events without re-sending payloads.
+const seenToolCalls = new Set<string>();
+// Sum tokens across turns; emitted as artifacts.usage at terminal.
+const usageRollup: {
+  input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number; total: number; cost: number;
+} = { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0 };
+
+function sendEvent(eventType: string, eventPayload: Record<string, unknown>): void {
+  if (ws.readyState !== 1) return;
   ws.send(JSON.stringify({
     type: "runner.event",
     sessionId: SESSION_ID,
@@ -31,32 +67,220 @@ function sendEvent(eventType: string, eventPayload: Record<string, unknown>) {
   }));
 }
 
-function sendComplete(payload: Record<string, unknown>) {
+function sendComplete(payload: Record<string, unknown>): void {
+  if (ws.readyState !== 1) return;
   ws.send(JSON.stringify({ type: "runner.complete", sessionId: SESSION_ID, payload }));
 }
 
-function sendError(error: string) {
+function sendError(error: string): void {
+  if (ws.readyState !== 1) return;
   ws.send(JSON.stringify({ type: "runner.error", sessionId: SESSION_ID, payload: { error } }));
 }
 
 function execCmd(cmd: string): Promise<string> {
   return new Promise((resolve) => {
-    execCb(cmd, { cwd: "/home/user/repo" }, (_err, stdout) => resolve(stdout || ""));
+    execCb(cmd, { cwd: REPO_DIR }, (_err, stdout) => resolve(stdout || ""));
   });
 }
 
-/** Like execCmd but rejects on non-zero exit; returns combined stdout+stderr. */
 function execStrict(cmd: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    execCb(cmd, { cwd: "/home/user/repo" }, (err, stdout, stderr) => {
-      if (err) {
-        reject(new Error(`exec failed (${cmd}): ${stderr || stdout || err.message}`));
-      } else {
-        resolve((stdout || "") + (stderr ? `
-${stderr}` : ""));
-      }
+    execCb(cmd, { cwd: REPO_DIR }, (err, stdout, stderr) => {
+      if (err) reject(new Error(`exec failed (${cmd}): ${stderr || stdout || err.message}`));
+      else resolve((stdout || "") + (stderr ? `\n${stderr}` : ""));
     });
   });
+}
+
+async function startSseSubscriber(): Promise<void> {
+  if (sseAbort) return;
+  sseAbort = new AbortController();
+  const mapper = createEventMapper((e) => sendEvent(e.eventType, e.eventPayload));
+  const url = `${OPENCODE_BASE_URL}/event?directory=${encodeURIComponent(REPO_DIR)}`;
+  console.log("[runner] SSE subscribe:", url);
+
+  // Use raw fetch with streaming body to read SSE frames. The SDK exposes
+  // the same endpoint via client.event.subscribe(), but we want explicit
+  // abort control + simple parsing without buffering an AsyncGenerator.
+  fetch(url, { signal: sseAbort.signal, headers: { accept: "text/event-stream" } })
+    .then(async (resp) => {
+      if (!resp.ok || !resp.body) throw new Error(`SSE HTTP ${resp.status}`);
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // SSE frames are separated by blank lines; each frame has
+        // `data: <json>` (single line).
+        let nl;
+        while ((nl = buffer.indexOf("\n\n")) !== -1) {
+          const frame = buffer.slice(0, nl);
+          buffer = buffer.slice(nl + 2);
+          for (const line of frame.split("\n")) {
+            if (!line.startsWith("data:")) continue;
+            try {
+              const obj = JSON.parse(line.slice(5).trim()) as { type: string; properties?: Record<string, unknown> };
+              mapper(obj);
+            } catch {}
+          }
+        }
+      }
+    })
+    .catch((err: Error) => {
+      if (err.name !== "AbortError") {
+        console.error("[runner] SSE error:", err.message);
+      }
+    });
+}
+
+async function ensureOpencodeSession(taskTitle: string): Promise<string> {
+  if (opencodeSessionId) return opencodeSessionId;
+  const resp = await opencode.session.create({
+    body: { title: taskTitle.slice(0, 80) },
+    query: { directory: REPO_DIR },
+    throwOnError: true,
+  });
+  opencodeSessionId = resp.data.id;
+  console.log("[runner] opencode session created:", opencodeSessionId);
+  return opencodeSessionId;
+}
+
+interface AssistantMessageInfo {
+  id?: string;
+  modelID?: string;
+  providerID?: string;
+  finish?: string;
+  cost?: number;
+  tokens?: {
+    total?: number;
+    input?: number;
+    output?: number;
+    reasoning?: number;
+    cache?: { read?: number; write?: number };
+  };
+  error?: { name?: string; message?: string } | unknown;
+}
+
+function rollUsage(info: AssistantMessageInfo | undefined): void {
+  if (!info) return;
+  const t = info.tokens || {};
+  const input = t.input ?? 0;
+  const output = t.output ?? 0;
+  const reasoning = t.reasoning ?? 0;
+  const cacheRead = t.cache?.read ?? 0;
+  const cacheWrite = t.cache?.write ?? 0;
+  const total = t.total ?? input + output + reasoning;
+  const cost = info.cost ?? 0;
+  usageRollup.input += input;
+  usageRollup.output += output;
+  usageRollup.reasoning += reasoning;
+  usageRollup.cacheRead += cacheRead;
+  usageRollup.cacheWrite += cacheWrite;
+  usageRollup.total += total;
+  usageRollup.cost += cost;
+  sendEvent("agent.usage", {
+    modelID: info.modelID,
+    providerID: info.providerID,
+    tokens: { input, output, reasoning, total, cache: { read: cacheRead, write: cacheWrite } },
+    cost,
+    cumulative: { ...usageRollup },
+  });
+}
+
+async function runPromptTurn(taskDescription: string, context: string): Promise<void> {
+  await startSseSubscriber();
+  const sid = await ensureOpencodeSession(taskDescription);
+  // Hermes passes the user's task as `context` (already includes task body
+  // per docs/ROADMAP.md §M1). Send it verbatim.
+  const text = context || taskDescription;
+  sendEvent("agent.started", { taskDescription });
+
+  try {
+    const resp = await opencode.session.prompt({
+      path: { id: sid },
+      query: { directory: REPO_DIR },
+      body: {
+        model: { providerID: PROVIDER_ID, modelID: MODEL_ID },
+        parts: [{ type: "text", text }],
+      },
+      throwOnError: true,
+    });
+    const info = resp.data?.info as AssistantMessageInfo | undefined;
+    rollUsage(info);
+
+    // Compute diff + changed files (still useful for downstream PR step).
+    const diff = await execCmd("git diff");
+    const changedFiles = (await execCmd("git diff --name-only")).trim().split("\n").filter(Boolean);
+
+    if (diff) sendEvent("git.diff.ready", { diff });
+    sendEvent("agent.done", { summary: "Task completed" });
+    sendComplete({
+      summary: `Completed: ${taskDescription}`,
+      diff,
+      changedFiles,
+      usage: { ...usageRollup },
+    });
+    console.log("[runner] Task completed; usage=", JSON.stringify(usageRollup));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    sendEvent("agent.error", { error: msg });
+    sendError(msg);
+  }
+}
+
+async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
+  const branch = (payload.branch as string) || `hermes/${Date.now()}`;
+  const title = (payload.title as string) || `Hermes: ${payload.taskDescription ?? "automated change"}`;
+  const body = (payload.body as string) || "Automated PR created by hermes-control-plane.";
+  const token = process.env.GITHUB_TOKEN || "";
+  const owner = process.env.GITHUB_OWNER || "";
+  const repo = process.env.GITHUB_REPO || "";
+  const baseBranch = process.env.GITHUB_BASE_BRANCH || "main";
+
+  if (!token || !owner || !repo) {
+    sendError(`Missing GitHub credentials: token=${!!token} owner=${owner} repo=${repo}`);
+    return;
+  }
+
+  try {
+    await execStrict(`git config user.email "hermes-bot@users.noreply.github.com"`);
+    await execStrict(`git config user.name "hermes-bot"`);
+    await execStrict(`git checkout -B ${branch}`);
+    await execStrict(`git add -A`);
+    const diff = await execCmd(`git diff --cached --name-only`);
+    if (!diff.trim()) {
+      sendError("No changes staged for PR");
+      return;
+    }
+    await execStrict(`git commit -m "${title.replace(/"/g, '\"')}"`);
+    const remoteUrl = `https://x-access-token:${token}@github.com/${owner}/${repo}.git`;
+    await execStrict(`git remote set-url origin ${remoteUrl}`);
+    const pushOut = await execStrict(`git push --set-upstream origin ${branch} 2>&1`);
+    sendEvent("git.branch.pushed", { branch, pushOutput: pushOut.slice(-500) });
+
+    const prResp = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ title, head: branch, base: baseBranch, body }),
+    });
+    if (!prResp.ok) {
+      const errBody = await prResp.text();
+      sendError(`GitHub PR API ${prResp.status}: ${errBody.slice(0, 300)}`);
+      return;
+    }
+    const prJson = (await prResp.json()) as { html_url: string; number: number };
+    sendEvent("pr.created", { url: prJson.html_url, number: prJson.number, branch });
+    sendComplete({ prUrl: prJson.html_url });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    sendError(`PR creation failed: ${msg}`);
+  }
 }
 
 ws.on("open", () => {
@@ -86,126 +310,18 @@ ws.on("message", async (data: Buffer) => {
   if (cmd.type === "agent.prompt") {
     const task = cmd.payload.taskDescription as string;
     const context = (cmd.payload.context as string) || "";
-    sendEvent("agent.started", { taskDescription: task });
-
-    try {
-      // Control plane already includes the task in `context`; passing it again duplicates the Task section.
-      const fullPrompt = context;
-      const result = await new Promise<string>((resolve, reject) => {
-        // Use --print-logs so opencode flushes its log lines (otherwise it
-        // buffers when stdout is a pipe). Close stdin explicitly so the CLI
-        // doesn't wait for interactive input.
-        const proc = spawn(
-          "opencode",
-          ["run", "--print-logs", "--model", MODEL, fullPrompt],
-          {
-            cwd: "/home/user/repo",
-            env: { ...process.env },
-            stdio: ["ignore", "pipe", "pipe"],
-          },
-        );
-        let stdout = "";
-        let stderr = "";
-        proc.stdout.on("data", (chunk: Buffer) => {
-          const text = chunk.toString();
-          stdout += text;
-          sendEvent("agent.message.delta", { text });
-        });
-        proc.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
-        proc.on("close", (code: number | null) => {
-          if (code === 0) resolve(stdout);
-          else reject(new Error("opencode exited " + code + ": " + stderr));
-        });
-        proc.on("error", reject);
-      });
-
-      sendEvent("agent.message.complete", { text: result.slice(0, 500) });
-      sendEvent("agent.done", { summary: "Task completed" });
-
-      const diff = await execCmd("git diff");
-      const changedFiles = (await execCmd("git diff --name-only")).trim().split("\n").filter(Boolean);
-      let testResult: { passed: boolean; total: number; failed: number; output: string } | undefined;
-      try {
-        const fs = await import("fs");
-        if (fs.existsSync("/home/user/repo/.hermes/test.sh")) {
-          const testOut = await execCmd("bash .hermes/test.sh 2>&1 || true");
-          testResult = { passed: true, total: 0, failed: 0, output: testOut };
-        }
-      } catch {}
-
-      if (diff) sendEvent("git.diff.ready", { diff });
-      sendComplete({ summary: "Completed: " + task, diff, changedFiles, testResult });
-      console.log("[runner] Task completed");
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      sendEvent("agent.error", { error: errorMsg });
-      sendError(errorMsg);
-    }
+    await runPromptTurn(task, context);
+    return;
   }
 
   if (cmd.type === "pr.create") {
-    const branch = (cmd.payload.branch as string) || `hermes/${Date.now()}`;
-    const title = (cmd.payload.title as string) || `Hermes: ${cmd.payload.taskDescription ?? "automated change"}`;
-    const body = (cmd.payload.body as string) || "Automated PR created by hermes-control-plane.";
-    const token = process.env.GITHUB_TOKEN || "";
-    const owner = process.env.GITHUB_OWNER || "";
-    const repo = process.env.GITHUB_REPO || "";
-    const baseBranch = process.env.GITHUB_BASE_BRANCH || "main";
-
-    if (!token || !owner || !repo) {
-      sendError(`Missing GitHub credentials: token=${!!token} owner=${owner} repo=${repo}`);
-      return;
-    }
-
-    try {
-      // Configure git identity (the App produces token-bound author info, but
-      // we use the bot identity for the commit author).
-      await execStrict(`git config user.email "hermes-bot@users.noreply.github.com"`);
-      await execStrict(`git config user.name "hermes-bot"`);
-      // Check out a new branch (idempotent).
-      await execStrict(`git checkout -B ${branch}`);
-      // Stage everything (the agent already wrote files).
-      await execStrict(`git add -A`);
-      // Commit; ignore "nothing to commit" by checking diff first.
-      const diff = await execCmd(`git diff --cached --name-only`);
-      if (!diff.trim()) {
-        sendError("No changes staged for PR");
-        return;
-      }
-      await execStrict(`git commit -m "${title.replace(/"/g, '\"')}"`);
-      // Set the remote URL with the token embedded so push authenticates.
-      const remoteUrl = `https://x-access-token:${token}@github.com/${owner}/${repo}.git`;
-      await execStrict(`git remote set-url origin ${remoteUrl}`);
-      // Push.
-      const pushOut = await execStrict(`git push --set-upstream origin ${branch} 2>&1`);
-      sendEvent("git.branch.pushed", { branch, pushOutput: pushOut.slice(-500) });
-
-      // Create the PR via REST.
-      const prResp = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: "application/vnd.github+json",
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ title, head: branch, base: baseBranch, body }),
-      });
-      if (!prResp.ok) {
-        const errBody = await prResp.text();
-        sendError(`GitHub PR API ${prResp.status}: ${errBody.slice(0, 300)}`);
-        return;
-      }
-      const prJson = (await prResp.json()) as { html_url: string; number: number };
-      sendEvent("pr.created", { url: prJson.html_url, number: prJson.number, branch });
-      sendComplete({ prUrl: prJson.html_url });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      sendError(`PR creation failed: ${msg}`);
-    }
+    await runPrCreation(cmd.payload);
+    return;
   }
 
   if (cmd.type === "session.shutdown") {
     if (heartbeat) clearInterval(heartbeat);
+    if (sseAbort) sseAbort.abort();
     ws.close(1000, "shutdown");
     process.exit(0);
   }
@@ -214,8 +330,10 @@ ws.on("message", async (data: Buffer) => {
 ws.on("close", (code: number) => {
   console.log("[runner] WS closed:", code);
   if (heartbeat) clearInterval(heartbeat);
+  if (sseAbort) sseAbort.abort();
 });
 
 ws.on("error", (err: Error) => {
   console.error("[runner] WS error:", err.message);
 });
+

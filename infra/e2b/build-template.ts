@@ -19,7 +19,7 @@
 //   E2B_API_KEY=... bun run infra/e2b/build-template.ts
 // ============================================================
 
-import { Template, defaultBuildLogger, waitForFile } from "e2b";
+import { Template, defaultBuildLogger, waitForPort } from "e2b";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { resolve } from "path";
 
@@ -95,7 +95,7 @@ async function buildTemplate(): Promise<void> {
     .fromNodeImage("22")
     // Build-time mutations (npm -g, mkdir under /opt and /var) need root.
     .setUser("root")
-    .runCmd("npm install -g opencode-ai@latest")
+    .runCmd("npm install -g opencode-ai@1.17.10")
     .makeDir("/opt/hermes")
     .makeDir("/var/log")
     .copy("dist/supervisor.js", "/opt/hermes/supervisor.js")
@@ -107,7 +107,10 @@ async function buildTemplate(): Promise<void> {
     .setUser("user")
     .setStartCmd(
       "node /opt/hermes/supervisor.js > /var/log/hermes-supervisor.log 2>&1",
-      waitForFile("/var/log/hermes-supervisor.log"),
+      // M4: supervisor spawns `opencode serve` on port 4096 BEFORE waiting
+      // for /opt/hermes/start.json. We wait for the port to listen so the
+      // snapshot captures opencode warm.
+      waitForPort(4096),
     );
 
   console.log(`[build] starting Template.build() (this can take a few minutes the first time)`);

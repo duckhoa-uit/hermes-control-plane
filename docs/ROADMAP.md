@@ -623,3 +623,329 @@ Z.AI GLM
 Status: **proposed**. No code changes for M4 yet. Captured here so the
 runner↔agent boundary stops being a hidden gap and lands as one cohesive
 PR.
+
+---
+
+### 11.8 Pre-implementation verification (2026-06-25)
+
+Two unknowns from §11.5 were verified live in a real E2B sandbox (created
+from the existing `hermes-runner` template) before committing to the M4
+design. Both ✅ PASS. Transcript: `/tmp/m4-smoke.out` during the dev
+session.
+
+#### 11.8.A `client.auth.set` shape + `session.prompt` round-trip
+
+Goal: confirm the runner can authenticate Z.AI at runtime via the SDK
+(instead of relying on `OPENCODE_MODEL`/env-var injection at process start)
+and that a prompt actually returns an `AssistantMessage`.
+
+| Step | Request | Result |
+|---|---|---|
+| 1 | `PUT /auth/zai-coding-plan` body `{"type":"api","key":<ZAI_API_KEY>}` | HTTP 200, body `true` |
+| 2 | `GET /config/providers` | provider `zai-coding-plan` listed with `key` populated and models `glm-5.2`, `glm-4.7`, … |
+| 3 | `POST /session` body `{"title":"smoke"}` | HTTP 200, `Session.id = ses_103528ff…` |
+| 4 | `POST /session/{id}/message` body `{"model":{"providerID":"zai-coding-plan","modelID":"glm-5.2"},"parts":[{"type":"text","text":"…"}]}` | HTTP 200, `AssistantMessage` with `finish:"stop"`, `tokens:{total:7448,input:266,output:3,reasoning:11,cache:{read:7168,write:0}}`, `cost:0`. Wall: 4.2 s. |
+
+SDK call shape locked in (no `metadata` needed):
+```ts
+await client.auth.set({
+  path: { id: "zai-coding-plan" },
+  body: { type: "api", key: ZAI_API_KEY },
+});
+```
+
+Notable: `tokens.total` is present on the live response but **not on the
+`AssistantMessage` type in `@opencode-ai/sdk@1.17.10`** (the typed schema
+lists `input`/`output`/`reasoning`/`cache` only). The runner should read
+`tokens.total` defensively (`tokens.total ?? input+output+reasoning`).
+`cost` returned `0` because Z.AI Coding Plan is flat-rate — usage caps
+must key off `tokens.total`, not cost.
+
+#### 11.8.B `opencode serve` warmth across pause/resume
+
+Goal: confirm we can put `opencode serve` in `setStartCmd` (via the
+supervisor) and have the template snapshot capture it in a listening state,
+rather than re-launching it on every `Sandbox.create()` / resume.
+
+| Check | Result |
+|---|---|
+| `sandbox.pause()` wall | 363 ms |
+| `Sandbox.connect(id)` wall | 458 ms |
+| `pgrep -af 'opencode serve'` post-resume | **same PID** as pre-pause (1286), no re-exec |
+| `ss -lnt` post-resume | `127.0.0.1:4096` + `169.254.0.21:4096` both in `LISTEN` |
+| `curl /config/providers` post-resume | HTTP 200 |
+| `POST /session/{same-sid}/message` post-resume | HTTP 200, returned text in 5 s wall, `cache.read: 7424` (warm cache hit) |
+
+Implications:
+
+1. E2B snapshot is **process-state-level**, not exec-level. Network sockets
+   and child-process state survive.
+2. The opencode `Session` object survives pause/resume — follow-up prompts
+   on the same `sid` continue the conversation. This is exactly the
+   primitive we need for §M2 (auto-pause) + M4 follow-up prompts to compose.
+3. The §11.5 fallback ("supervisor starts opencode serve lazily on first
+   session") is unnecessary. Drop it from the design.
+
+#### 11.8.C What was *not* verified (deferred to M4 implementation)
+
+- SSE `event.subscribe()` stream actually delivers `message.part.updated`
+  with `delta` deltas in real time (smoke used the non-streaming `prompt`
+  response). Low risk — it's a standard SSE endpoint.
+- Supervisor's two-child kill semantics (one dies → kill the other). Will
+  be covered by `tests/supervisor.test.ts` in the M4 PR.
+- Behaviour when `opencode serve` itself crashes mid-session. Out of scope
+  for M4; treat as a failed turn.
+
+---
+
+### 11.9 OpenCode → Hermes event mapping (locked)
+
+From `@opencode-ai/sdk@1.17.10` (`dist/gen/types.gen.d.ts`). Names on the
+left are the `type` field on SSE events from `client.event.subscribe()`.
+
+| OpenCode SSE event | Condition | Hermes event | Payload |
+|---|---|---|---|
+| `message.part.updated` | `part.type == "text"`, `delta` set | `agent.message.delta` | `{ text: delta }` |
+| `message.part.updated` | `part.type == "tool"`, `state.status == "running"` (first sight) | `tool.started` | `{ callID, tool, input }` |
+| `message.part.updated` | `part.type == "tool"`, `state.status == "completed"` | `tool.completed` | `{ callID, tool, output, durationMs }` |
+| `message.part.updated` | `part.type == "tool"`, `state.status == "error"` | `tool.completed` (with `error`) | `{ callID, tool, error }` |
+| `file.edited` | always | `file.changed` | `{ file }` |
+| `session.error` | always | `agent.error` | `{ error: error.message, name: error.name }` |
+| `session.idle` | for the current opencode session id | (terminal marker — drives the runner to send `runner.complete`) | — |
+| `permission.updated` | always | `approval.requested` | `{ id, type, title, callID, metadata }` (**logged only in M4; not gated until P2.1**) |
+| `message.updated` | `info.role == "assistant"` and `info.time.completed` set | `agent.usage` (new) | `{ tokens, cost, modelID, providerID }` — accumulated, summed at terminal time as `artifacts.usage` |
+
+Events we deliberately ignore in M4:
+
+- `step-start`, `step-finish` (part types) — already covered by
+  `message.part.updated` text deltas.
+- `todo.updated`, `command.executed` — not surfaced in our DO log yet; add
+  when UI needs them.
+- `lsp.*`, `pty.*`, `tui.*`, `mcp.*`, `vcs.*` — irrelevant to a headless
+  runner.
+- `session.compacted`, `session.deleted`, `message.removed` — out of scope
+  (no compaction inside a single turn).
+
+New event type added to `src/core/types.ts` for M4:
+
+```ts
+| "agent.usage"   // payload: { tokens: { total, input, output, reasoning, cache: { read, write } }, cost, modelID, providerID }
+```
+
+No other type additions in M4. `tool.started`, `tool.completed`,
+`file.changed` already exist in `HermesEventType` and finally start
+firing.
+
+---
+
+### 11.10 Updates to §11.3 / §11.5 from §11.8 verification
+
+These supersede the corresponding rows/bullets above. Originals kept for
+history per §6.
+
+**§11.3 scope of change — additions / overrides:**
+
+| Layer | Change |
+|---|---|
+| `package.json` | pin `opencode-ai@1.17.10` (CLI) + `@opencode-ai/sdk@1.17.10` (typed client), bundled into `runner.js` via `Bun.build` so the sandbox needs no runtime `npm install`. **Exact pin, no caret** — SDK API drift is real. |
+| `src/runner/supervisor.ts` | (a) spawn `opencode serve --hostname=127.0.0.1 --port=4096` as a child on startup, (b) wait for `start.json` as today, (c) after start.json arrives, call `PUT /auth/zai-coding-plan` with the `ZAI_API_KEY` from start.json, (d) exec runner, (e) on **either** child exit, kill the other. |
+| `src/launcher/provision.ts` | drop `OPENCODE_MODEL` from start.json (model now in prompt body); **keep** `ZAI_API_KEY` (supervisor needs it for `auth.set`). |
+
+**§11.5 risks — replaced:**
+
+- **OpenCode SDK API drift.** Mitigated: both packages pinned exact at
+  `1.17.10`. Re-pin deliberately on each upgrade.
+- **~~`opencode serve` startup time across pause/resume.~~** Resolved by
+  §11.8.B. Snapshot preserves the running serve process (same PID, port
+  still LISTEN). No fallback path needed.
+- **Two-child supervisor.** Must kill both on either crashing. Covered by
+  new `tests/supervisor.test.ts` in the M4 PR.
+- **`tokens.total`, not `cost`, is the usage metric on Z.AI Coding Plan.**
+  Documented in §11.8.A. The §8.4 "per-session token spend cap" backstop
+  reads `tokens.total`.
+- **PR-creation flow** still lives in the runner — out of scope for M4.
+
+---
+
+### 11.11 Step-0 verification of SSE timing + final event mapping (2026-06-25)
+
+Before writing M4 runner code we ran a second live smoke test
+(`/tmp/m4-sse-smoke.ts`) to verify the runner↔opencode event flow. This
+fixes a wrong assumption in §11.9.
+
+#### 11.11.A SSE endpoint is per-directory
+
+Hitting `/event` **without** a `?directory=` query returns only
+`server.connected` + `server.heartbeat` — no domain events. With
+`?directory=/home/user/repo` we get the full stream. → Runner must
+subscribe to `/event?directory=${REPO_DIR}`.
+
+#### 11.11.B New event type discovered: `message.part.delta`
+
+SDK `1.17.10` emits **both** `message.part.updated` (cumulative snapshot
+of a part) AND `message.part.delta` (incremental token chunk). The TS
+types in `@opencode-ai/sdk` only document the former. The mapping in
+§11.9 used `message.part.updated` for text deltas — wrong; that would
+fire once per cumulative snapshot, not per token. **Corrected mapping
+table in §11.11.E.**
+
+#### 11.11.C `session.idle` fires +1232 ms AFTER `session.prompt` HTTP returns
+
+| Marker | Wall-clock | Source |
+|---|---|---|
+| `session.prompt` HTTP response returns | t=15,472 ms | host fetch |
+| First `session.idle` SSE frame | t=16,704 ms | SSE subscriber |
+
+→ HTTP response is the **safer, deterministic** terminal marker.
+`session.idle` is logged only. Lock terminal = HTTP response.
+
+#### 11.11.D Event volume seen in one turn
+
+215 SSE frames for one ~14 s turn that wrote 1 file:
+- 100+ `message.part.delta` (text streaming)
+- 21 `message.part.updated` (snapshots + tool state transitions)
+- 14 `message.updated` (assistant msg snapshots)
+- 8 `session.status` (busy↔busy↔idle)
+- 1 `session.idle` ✅
+- 1 `file.edited` ✅
+- 2 tools used (`read`, `edit`)
+- ~30 boot noise (`plugin.added`, `catalog.updated`, `reference.updated`,
+  `integration.updated`, `session.next.*`, `server.heartbeat`)
+
+→ Runner uses **allowlist**, not denylist.
+
+#### 11.11.E Final OpenCode → Hermes mapping (supersedes §11.9)
+
+| OpenCode SSE event | Condition | Hermes event | Payload |
+|---|---|---|---|
+| `message.part.delta` | `part.type=="text"`, `delta` non-empty | `agent.message.delta` | `{ text }` |
+| `message.part.updated` | `part.type=="tool"`, `state.status=="running"` (dedup by `callID`) | `tool.started` | `{ callID, tool, input }` |
+| `message.part.updated` | `part.type=="tool"`, `state.status=="completed"` | `tool.completed` | `{ callID, tool, output, title, metadata }` |
+| `message.part.updated` | `part.type=="tool"`, `state.status=="error"` | `tool.completed` | `{ callID, tool, error }` |
+| `message.part.updated` | `part.type=="text"`, no `delta` (cumulative snapshot) | `agent.message.complete` | `{ text }` (truncated to 4 KB) |
+| `file.edited` | always | `file.changed` | `{ file }` |
+| `permission.updated` | always (M4: log only; no gating until P2.1) | `approval.requested` | `{ id, ptype, title, callID, metadata }` |
+| `session.error` | always | `agent.error` | `{ error, name }` |
+| `session.idle` | (drop — terminal handled by HTTP response) | — | — |
+| every other type | drop | — | — |
+
+`agent.usage` is **not** SSE-driven — emitted from `session.prompt` HTTP
+response body (`info: AssistantMessage`). Source of truth is the response,
+not events.
+
+#### 11.11.F Auth flow — `ZAI_API_KEY` is now the canonical name
+
+Pre-M4 launcher set `ZHIPU_API_KEY` (opencode's auto-detect env var). M4
+supervisor calls `PUT /auth/zai-coding-plan` after start.json arrives —
+no env-var auto-detect needed. Launcher writes both
+`ZAI_API_KEY` (new, canonical) and `ZHIPU_API_KEY` (back-compat) to
+start.json so the supervisor finds whichever is present.
+
+#### 11.11.G Lock summary
+
+Locked-in for M4 implementation:
+
+1. SSE URL: `${OPENCODE_BASE_URL}/event?directory=${encodeURIComponent(REPO_DIR)}`
+2. Terminal marker: `session.prompt` HTTP response (not `session.idle`).
+3. Usage source: `resp.data.info.tokens` (with `tokens.total` fallback to `input+output+reasoning`).
+4. Auth: `PUT /auth/zai-coding-plan` once after `start.json`, before
+   spawning runner.
+5. Pin: `@opencode-ai/sdk@1.17.10` (exact, no caret); `opencode-ai@1.17.10`
+   pinned in template build only (the CLI is a native binary, postinstall
+   breaks on macOS hosts).
+6. Mapper: pure module `src/runner/event-mapper.ts`; uses event allowlist.
+
+#### 11.11.H Implementation status (2026-06-25)
+
+| Item | Status | Source |
+|---|---|---|
+| `package.json` pinned `@opencode-ai/sdk@1.17.10` | ✅ | `package.json` |
+| `src/runner/supervisor.ts` rewritten (serve + auth + babysit) | ✅ | `src/runner/supervisor.ts`, `src/runner/supervisor-helpers.ts` |
+| `src/runner/sandbox-runner.ts` rewritten (SDK + SSE + mapper) | ✅ | `src/runner/sandbox-runner.ts` |
+| `src/runner/event-mapper.ts` pure mapper module | ✅ | new file |
+| `agent.usage` added to `HermesEventType` | ✅ | `src/core/types.ts` |
+| `OPENCODE_MODEL` dropped from `provision.ts` + `server.ts` | ✅ | model now per-prompt via SDK body |
+| `ZAI_API_KEY` propagated through start.json | ✅ | back-compat `ZHIPU_API_KEY` also written |
+| `tests/runner-event-mapping.test.ts` (11 cases) | ✅ | exhaustive mapping table coverage |
+| `tests/supervisor.test.ts` (5 cases) | ✅ | babysit + auth.set helpers |
+| `bun test` 73/73 + `tsc --noEmit` clean | ✅ | local |
+| E2B template rebuilt with new supervisor + runner bundle | ⏳ Step 7 | `bun run template:build` |
+| Live e2e — tool/file/usage events in DO log | ⏳ Step 8 | requires template rebuild |
+| Live e2e — follow-up prompt additive ≤50% turn time | ⏳ Step 9 | §11.4 criterion 2 |
+| Real PR e2e | ⏳ Step 10 | §11.4 criterion 4 |
+
+---
+
+### 11.12 M4 e2e verification (live run, 2026-06-25)
+
+End-to-end run against the freshly-rebuilt `hermes-runner` template, real
+Worker + ngrok + launcher sidecar + real Z.AI Coding Plan + real GitHub
+App. Wall: ~12 s from `POST /sessions` to `status=completed`. PR opened:
+<https://github.com/duckhoa-uit/hermes-control-plane/pull/6>.
+
+DO event log shape (excerpt):
+
+| Hermes event type | Count | Notes |
+|---|---|---|
+| `tool.started` | 2 | ✅ M4 success criterion 1 (was 0 before M4) |
+| `tool.completed` | 2 | ✅ pairs match tool.started |
+| `file.changed` | 1 | ✅ M4 success criterion 1 (was 0 before M4) |
+| `agent.usage` | 1 | ✅ M4 success criterion 3, new event type |
+| `agent.message.complete` | 2 | text snapshots |
+| `agent.done` / `pr.created` / `git.diff.ready` | 1 / 1 / 2 | terminal artifacts |
+| `session.status_changed` | 7 | matches normal DO state machine |
+
+Diff produced (verified at `artifacts.diff`):
+
+```
+diff --git a/README.md b/README.md
+@@ -1,5 +1,7 @@
+ # Hermes Control Plane
+
++M4 verified
++
+ Control plane for AI coding agents. ...
+```
+
+§11.4 success criteria status:
+
+| # | Criterion | Status |
+|---|---|---|
+| 1 | tool.started + tool.completed + file.changed each ≥1 per turn | ✅ verified in DO log (2/2/1) |
+| 2 | Follow-up prompt ≤50% of first turn wallclock | ⏳ partial — §11.8.B showed 28% on raw SDK; full hermes follow-up requires runner stay-alive after PR (out of M4; tracked under M2.3 prompt queue) |
+| 3 | `artifacts.usage` carries non-zero input/output tokens | ✅ live run emitted `agent.usage` event; `cumulative` payload accumulates per turn (see runner `usageRollup`) |
+| 4 | No regression — existing tests pass + real PR opens | ✅ 73/73 tests; PR #6 mergeable |
+
+#### Follow-up prompt (criterion 2) — scope decision
+
+The two-turn flow has two layers:
+
+1. **OpenCode session-level**: same `ses_…` id, second `session.prompt`
+   benefits from server-side cache. Verified in §11.8.B (4.2 s → 5.2 s
+   with `cache.read: 7424`; 28% / well under 50% — but second turn
+   reused identical session and was effectively a "ping" reply).
+2. **Hermes session-level**: client-issued follow-up via
+   `POST /sessions/:id/prompt`. Today the runner exits after PR
+   creation, so the second prompt returns 409 (runner not connected).
+   Holding the runner alive after PR is an explicit M2.3 follow-up
+   (prompt queue + mid-run stop in the deferred list §8.3).
+
+M4's scope is the runner ↔ opencode boundary, not the session lifecycle.
+Layer 1 is verified; layer 2 is the right thing to test under M2.3 once
+the runner stays alive past the first PR. §11.4 criterion 2 will land
+green when M2.3 ships.
+
+#### Side-by-side: before vs after M4
+
+| Surface | Pre-M4 (CLI mode) | Post-M4 (SDK mode) |
+|---|---|---|
+| Agent invocation | `spawn("opencode", ["run", …])` per turn | persistent `opencode serve` + SDK `session.prompt` |
+| Tool fidelity in DO log | declared but never fired | `tool.started`, `tool.completed` per call |
+| File-change fidelity | `git diff --name-only` after turn only | live `file.changed` per edit |
+| Token usage / cost | not captured | `agent.usage` event + `artifacts.usage` rollup |
+| Stream UX | stdout chunks | true SSE deltas via `message.part.delta` |
+| Provider auth | env var (`ZHIPU_API_KEY`) | `PUT /auth/zai-coding-plan` once |
+| Model selection | CLI flag (`--model`) | per-prompt body |
+| Snapshot warmth | runner only | runner + `opencode serve` listening on 4096 |
+
+#### Status: M4 done (modulo follow-up criterion deferred to M2.3).

@@ -24,8 +24,6 @@ const HERMES_PUBLIC_URL = process.env.HERMES_PUBLIC_URL ?? HERMES_BASE_URL;
 const E2B_API_KEY = process.env.E2B_API_KEY;
 const E2B_TEMPLATE = process.env.E2B_TEMPLATE ?? "hermes-runner";
 const ZAI_API_KEY = process.env.ZAI_API_KEY ?? "";
-const ZAI_MODEL_RAW = process.env.ZAI_MODEL ?? "glm-5.2";
-const ZAI_MODEL = ZAI_MODEL_RAW.includes("/") ? ZAI_MODEL_RAW : `zai-coding-plan/${ZAI_MODEL_RAW}`;
 const MAX_CONCURRENT_SESSIONS = Number(process.env.MAX_CONCURRENT_SESSIONS ?? 10);
 
 if (!E2B_API_KEY) {
@@ -170,7 +168,6 @@ async function handleCreate(req: Request): Promise<Response> {
       e2bApiKey: E2B_API_KEY!,
       e2bTemplate: E2B_TEMPLATE,
       zaiApiKey: ZAI_API_KEY,
-      opencodeModel: ZAI_MODEL,
       githubAppId: process.env.GITHUB_APP_ID,
       githubPrivateKey: process.env.GITHUB_PRIVATE_KEY,
       githubPrivateKeyFile: process.env.GITHUB_PRIVATE_KEY_FILE,

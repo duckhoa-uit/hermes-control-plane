@@ -18,8 +18,9 @@ export interface ProvisionInput {
   e2bTemplate: string;
 
   // Agent / model env
+  // M4: model is selected per-prompt via the SDK (runner builds the
+  // request body); the launcher only forwards the API key.
   zaiApiKey?: string;
-  opencodeModel?: string;
 
   // GitHub App (so the runner can push + open PRs)
   githubAppId?: string;
@@ -49,8 +50,10 @@ export async function provisionSession(input: ProvisionInput): Promise<Provision
       hermes_repo: input.repoUrl,
     },
     envs: {
+      // ZAI_API_KEY is the canonical name in M4; ZHIPU_API_KEY kept for
+      // back-compat with the pre-M4 template/supervisor that read it.
+      ZAI_API_KEY: input.zaiApiKey ?? "",
       ZHIPU_API_KEY: input.zaiApiKey ?? "",
-      OPENCODE_MODEL: input.opencodeModel ?? "zai-coding-plan/glm-5.2",
     },
   });
 
@@ -111,8 +114,8 @@ export async function provisionSession(input: ProvisionInput): Promise<Provision
       HERMES_SESSION_ID: input.sessionId,
       HERMES_RUNNER_TOKEN: input.runnerToken,
       HERMES_CONTROL_WS: input.controlWsUrl,
+      ZAI_API_KEY: input.zaiApiKey ?? "",
       ZHIPU_API_KEY: input.zaiApiKey ?? "",
-      OPENCODE_MODEL: input.opencodeModel ?? "zai-coding-plan/glm-5.2",
       GITHUB_TOKEN: githubToken,
       GITHUB_OWNER: owner,
       GITHUB_REPO: repo,

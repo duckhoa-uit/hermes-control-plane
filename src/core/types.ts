@@ -96,7 +96,8 @@ export type HermesEventType =
   | "git.branch.pushed"
   | "pr.created"
   | "system.stalled"
-  | "system.retrying";
+  | "system.retrying"
+  | "agent.usage";
 
 // ---- Runner Commands (control plane -> runner) ----
 
