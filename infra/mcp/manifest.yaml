@@ -1,0 +1,62 @@
+# hermes-control-plane MCP server manifest.
+#
+# Shape mirrors Hermes' optional-mcps/<name>/manifest.yaml schema (see
+# linear, n8n for reference). Currently shipped only for Path A user-side
+# install — copy the mcp_servers block from infra/mcp/README.md into
+# ~/.hermes/config.yaml directly.
+#
+# When the server stabilizes we'll submit a PR adding this file to
+# https://github.com/NousResearch/hermes-agent/tree/main/optional-mcps/devops/hermes-control-plane/manifest.yaml
+# so users can install it with `hermes mcp install hermes-control-plane`
+# (Path B).
+manifest_version: 1
+
+name: hermes-control-plane
+description: Run a coding task in a sandbox; open a real GitHub PR.
+source: https://github.com/duckhoa-uit/hermes-control-plane
+
+# Transport: HTTP Streamable. The MCP server is bundled into the
+# hermes-launcher Bun process and mounted at /mcp on the same port
+# as the launcher's HTTP API (default 8789). Localhost when Hermes
+# Agent runs on the same VPS; otherwise a Cloudflare Tunnel URL.
+transport:
+  type: http
+  url: http://localhost:8789/mcp
+  # Tunnel URL alternative:
+  # url: https://launcher.<your-domain>/mcp
+
+# No native MCP auth at the protocol layer. The launcher is expected to
+# sit behind one of:
+#   - same-host localhost (Hermes Agent on the same VPS)
+#   - Cloudflare Tunnel + Zero Trust app (see docs/SETUP.md §10.5)
+#   - Tailscale private subnet
+# All of which terminate auth before the MCP request reaches the launcher.
+auth:
+  type: none
+
+# Tool surface. Listed for the catalog UI; the actual schemas come from
+# the MCP server's tools/list response at install time.
+tools:
+  - name: start_coding_task
+    description: Spawn a sandbox, run the agent, open a real GitHub PR.
+  - name: get_session_status
+    description: Get status, event count, and PR URL for a session.
+  - name: send_followup_prompt
+    description: Append a follow-up prompt to a running session.
+  - name: abort_session
+    description: Cancel a session and kill its sandbox.
+
+# Companion in-repo skill that teaches the agent when and how to use the
+# tools above. Hermes loads SKILL.md from any directory listed under
+# `skills.external_dirs:` in config.yaml.
+companion_skill:
+  path: skills/hermes-control-plane-coding/SKILL.md
+  name: hermes-control-plane-coding
+
+post_install: |
+  After adding the mcp_servers block to ~/.hermes/config.yaml, restart
+  Hermes (or run `hermes mcp` and re-enable) so the four tools register.
+
+  If hermes-launcher runs on a different host from Hermes Agent, expose
+  it via Cloudflare Tunnel and replace the localhost URL above with the
+  tunnel URL. See docs/SETUP.md §10.5 in the hermes-control-plane repo.

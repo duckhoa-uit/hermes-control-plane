@@ -6,6 +6,10 @@
 //
 // Routes:
 //   GET  /health
+//   POST /mcp                Model Context Protocol (Streamable HTTP). Hermes
+//                            Agent and other MCP hosts call this. Tools:
+//                            start_coding_task, get_session_status,
+//                            send_followup_prompt, abort_session.
 //   POST /sessions           { taskDescription, repoUrl, projectId?, baseBranch? }
 //   GET  /sessions/:id        passthrough to Worker
 //   DELETE /sessions/:id      kill sandbox + abort DO session
@@ -19,6 +23,7 @@
 import { Sandbox } from "e2b";
 import { provisionSession, killSandbox, type ProvisionResult } from "./provision";
 import { sweepOrphans } from "./sweeper";
+import { buildMcpHandler } from "../mcp/server";
 
 const PORT = Number(process.env.HERMES_LAUNCHER_PORT ?? 8789);
 const HERMES_BASE_URL = process.env.HERMES_BASE_URL ?? "http://localhost:8788";
@@ -351,6 +356,14 @@ async function main(): Promise<void> {
     log(`startup sweep failed: ${(err as Error).message}`);
   }
 
+  // MCP server bundled into the launcher (Path A integration with Hermes
+  // Agent — see docs/DEPLOYMENT.md §12, infra/mcp/README.md).
+  const mcpHandler = buildMcpHandler({
+    workerBaseUrl: HERMES_BASE_URL,
+    launcherBaseUrl: `http://localhost:${PORT}`,
+    log,
+  });
+
   // @ts-expect-error Bun-only global
   const server = Bun.serve({
     port: PORT,
@@ -358,6 +371,9 @@ async function main(): Promise<void> {
       const url = new URL(req.url);
       try {
         if (url.pathname === "/health") return await handleHealth();
+        if (url.pathname === "/mcp") {
+          return await mcpHandler(req);
+        }
         if (url.pathname === "/sessions" && req.method === "POST") {
           return await handleCreate(req);
         }
@@ -382,6 +398,7 @@ async function main(): Promise<void> {
   log(`  public = ${HERMES_PUBLIC_URL}`);
   log(`  cap    = ${MAX_CONCURRENT_SESSIONS}`);
   log(`  autoPR = ${AUTO_PR}`);
+  log(`  mcp    = http://localhost:${server.port}/mcp`);
 }
 
 main().catch((err) => {

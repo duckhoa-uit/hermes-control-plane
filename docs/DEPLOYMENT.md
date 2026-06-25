@@ -520,141 +520,154 @@ custody started with present-you.
 
 ---
 
-## 12. Hermes skills (orchestration sugar)
+## 12. Hermes Agent integration (MCP server + companion skill)
 
-Hermes' "intent → tool" mapping needs a tiny amount of shared vocabulary
-between this repo (the contract) and the Hermes agent (the consumer).
-Rather than ship that vocabulary as English in `§6.3` and hope it stays
-in sync, we check it into a top-level `skills/` directory in **this**
-repo. The Hermes agent loads it at boot.
+Released as **Path A** today: the operator adds two blocks to their
+`~/.hermes/config.yaml` and restarts Hermes. **Path B** (`hermes mcp
+install hermes-control-plane`) ships once we PR the catalog entry into
+`NousResearch/hermes-agent/optional-mcps/`.
 
-### 12.1 Why here, not in the Hermes repo
+The integration uses two of Hermes' four extension surfaces, picked off
+the "Footprint Ladder" in [`hermes-agent/AGENTS.md`](https://github.com/NousResearch/hermes-agent/blob/main/AGENTS.md):
 
-- This repo owns the HTTP contract; the skill is the **machine-readable
-  form** of the same contract. Keeping them in one place is the only
-  way to prevent doc drift.
-- Future clients (web UI, CLI, other agents) reuse the same skill files
-  — they describe what the *control plane* exposes, not what Hermes
-  decides to do with it.
-- One PR touches one repo when the contract changes.
+| Hermes surface | What we ship | Where |
+|---|---|---|
+| **MCP server** (rung 5) | A Streamable HTTP MCP server bundled into the launcher, mounted on `/mcp`. Exposes four tools: `start_coding_task`, `get_session_status`, `send_followup_prompt`, `abort_session`. | `src/mcp/server.ts` |
+| **Skill** (rung 2 companion) | A single `SKILL.md` teaching Hermes when to call the tools and how to render their results. Hardline-validated against Hermes' `_validate_frontmatter` and the seven skill-authoring rules. | `skills/hermes-control-plane-coding/SKILL.md` |
 
-This is the same pattern OpenCode uses for its plugins (`opencode/`
-plugin dir lives with the agent, not with the consumer), and what
-OpenHands does with its action schemas.
+We deliberately do NOT ship:
 
-### 12.2 Layout
+- A Hermes **plugin** (rung 4). Plugins are in-process Python; wrapping
+  an external HTTP service in Python adds layers without changing the
+  effect.
+- A new **core tool** (rung 6). Core tools are paid for on every API
+  call by every Hermes user — forbidden for non-fundamental capabilities.
+
+### 12.1 Topology
 
 ```
-skills/
-  README.md                              # what this dir is, how Hermes loads it
-  hermes-code-task/                      # the primary skill
-    skill.json                           # tool-schema in JSON-Schema form
-    prompt.md                            # system-prompt fragment Hermes injects
-    examples.md                          # 3-5 worked examples for few-shot
-  hermes-session-status/                 # /hermes status [sessionId] slash cmd
-    skill.json
-    prompt.md
-  hermes-abort-task/                     # cancel an in-flight session
-    skill.json
-    prompt.md
+Hermes Agent (Python)
+    │
+    │ MCP client (built-in, ~/.hermes/config.yaml mcp_servers:)
+    ▼
+Bun.serve :8789 /mcp          ← MCP Streamable HTTP transport
+    │ in-process
+    ▼
+hermes-launcher routes        ← POST /sessions, DELETE /sessions/:id, ...
+    │
+    ▼ HTTP → Cloudflare Worker
+SessionDurableObject          ← state, event log, runner WS
+    │
+    ▼ E2B SDK
+sandbox + opencode + runner
 ```
 
-Each skill is a directory because every skill has the same 3 files. A
-new skill = `mkdir skills/<name>` + 3 files.
+Both the launcher's HTTP API and its MCP server share one port. A single
+Cloudflare Tunnel exposes both surfaces when Hermes runs off-host.
 
-### 12.3 `skill.json` shape
+### 12.2 Tool surface
 
-Locked schema, so the Hermes loader can just `JSON.parse` and validate:
+| MCP tool | Wraps | Hermes-side use |
+|---|---|---|
+| `start_coding_task` | `POST /sessions` (launcher) | Primary entry; called when the user describes a code change against a GitHub repo. |
+| `get_session_status` | `GET /sessions/:id` (Worker) | Polling fallback when the host can't hold the WS stream open. |
+| `send_followup_prompt` | `POST /sessions/:id/prompt` (Worker) | Mid-session follow-ups; auto-resumes paused sandboxes. |
+| `abort_session` | `DELETE /sessions/:id` (launcher) | User cancellation; tears down sandbox + DO. |
 
-```json
-{
-  "name": "hermes-code-task",
-  "version": "1.0.0",
-  "description": "Run a background coding task in a sandbox and open a PR.",
-  "trigger": {
-    "intents": ["code_task", "fix_bug", "add_feature", "refactor"],
-    "requires": ["repo_url", "task_description"]
-  },
-  "transport": {
-    "kind": "http",
-    "method": "POST",
-    "url_env": "HERMES_LAUNCHER_URL",
-    "path": "/sessions"
-  },
-  "input_schema": { "$ref": "../../docs/openapi.yaml#/components/schemas/CreateSessionRequest" },
-  "output_schema": { "$ref": "../../docs/openapi.yaml#/components/schemas/CreateSessionResponse" },
-  "stream": {
-    "kind": "ws",
-    "url_field": "streamUrl"
-  },
-  "preconditions": [
-    {
-      "check": "github_oauth_token",
-      "on_fail": "respond_with_auth_link"
-    }
-  ]
-}
+Hermes' MCP client auto-discovers tools at startup via `tools/list`. No
+schema duplication — the canonical schema lives in the MCP server
+(`src/mcp/server.ts`) and is generated from Zod at runtime.
+
+### 12.3 SKILL.md companion
+
+`skills/hermes-control-plane-coding/SKILL.md` is the prose layer telling
+Hermes:
+
+- **When to use** the tools (concrete code change against a GitHub repo,
+  bounded scope, real PR wanted).
+- **When NOT to use** them (questions, explanations, local-only repos).
+- **Prerequisites** (MCP server registered, GitHub App installed,
+  `GITHUB_USER_TOKEN` in launcher env).
+- **Procedure** (5 ordered steps with completion criteria per the
+  Hermes authoring HARDLINE §5).
+- **Pitfalls** (don't shell out to `gh`/`git`, don't auto-merge, one
+  sandbox per session, 429 means cap reached).
+- **Verification** (post-run GitHub check that PR author = real user).
+
+The skill is hardline-validated against Hermes' own validator:
+
+```bash
+# in this repo
+python3 scripts/validate-skill.py skills/hermes-control-plane-coding/SKILL.md
 ```
 
-`$ref` points at a single OpenAPI doc (`docs/openapi.yaml`, generated
-from the Worker routes — added in the OAuth PR). One source of truth
-for request/response shapes.
+(see §12.5).
 
-### 12.4 `prompt.md` shape
+### 12.4 Install (Path A — user-side)
 
-What Hermes inlines into its system prompt when this skill is loaded.
-Kept short — Hermes is the one deciding when to use it, not us.
+Three edits, no Hermes PR:
 
-```markdown
-## hermes-code-task
+```yaml
+# ~/.hermes/config.yaml
 
-Use this skill when the user asks for a code change against a known
-repo. You will get back a session id and a WS stream. Stream concise
-updates (one Slack message per "phase": started, working, PR opened).
-DO NOT post per-token deltas. If `POST /sessions` returns 412, the
-user has not authenticated GitHub yet — post the `auth_url` from the
-response body and stop. If it returns 429, the queue is full — apologise
-and ask the user to retry in a minute.
+mcp_servers:
+  hermes-control-plane:
+    url: "http://localhost:8789/mcp"       # same-host VPS
+    # url: "https://launcher.<your-domain>/mcp"   # off-host via Tunnel
+    timeout: 300
+
+skills:
+  external_dirs:
+    - /opt/hermes/src/skills               # where install.sh cloned the repo
 ```
 
-### 12.5 Loader contract
+Restart Hermes (`exit` + `hermes` for CLI, or `systemctl restart hermes`
+for the gateway). The four tools and the skill appear automatically.
 
-Hermes side (out of this repo, but documented here so the contract is
-explicit):
+Full runbook: [`infra/mcp/README.md`](../infra/mcp/README.md).
 
-```ts
-// pseudo-code on the Hermes agent
-import { readdirSync, readFileSync } from "node:fs";
-const SKILLS_DIR = process.env.HERMES_SKILLS_DIR ?? "./skills";
-for (const name of readdirSync(SKILLS_DIR)) {
-  const skill = JSON.parse(readFileSync(`${SKILLS_DIR}/${name}/skill.json`, "utf8"));
-  const prompt = readFileSync(`${SKILLS_DIR}/${name}/prompt.md`, "utf8");
-  hermes.registerTool(skill, prompt);
-}
+### 12.5 Install (Path B — Hermes MCP catalog) — future
+
+We submit a PR adding our `infra/mcp/manifest.yaml` to
+`NousResearch/hermes-agent/optional-mcps/devops/hermes-control-plane/manifest.yaml`.
+Once merged, the install becomes:
+
+```bash
+hermes mcp install hermes-control-plane
+hermes skills install official/devops/hermes-control-plane-coding
 ```
 
-In dev, Hermes clones this repo and points `HERMES_SKILLS_DIR` at
-`./hermes-control-plane/skills`. In prod, the launcher's deploy
-artifact ships the `skills/` directory and Hermes mounts it via a
-shared volume or a tiny `GET /skills.tar.gz` endpoint on the
-launcher.
+Catalog admission requires the server to be stable + documented + with a
+working post-install verification step. We block this on (a) Cloudflare
+Tunnel reachability tested in production, (b) at least one external user
+running the Path A install successfully.
 
-### 12.6 What goes in skills vs. what stays in Hermes
+### 12.6 What we DON'T put in the skill
+
+Per Hermes' "What goes in skills vs. what stays in Hermes":
 
 | Concern | Lives where |
 |---|---|
-| HTTP shape of `POST /sessions` | `skills/hermes-code-task/skill.json` (this repo) |
-| When to call `code_task` vs. `chitchat` | Hermes intent router (Hermes repo) |
-| How to render `agent.message.delta` in Slack Block Kit | Hermes Slack adapter (Hermes repo) |
-| Which repos a user is allowed to touch | Hermes allow-list (Hermes repo) |
-| OAuth preconditions (block call if no token) | `skills/hermes-code-task/skill.json` declares the precondition; Hermes enforces it |
+| MCP tool schemas + HTTP shapes | MCP server (`src/mcp/server.ts`) |
+| When to call `start_coding_task` vs. answer directly | SKILL.md `## When to Use` |
+| How to render `pr.created` in Slack/Telegram/Discord | Hermes' platform adapters (their concern) |
+| Which repos a user may touch | Hermes allow-list (their concern) |
+| OAuth preconditions (`GITHUB_USER_TOKEN` set) | SKILL.md `## Prerequisites` |
 
-Rule of thumb: **anything the control plane mandates → skill file in
-this repo. Anything Hermes chooses → Hermes repo.**
+Rule of thumb: **anything the control plane mandates → SKILL.md or MCP
+schema. Anything Hermes chooses → Hermes config / adapter.**
 
 ### 12.7 Versioning
 
-`skill.json#version` is independent of the repo version. Hermes pins
-skills by SHA when it loads (logged at boot). Breaking changes bump
-the major: `1.x → 2.0`; Hermes refuses to load a major it doesn't
-support. Patch/minor changes load silently.
+The MCP server and the SKILL.md are versioned independently:
+
+- MCP server `serverInfo.version` in `src/mcp/server.ts` (bumped on tool
+  add/remove/rename).
+- SKILL.md `version:` field (bumped on prose changes that change agent
+  behavior).
+- `infra/mcp/manifest.yaml` `manifest_version: 1` (bumped only on schema
+  breaks — never on content changes).
+
+A breaking MCP tool change (rename / required-arg add) requires
+bumping the server major and updating the skill in the same PR.
+
