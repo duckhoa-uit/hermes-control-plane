@@ -19,11 +19,9 @@
     { "tag": "v1", "new_sqlite_classes": ["SessionDurableObject"] }
   ],
   "vars": {
-    "E2B_TEMPLATE": "control-plane-runner",
-    // M5: launcher sidecar URL — DO posts /resume here to thaw paused sandboxes.
-    // Defaults to localhost (only useful for `wrangler dev` against a local launcher);
-    // in production override with `wrangler secret put CONTROL_PLANE_LAUNCHER_URL`
-    // pointing at the Cloudflare Tunnel URL of your VPS launcher.
-    "CONTROL_PLANE_LAUNCHER_URL": "http://localhost:8789"
+    "E2B_TEMPLATE": "control-plane-runner"
+    // CONTROL_PLANE_LAUNCHER_URL is set via `wrangler secret put` in prod
+    // (Cloudflare Tunnel URL of the VPS launcher). For `wrangler dev`, set
+    // it inline in .dev.vars instead.
   }
 }
