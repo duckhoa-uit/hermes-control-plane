@@ -9,7 +9,7 @@
 //   - /opt/hermes (where the per-session start.json is dropped at runtime)
 //   - Start command launches the supervisor; readiness check ensures it is up
 //
-// At runtime the E2BProvider only:
+// At runtime the launcher (src/launcher/provision.ts) only:
 //   1. Sandbox.create(templateId, { lifecycle: { onTimeout: 'pause', autoResume: true } })
 //   2. sandbox.files.write('/opt/hermes/start.json', JSON.stringify(env))
 //      -> the snapshotted supervisor wakes and execs the runner.

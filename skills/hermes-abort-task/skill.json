@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "name": "hermes-abort-task",
+  "version": "1.0.0",
+  "description": "Cancel an in-flight Hermes coding session and tear down its sandbox.",
+  "trigger": {
+    "intents": ["abort_task", "cancel_session"],
+    "ui": ["abort_button_click"],
+    "requires": ["session_id"]
+  },
+  "transport": {
+    "kind": "http",
+    "method": "DELETE",
+    "url_env": "HERMES_LAUNCHER_URL",
+    "path": "/sessions/{sessionId}"
+  },
+  "input": {
+    "type": "object",
+    "required": ["sessionId", "actor"],
+    "properties": {
+      "sessionId": { "type": "string" },
+      "actor": {
+        "type": "object",
+        "required": ["hermes_user_id", "github_user_id"],
+        "properties": {
+          "hermes_user_id": { "type": "string" },
+          "github_user_id": { "type": "string" }
+        }
+      }
+    }
+  },
+  "output": {
+    "type": "object",
+    "description": "204 No Content on success"
+  },
+  "error_contract": {
+    "404": {
+      "meaning": "Session not found or already terminal.",
+      "handler_directive": "report_already_done"
+    }
+  },
+  "authorization": {
+    "rule": "actor.github_user_id must match session.actor.github_user_id OR be in HERMES_ADMINS env list",
+    "enforced_by": "launcher"
+  }
+}

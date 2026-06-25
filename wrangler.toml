@@ -13,7 +13,6 @@ new_classes = ["SessionDurableObject"]
 
 [vars]
 E2B_TEMPLATE = "hermes-runner"
-MAX_SESSION_RUNTIME_MS = 2700000
 HEARTBEAT_TIMEOUT_MS = 900000  # 15 min — see comment on the constant in src/core/constants.ts
 # Hobby tier cap is 20 concurrent sandboxes. Leave headroom for retries and
 # template builds. See docs/ROADMAP.md section 8.

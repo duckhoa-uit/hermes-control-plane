@@ -48,12 +48,18 @@ See `README.md` for the canonical diagram. Snapshot of the relevant pieces:
 - **Control plane:** Cloudflare Worker + `SessionDurableObject`
   (`src/worker/session-do.ts`). DO Storage is the sole truth (D1/R2
   removed in §12.16).
-- **Sandbox:** E2B, created on demand in `src/providers/e2b.ts`. Each session
-  performs at runtime: `git clone` → optional setup script → `curl bun.sh` →
-  `bun add ws` → write runner via base64 → `nohup bun run hermes-runner.ts`.
-- **Runner:** Bun script (`src/runner/sandbox-runner.ts`) bundled as a Text
-  module, connects back to the DO over WebSocket, drives `opencode`.
-- **GitHub:** App-installation token broker (`src/providers/github.ts`).
+- **Sandbox:** E2B, provisioned by the launcher sidecar
+  (`src/launcher/provision.ts`); the pre-baked `hermes-runner` template
+  (`infra/e2b/build-template.ts`) bakes Node + bun + `opencode` + supervisor
+  + runner into the snapshot. Per-session runtime cost is `git clone` +
+  drop `/opt/hermes/start.json`; supervisor execs the runner. (Post-§10.5
+  the worker no longer drives E2B; legacy `src/providers/e2b.ts` was deleted.)
+- **Runner:** TypeScript driver (`src/runner/sandbox-runner.ts`) bundled
+  into the template; talks to a local `opencode serve` via the OpenCode
+  SDK + SSE (M4, §11.12); bridges events back to the DO over WebSocket.
+- **GitHub:** App-installation token broker (`src/launcher/github-token.ts`),
+  host-side only. Legacy worker-side broker `src/providers/github.ts`
+  was deleted in this sync (zero callers).
 - **Clients:** none — only test CLIs in `src/testing/`.
 - **Auth/multi-user:** none — sessions are implicitly single-owner.
 
@@ -61,16 +67,21 @@ See `README.md` for the canonical diagram. Snapshot of the relevant pieces:
 
 ## 3. Gap matrix
 
+_Code-path references in this table reflect post-§10.5 layout: the
+launcher (`src/launcher/provision.ts`) is the canonical sandbox
+driver. Per-row 2026-06-25 status sync at the bottom of each affected
+row in the **Notes / PR** column._
+
 | # | Area | Reference (Ramp) | Hermes today | Status | Risk | Notes / PR |
 |---|---|---|---|---|---|---|
-| 1 | Sandbox cold start | Pre-baked image per repo, snapshots | Runtime install of bun/ws + clone + setup every session (`src/providers/e2b.ts:25-72`) | ❌ | High (UX, time-to-first-token) | |
+| 1 | Sandbox cold start | Pre-baked image per repo, snapshots | Pre-baked single template `hermes-runner` (`infra/e2b/build-template.ts`); supervisor in snapshot via `setStartCmd`; runtime cost ≈ clone + `start.json`. | ✅ | n/a | M1 shipped §9.1 (~700–1500 ms warm) |
 | 2 | Image freshness | 30-min rebuild loop | None | ❌ | Med | |
 | 3 | Warm pool | Pool per hot repo, warm-on-keystroke | None | ❌ | Med | |
-| 4 | Snapshot/resume | Snapshot on end, restore on follow-up | None | ❌ | Med | |
+| 4 | Snapshot/resume | Snapshot on end, restore on follow-up | E2B pause + `Sandbox.connect()` resume shipped end-to-end across hours-long idle (single-cycle and multi-cycle). Snapshot-based session forking (branch a turn) still ❌. | 🟡 | Low | M5 shipped §12.15 (pause/resume); fork-snapshot deferred §8.5 |
 | 5 | Read-before-sync | Reads early, writes gated | N/A (whole clone is the sync) | ❌ | Low (blocked by #1) | |
 | 6 | OpenCode plugin policy | `tool.execute.before` enforces policy in-sandbox | Approval policy lives only in worker state machine | 🟡 | Med | |
 | 7 | Sub-session tool | Agent can spawn sessions | No | ❌ | Low | |
-| 8 | Prompt queue / mid-run stop | Queued, stoppable | Only `abort` exists; no queued follow-ups (`src/worker/session-do.ts`) | 🟡 | Med | |
+| 8 | Prompt queue / mid-run stop | Queued, stoppable | Single-slot `pendingPrompt` shipped (drained on `runner.connected` reconnect); follow-ups while runner alive forwarded immediately. Full FIFO queue + `/stop` (distinct from `/abort`) still ❌. | 🟡 | Low | Single-slot shipped §12.15 (M5); full M2.3 deferred |
 | 9 | DO + SQLite per session | Yes | DO Storage only (D1/R2 declared but unused — deleted §12.16) | 🟡 | Low | Split-store deferred per §8.5 |
 | 10 | WebSocket hibernation | Cloudflare Agents SDK | Plain WS in DO | 🟡 | Low (cost) | |
 | 11 | Multiplayer / author attribution | Yes, per-prompt author | Single implicit owner; no `author_user_id` on events | ❌ | Med | |
@@ -84,8 +95,9 @@ See `README.md` for the canonical diagram. Snapshot of the relevant pieces:
 | 19 | Chrome extension | DOM/React-tree, not images | None | ❌ | Low | |
 | 20 | Metrics: merge-rate | % sessions → merged PRs, live users | None | ❌ | Med | |
 | 21 | Repo classifier | Fast LLM, channel-aware | Project id required | 🟡 | Low | Acceptable until Slack exists |
-| 22 | Long-pause resume | autoResume + warm session over hours | M2 `autoResume:true` set but `Sandbox.connect()` never called; heartbeat marks paused sandbox as `failed` after 60 s | 🟡 | Med (kills follow-up UX) | Tracked under §12 M5 |
+| 22 | Long-pause resume | autoResume + warm session over hours | DO heartbeat-stale detection + launcher `/resume` route + runner reconnect loop. 1-hour-idle resume verified live (PR #8). 24-h-idle path relies on E2B docs guarantee (free + indefinite), not live-tested yet. | ✅ | Low | M5 shipped §12.15 |
 | 23 | D1 / R2 retention | retention policy + cron GC | N/A — D1/R2 removed §12.16; DO storage retention deferred per §8.5 | ⏸ | Low (single user) | §12.16 |
+| 24 | Runner ↔ agent IPC | OpenCode SDK + SSE; long-lived `opencode serve`; tool/file/usage events | SDK + SSE in the runner; `opencode serve` baked into the template (survives pause/resume, §11.8.B); `tool.started`/`tool.completed`/`file.changed`/`agent.usage` fire live. | ✅ | n/a | M4 shipped §11.12 (PR #6) |
 
 ---
 
@@ -96,12 +108,12 @@ without re-asking. Keep items small enough to ship in one PR.
 
 ### P0 — Close the cold-start gap
 
-- [ ] **P0.1 Pre-baked E2B template per project.** Move clone + deps + bun +
-  runner + `opencode` install into a custom E2B template (Dockerfile under
-  `infra/e2b/<project>/`). Strip the runtime install path from
-  `E2BProvider.create` (`src/providers/e2b.ts:42-72`).
-  - Verify: `time` from `POST /sessions` → `ready` < 5s on warm path; runner
-    starts without any `bun add`/`curl bun.sh` step in the event log.
+- [x] **P0.1 Pre-baked E2B template (single template, not per-project).**
+  Shipped as M1 (`infra/e2b/build-template.ts` → `hermes-runner` template).
+  Per-project templates intentionally deferred per §8.3 (one developer, no
+  per-repo dep variance worth the complexity). Verified §9.1: cold-load
+  ~700–1500 ms; event log has no runtime install steps.
+  - Reference: §9.1, §10.
 - [ ] **P0.2 30-min template refresh.** Worker Cron Trigger rebuilds each
   registered project's template; record `template_version` on the `projects`
   row; new sessions pin the latest version.
@@ -110,18 +122,27 @@ without re-asking. Keep items small enough to ship in one PR.
 - [ ] **P0.3 Warm sandbox pool.** Per hot project, keep N paused E2B sandboxes;
   `POST /sessions` leases from the pool, falls back to cold create.
   - Verify: pool depth metric; p95 first-token latency drops ≥ 50%.
-- [ ] **P0.4 Snapshot on session end + resume on follow-up.** Store snapshot id
-  in `sessions`; follow-up message resumes instead of re-cloning.
-  - Verify: follow-up event log shows `sandbox.resumed`, no `git.clone`.
+- [x] **P0.4 Resume on follow-up (single-cycle and multi-cycle).** Shipped
+  as M5 (§12.15): E2B `Sandbox.pause()` on idle + launcher `/resume` calls
+  `Sandbox.connect()`; runner reconnect loop rebinds WS; DO drains single-
+  slot `pendingPrompt`. Verified live in PR #8 (60-s idle → resume; multi-
+  turn cumulative diff). Snapshot-based session **forking** ("retry this
+  turn with a different model" by branching from a snapshot) still ❌ —
+  deferred per §8.3 / §12.7.
 
 ### P1 — Security & PR correctness
 
-- [ ] **P1.1 User GitHub OAuth for PRs.** Replace App-token PR creation in
-  `src/providers/github.ts` with the requesting user's OAuth token. Encrypt and
-  store per-user tokens in D1 (`users` table). App token kept only for repo
-  metadata and webhooks.
-  - Verify: PR `author` equals the real user; user without OAuth cannot create
-    a PR; integration test asserts both.
+- [ ] **P1.1 User GitHub OAuth for PRs (release blocker — design locked §14).**
+  Replace the runner-side App-token PR-open with a Worker-side handoff that
+  uses the requesting user's OAuth token. App installation token retained for
+  `git push` only. Per-user tokens stored AES-256-GCM-encrypted in DO
+  storage under a `users` namespace (no D1 — §12.16). Token-handling code
+  shape, route list, DO storage layout, and tests are locked in **§14**;
+  use that section as the implementation spec.
+  - Verify (full list in §14.5): PR `user.login` = real user; missing token
+    → 412 with `auth_url`; expired token auto-refreshes; integration test
+    for both authored-by-bot (pre-OAuth) and authored-by-user (post-OAuth)
+    paths.
 - [ ] **P1.2 GitHub webhook ingestion.** New route `/webhooks/github` updates
   `session_artifacts.pr_url` and emits `pr.opened|merged|closed` events.
   - Verify: webhook replay test → corresponding events appended.
@@ -136,11 +157,13 @@ without re-asking. Keep items small enough to ship in one PR.
 - [ ] **P2.2 `spawn_session` tool.** MCP/tool that POSTs `/sessions` with
   `parent_session_id`. Add column + `session.spawned` event.
   - Verify: agent spawns child, parent log shows child status updates.
-- [ ] **P2.3 Prompt queue + mid-run stop.** Add `pending_prompts[]` in DO
-  storage; flush after each turn. New routes `POST /sessions/:id/prompt` and
-  `POST /sessions/:id/stop` (distinct from `abort`).
-  - Verify: queued prompt runs after current turn; `stop` interrupts current
-    turn without transitioning to `aborted`.
+- [ ] **P2.3 Full prompt queue + mid-run stop.** Partial: single-slot
+  `pendingPrompt` shipped under M5 (§12.15) — covers the resume case
+  (one prompt buffered across a pause). Still missing: FIFO `pending_prompts[]`
+  for back-to-back follow-ups while a turn is in flight, and
+  `POST /sessions/:id/stop` distinct from `/abort`.
+  - Verify (remaining): queued prompt runs after current turn; `stop`
+    interrupts current turn without transitioning to `aborted`.
 
 ### P3 — Multiplayer & clients
 
@@ -227,8 +250,9 @@ Sources: `e2b.mintlify.app/docs` (`template/how-it-works`, `template/build`,
    `setStartCmd` directly.
    - **Design:** `setStartCmd` launches a *supervisor* that waits for
      `/var/run/hermes/start.json`, then execs the real runner with the values
-     from that file. `E2BProvider.create()` writes that file immediately after
-     `Sandbox.create()` returns. Keeps the "process already running" win.
+     from that file. The launcher (`src/launcher/provision.ts`, post-§10.5)
+     writes that file immediately after `Sandbox.create()` returns. Keeps
+     the "process already running" win.
 3. **Pool reuse vs. session isolation.** Pooled sandboxes have not run a
    session yet; per-session secrets are injected at lease time (same
    supervisor file). Sandboxes are killed (not returned) after a session ends
@@ -265,27 +289,21 @@ deferral costs us so we can revisit deliberately.
 
 Three items only. Each is small enough for one PR.
 
-- [ ] **M1 — Pre-baked single E2B template.** One template (not per-repo)
-  containing: base image, bun, `opencode` CLI, runner source at
-  `/opt/hermes/runner.ts`, supervisor in `setStartCmd` that reads
-  `/var/run/hermes/start.json` (written by `E2BProvider.create` after sandbox
-  creation) and execs the runner. Strip the runtime install path from
-  `src/providers/e2b.ts:42-72`. Repo clone stays at session-create time
-  (varies per session).
-  - Verify: `POST /sessions` → `ready` event in < 10 s on warm cache; event
-    log contains no `curl bun.sh` or `bun add ws` steps.
-- [ ] **M2 — Auto-pause on idle.** Add
-  `lifecycle: { onTimeout: 'pause', autoResume: true }` and a short
-  `timeoutMs` (15 min) to `Sandbox.create()` in `src/providers/e2b.ts`. Store
-  `sandbox_id` (already in `sessions` table) and reuse on follow-up prompts.
-  - Verify: leave a session idle 20 min; send another prompt; sandbox resumes
-    (no new sandbox id) and event log shows `sandbox.resumed`.
-- [ ] **M3 — Hobby concurrency guard.** Add `MAX_CONCURRENT_SESSIONS = 10`
-  (well under E2B Hobby's 20). Worker checks live session count (D1 query on
-  `sessions.status IN ('provisioning','running','needs_approval',...)`)
-  before creating; returns HTTP 429 if exceeded.
-  - Verify: scripted test creating 11 sessions in parallel — 11th returns
-    429; 10 others run.
+- [x] **M1 — Pre-baked single E2B template.** Shipped — see §9.1. One
+  template (`hermes-runner`) bundling Node + bun + `opencode` CLI +
+  supervisor + runner; supervisor in `setStartCmd` reads
+  `/opt/hermes/start.json` (written by the launcher post-`Sandbox.create()`)
+  and execs the runner. Verified ~700–1500 ms cold-load with no runtime
+  install steps in the event log.
+- [x] **M2 — Auto-pause on idle.** Shipped (M1 era) — `Sandbox.create()`
+  in `src/launcher/provision.ts` passes
+  `lifecycle: { onTimeout: 'pause', autoResume: true }` + `timeoutMs: 15min`.
+  The actual *resume-on-follow-up* path was half-wired until M5; see §12.15
+  for the end-to-end "long-pause resume" implementation.
+- [x] **M3 — Hobby concurrency guard.** Shipped — `MAX_CONCURRENT_SESSIONS = 10`
+  enforced host-side in both `scripts/launch-session.ts:checkConcurrencyCap()`
+  and `src/launcher/server.ts:144` (sidecar `POST /sessions` returns 429 at
+  cap). Verified live with cap=3 + 3 paused sandboxes refusing the 4th.
 
 ### 8.2 Hobby tier guardrails (apply to MVP code)
 
@@ -298,8 +316,11 @@ findable later:
   worker has no rate limit; M3's concurrency guard covers the worst case but
   add a simple per-second token bucket if multiple concurrent
   `POST /sessions` start failing.
-- Per-session continuous runtime: **≤ 45 min** wallclock
-  (`MAX_SESSION_RUNTIME_MS` in `wrangler.toml`; E2B Hobby cap is 1 h).
+- Per-session continuous runtime: bounded by the launcher's 24 h hard
+  deadline (`src/launcher/server.ts:75`) plus E2B's per-`running`-burst 1 h
+  cap (which resets on resume — §12.14). The original
+  `MAX_SESSION_RUNTIME_MS` knob was declared dead by §12.1 and removed in
+  this sync.
 - Per-session disk: **≤ 10 GB** (E2B Hobby cap). Not enforced; document and
   monitor.
 - Template version: hand-tagged in env (`E2B_TEMPLATE` in `wrangler.toml`).
@@ -322,11 +343,13 @@ described, revisit.
   (M2) covers single-session continuity. *Limitation while deferred:* cannot
   branch a session ("retry this prompt with a different model") without
   re-running from scratch. Acceptable for MVP.
-- **User GitHub OAuth for PR creation (was P1.1).** *Purpose:* PRs authored
-  by the real user so branch protection's "review by someone other than
-  author" rule works. *Limitation while deferred:* all PRs are authored by
-  the GitHub App identity, so we cannot safely onboard a 2nd human user
-  (they could self-approve their own bot-authored PR). Solo-user-safe.
+- ~~**User GitHub OAuth for PR creation (was P1.1).**~~ **No longer
+  deferred — promoted to release blocker.** Design locked in §14;
+  implementation is the next PR after this sync. *Reason for promotion:*
+  the deployment plan (`docs/DEPLOYMENT.md`) calls for multi-user Slack
+  rollout in release 1, which requires the no-self-approve rule, which
+  requires the PR `user` to be the real user (not the App). Cannot be
+  deferred without dropping the multi-user goal.
 - **GitHub webhooks (was P1.2).** *Purposes in our system:* (a) drive
   session state machine to a real terminal state on
   `pr.merged`/`pr.closed`/`check_run.failed`; (b) auto-resume a paused
@@ -374,8 +397,10 @@ deferred-item limitations from biting hard:
 - Per-session **turn count cap** (e.g. 50) in `SessionDurableObject` — kills
   runaway loops even with full auto-allow.
 - Per-session **token spend cap** if OpenCode exposes usage — same reason.
-- **`MAX_SESSION_RUNTIME_MS`** already exists; verify it's enforced
-  (`src/worker/session-do.ts`).
+- ~~**`MAX_SESSION_RUNTIME_MS`** already exists; verify it's enforced.~~
+  Verified: it was *never* enforced (§12.1) and was removed in this sync.
+  The launcher's 24 h hard deadline (`src/launcher/server.ts:75`) is the
+  only absolute upper bound today.
 - **Session-scoped runner token** is already short-lived (see README
   Security Model); confirm it's not logged.
 
@@ -383,8 +408,7 @@ deferred-item limitations from biting hard:
 
 Revisit deferred items when **any** of these is true:
 
-- A 2nd human user starts using the system → do **P1.1 user OAuth** and
-  **P3.1 author attribution** first.
+- ~~A 2nd human user starts using the system → do P1.1 user OAuth and P3.1 author attribution first.~~ Promoted into release 1 (see §14).
 - p95 time-to-first-token from real usage > 3 s → do **P0.3 warm pool**.
 - We want PRs to drive session state → do **P1.2 webhooks**.
 - We exceed 5 merged PRs/week and want to know merge-rate → do **P4.1
@@ -437,7 +461,7 @@ Consequence for the architecture:
 
 - **The Worker is not a sandbox driver.** It is the orchestrator: holds DO state, routes WebSockets, persists artifacts, runs the state machine.
 - **Provisioning happens host-side.** `scripts/launch-session.ts` (Bun) creates the sandbox, drops `/opt/hermes/start.json`, then polls the Worker for events. The runner inside the sandbox dials the Worker over WS using a public URL (ngrok locally; deployed Worker URL in prod).
-- **`E2BProvider` is no longer used by the Worker.** It still exists in `src/providers/e2b.ts` and is unit-tested (3 tests in `tests/e2b-provider.test.ts`), but the Worker DO falls back to `MockSandboxProvider` for tests and treats real sessions as "external runner mode" (already an existing branch).
+- **`E2BProvider` is no longer used by the Worker.** _At time of writing_ it still existed in `src/providers/e2b.ts` with 3 unit tests; it was subsequently deleted in §10.5 (replaced by `src/launcher/provision.ts` + `tests/provision.test.ts`). The Worker DO still falls back to `MockSandboxProvider` for tests and treats real sessions as "external runner mode".
 
 This is a permanent constraint, not a temporary workaround. Updates to ROADMAP P0.2 (cron rebuild), P0.3 (warm pool), and P0.4 (snapshot/resume) must all run **host-side** (or, eventually, on a small Bun sidecar service the Worker calls over HTTPS), not from inside the Worker.
 
@@ -523,7 +547,7 @@ session. Untagged sandboxes are never touched.
 
 ---
 
-## 11. M4 — Runner ↔ OpenCode SDK/SSE (proposed, not implemented)
+## 11. M4 — Runner ↔ OpenCode SDK/SSE (shipped — see §11.12 / §11.13)
 
 Today's runner shells out to `opencode run` once per turn and parses stdout
 chunks. That's the single largest gap between us and the Ramp Inspect
@@ -597,8 +621,9 @@ Z.AI GLM
    dominate small turns; §11.13 elaborates.)
 3. **Token usage visible**: at terminal, `artifacts.usage` (new field)
    carries non-zero input/output tokens for the session.
-4. **No regression**: 57 existing tests still pass; the PR-creation e2e
-   still produces a real GitHub PR; sidecar lifecycle rules unchanged.
+4. **No regression**: all existing tests still pass (87/87 at §12.15);
+   the PR-creation e2e still produces a real GitHub PR; sidecar lifecycle
+   rules unchanged.
 
 ### 11.5 Risks
 
@@ -627,9 +652,12 @@ Z.AI GLM
 
 ### 11.7 Not started
 
-Status: **proposed**. No code changes for M4 yet. Captured here so the
-runner↔agent boundary stops being a hidden gap and lands as one cohesive
-PR.
+> **Superseded by §11.12 / §11.13 (M4 shipped 2026-06-25, PR #6 + #7).**
+> Kept verbatim for history per §6.
+
+Status (at time of writing): **proposed**. No code changes for M4 yet.
+Captured here so the runner↔agent boundary stops being a hidden gap and
+lands as one cohesive PR.
 
 ---
 
@@ -1022,7 +1050,7 @@ evidence.
 
 ---
 
-## 12. M5 — long-pause resume + session lifecycle GC (proposed)
+## 12. M5 — long-pause resume + session lifecycle GC (shipped — see §12.15)
 
 ### 12.1 Why
 
@@ -1157,6 +1185,9 @@ Triggers, already on the platform.
   one user.
 
 ### 12.8 Status
+
+> **Superseded by §12.15 (M5 shipped 2026-06-25, PR #8).**
+> Kept verbatim for history per §6.
 
 Proposed. Not started.
 
@@ -1384,7 +1415,7 @@ Kept (correct regardless of M5):
 | State | Window |
 |---|---|
 | `running` (turn in progress) | 15 min runner silence → fail |
-| `review_ready` (idle) | sandbox auto-pauses after 15 min; follow-up after that returns 409 with `recoverable: false` (§12.13) until M5 ships |
+| `review_ready` (idle) | sandbox auto-pauses after 15 min; follow-up after that returns 202 with `recoverable: true` per §12.15 (was 409/`recoverable: false` between §12.13 and M5 ship) |
 | Real runner crash | detected within 15 min |
 | Runaway session not garbage-collected | killed at 24 h hard deadline |
 
@@ -1589,8 +1620,13 @@ enforcement.
 
 #### Status
 
-**Updated proposal. Not started.** The original §12.1–§12.10 stays as
-history; M5 implementation should follow this §12.14 design instead.
+> **Superseded by §12.15 — design from §12.14 was implemented end-to-end
+> (PR #8) with one extra change: heartbeat-stale detection (the WS does
+> not actually close on pause). See §12.15 for the as-shipped story.**
+
+**Updated proposal. Not started** _(at time of writing)_. The original
+§12.1–§12.10 stays as history; M5 implementation should follow this
+§12.14 design instead.
 
 ---
 
@@ -1875,3 +1911,280 @@ tools: ALLOW_ALL_TOOLS,
    (would have hit the `ask` edge case pre-fix). Verify:
    - `permission.asked`/`permission.updated` events: 0
    - Session completes without heartbeat-timeout failure
+
+---
+
+## 13. Doc sync — 2026-06-25
+
+Audit + sync pass against the current code. No new features; only making
+the roadmap match shipped reality. Per §6, history is preserved with
+"Superseded by §X.Y" banners; only stale **factual claims** were edited
+in place.
+
+### 13.1 What changed in this sync
+
+- **§2 Current architecture** — replaced the runtime-install narrative
+  (which described pre-M1 behaviour against the now-deleted
+  `src/providers/e2b.ts`) with the post-§10.5 launcher-driven shape.
+- **§3 Gap matrix** — header note clarifies post-§10.5 code paths.
+  Rows updated to current status:
+  - #1 Sandbox cold start: ❌ → ✅ (M1)
+  - #4 Snapshot/resume: ❌ → 🟡 (resume done §12.15; fork-snapshot deferred)
+  - #8 Prompt queue / mid-run stop: 🟡 (note: single-slot shipped §12.15)
+  - #22 Long-pause resume: 🟡 → ✅ (M5)
+  - New row #24: Runner ↔ agent IPC (SDK+SSE) — ✅ (M4)
+- **§4 Roadmap items P0.1, P0.4** — marked done with pointers to
+  §9.1 / §12.15. **P2.3** noted as partial (single-slot shipped, full
+  queue + `/stop` still ❌).
+- **§7 / §8.1** — references to dead `E2BProvider.create` /
+  `src/providers/e2b.ts:42-72` replaced with launcher paths. M1/M2/M3
+  checkboxes flipped to `[x]` with shipped-pointers.
+- **§8.2 / §8.4** — `MAX_SESSION_RUNTIME_MS` text updated to reflect
+  that the constant was declared dead by §12.1 and *actually deleted*
+  in this sync. Effective upper bound is the launcher's 24 h hard
+  deadline (`src/launcher/server.ts:75`).
+- **§9.2** — flagged the self-contradiction: at write-time the file
+  existed; §10.5 (later that day) deleted it.
+- **§11 title / §11.7 / §11.4** — section title now reads "(shipped —
+  see §11.12 / §11.13)". §11.7 has a "Superseded by §11.12" banner.
+  §11.4 criterion 4 drops the stale "57 tests" number.
+- **§12 title / §12.8 / §12.14 / §12.12** — title now "(shipped — see
+  §12.15)". §12.8 and §12.14 Status blocks have "Superseded by §12.15"
+  banners. §12.12's "until M5 ships" table cell updated to point at
+  §12.15.
+
+### 13.2 Code deletions in this sync
+
+| File | Why | Verified safe |
+|---|---|---|
+| `src/providers/github.ts` | Legacy worker-side GitHub App broker. Zero callers (`grep "providers/github"` → 0 hits). Launcher uses `src/launcher/github-token.ts`. | grep clean |
+| `MAX_SESSION_RUNTIME_MS` in `src/core/constants.ts`, `src/worker/env.d.ts`, `wrangler.toml` | Declared dead by §12.1; no code path reads it. §12.14 explicitly drops the concept. | grep clean across `src/ tests/ scripts/ infra/` |
+
+### 13.3 Doc fixes in this sync
+
+| File | Fix |
+|---|---|
+| `README.md` | Env table: drop `MAX_SESSION_RUNTIME_MS`; correct `HEARTBEAT_TIMEOUT_MS` default 60s → 15min. Project layout: drop `providers/github.ts`; add `runner/{supervisor-helpers,bridge,event-mapper}.ts`. Tech stack: D1 + R2 → DO Storage only. Quickstart: drop `bun run db:init` (no such script after §12.16). |
+| `docs/SETUP.md` | Drop `bun run db:init`. Test count `57 → 87`. |
+| `docs/DEPLOYMENT.md` | §5 guardrail row: replace `MAX_SESSION_RUNTIME_MS` with launcher 24 h deadline. Pre-release checklist: `57/57 → 87/87`. |
+| `infra/e2b/build-template.ts` | Header comment "At runtime the E2BProvider only:" → "At runtime the launcher only:". |
+
+### 13.4 Things deliberately NOT changed
+
+- §1 reference architecture (still accurate; Ramp blog hasn't moved).
+- §5 out-of-scope (intentional defers, still intentional).
+- §10.5 deletion list (historical; reads correctly as "these were
+  deleted *then*").
+- §11.8–§11.11 verification logs (historical evidence; values still
+  correct).
+- §12.1–§12.10 original M5 design (kept verbatim per §6; §12.14 +
+  §12.15 supersede via banner).
+
+### 13.5 Verification
+
+```bash
+grep -rn "MAX_SESSION_RUNTIME_MS\|env\.MAX_SESSION" src/ tests/ scripts/ infra/
+# → no matches (only historical doc references in docs/ROADMAP.md remain)
+
+grep -rn "providers/github\|providers/e2b\|E2BProvider" src/ tests/ scripts/ infra/
+# → no matches
+
+ls src/providers/
+# → mock.ts (only)
+```
+
+`bun test` + `bun run typecheck` not run in this sync session (no
+toolchain in env); validation is grep-only. Next code-touching PR
+should run both as part of normal CI.
+
+### 13.5b Rebase note (post-merge of PR #10 → §12.17)
+
+This branch was rebased onto `main` after PR #10 (§12.17 — permission
+auto-allow) landed. §12.17 is preserved verbatim; §13 immediately follows
+it. No semantic conflict: §12.17 closes a gap from a separate research
+audit, not in the §3 gap matrix table.
+
+---
+
+### 13.6 Sync round 2 (same day) — OAuth promotion + skills/
+
+After the first sync, deployment review surfaced that the multi-user
+Slack rollout in `docs/DEPLOYMENT.md` requires per-user GitHub OAuth
+(self-approve hole). OAuth was promoted from deferred to release
+blocker; this round of edits:
+
+- **`docs/DEPLOYMENT.md` §1, §5, §6, §7, §9, §10, §11** — OAuth flow
+  now baked in: `actor` block on session-mutating routes, OAuth
+  dance routes on the Worker, encryption key + GH OAuth app added
+  to the secrets table, "authoring rule" flipped from "deferred" to
+  "shipped under P1.1", pre-release checklist gains 4 OAuth items,
+  out-of-scope bullet for OAuth removed.
+- **`docs/DEPLOYMENT.md` §11** — all 4 open questions closed:
+  prod Slack channel = the one Hermes lives in; sentinel repo =
+  throwaway in team org named `hermes-sentinel`; launcher VM owner
+  of record explainer added as §11.1; release-quality metrics =
+  `merge_rate` AND `p95_time_to_first_token` co-equal (alert added
+  in §8).
+- **`docs/DEPLOYMENT.md` §12 (new)** — Hermes skills directory:
+  where it lives (this repo), loader contract, file layout per
+  skill, what stays in Hermes vs this repo, versioning.
+- **`docs/ROADMAP.md` §14 (new)** — locked P1.1 OAuth implementation
+  spec: threat closed, where the token lives (`UsersDurableObject`),
+  full file list with LoC estimates, route shapes, 9 acceptance
+  criteria, migration story, what's out of scope.
+- **`docs/ROADMAP.md` §4 P1.1, §8.3, §8.5** — OAuth no longer marked
+  as deferred; pointers to §14.
+- **`skills/` (new top-level dir)** — three skills checked in:
+  - `hermes-code-task/` — primary skill (POST /sessions); has
+    `skill.json`, `prompt.md`, `examples.md`
+  - `hermes-session-status/` — `/hermes status` slash command
+  - `hermes-abort-task/` — DELETE /sessions/:id
+  Each `skill.json` is JSON-Schema-validated (validated in this
+  session with `python3 -c 'import json; json.load(open(f))'`).
+- **`README.md`** — project layout updated to include `skills/`;
+  intro now links to `docs/DEPLOYMENT.md` + the locked §14 design.
+
+No code touched in this round. Next PR after this doc sync: implement
+§14 (P1.1 OAuth, ~1100 LoC + ~320 LoC tests).
+
+### 13.7 What to do before merging the OAuth PR
+
+A reminder that the design in §14 has external prerequisites the
+control-plane PR cannot create itself:
+
+- Create the GitHub OAuth app (Settings → Developer settings → OAuth
+  Apps → New). Note `Client ID` and `Client Secret`.
+- Set the callback URL to `https://<worker-url>/auth/github/callback`
+  for each env (dev / staging / prod — three separate OAuth apps,
+  not one).
+- `openssl rand -base64 32 > oauth-key.txt`; `wrangler secret put
+  OAUTH_TOKEN_ENCRYPTION_KEY` for each env, paste the value, back up
+  in Vault.
+- Decide the `HERMES_ADMINS` env list (comma-separated github logins
+  allowed to abort someone else's session — used by §12.6
+  `hermes-abort-task` skill authorization rule).
+
+---
+
+## 14. P1.1 — User GitHub OAuth (release-blocker, design locked 2026-06-25)
+
+Promoted from "deferred" to release blocker because `docs/DEPLOYMENT.md`
+ships a multi-user Slack rollout in release 1. Self-approve is the
+known governance hole; OAuth closes it. This section is the spec the
+implementation PR will hit.
+
+### 14.1 Threat the change closes
+
+Without OAuth, PR `user.login` is `hermes-bot[bot]`. Branch protection
+rule "PR must be approved by someone other than the author" cannot
+distinguish "user A's task" from "user B's task" — both ship as the
+bot. A malicious or careless user can approve their own bot-authored
+PR. With OAuth, `user.login` is the real human; the protection rule
+works as designed.
+
+### 14.2 Architecture decision: where the OAuth token lives
+
+| Option | Why we picked / didn't |
+|---|---|
+| D1 `users` table | ❌ D1 removed §12.16; reintroducing it for one table is overkill. |
+| Worker KV | ❌ Eventually-consistent; we want the OAuth check on `POST /sessions` to be linearizable. |
+| **DO Storage in a dedicated `UsersDurableObject`** | ✅ Same primitive we already trust. One DO instance for the whole deployment (keyed by a constant id `"users-v1"`), stores `Map<github_user_id, EncryptedToken>` in its storage. Hot enough that we don't care about cold start; small enough that it never gets close to the DO storage limit. |
+| Per-user DO (one DO instance per user) | Considered. Rejected: makes "list all users" / OAuth-key rotation a fan-out. Single users-DO is simpler. |
+
+Encryption: **AES-256-GCM**, key from Worker secret
+`OAUTH_TOKEN_ENCRYPTION_KEY` (32 bytes, base64). IV per token, stored
+inline. Web Crypto, no external deps.
+
+### 14.3 New code
+
+| File | Purpose | Approx LoC |
+|---|---|---|
+| `src/worker/users-do.ts` | `UsersDurableObject`: get/put/delete encrypted token, refresh on expired. Single instance keyed `"users-v1"`. | ~120 |
+| `src/worker/oauth.ts` | OAuth dance: `GET /auth/github/start` (redirect + signed state cookie), `GET /auth/github/callback` (code → token → encrypt → DO put), `GET /users/me/github` (current user lookup). | ~150 |
+| `src/worker/index.ts` | Wire the three new routes; add precondition middleware that rejects `POST /sessions` with 412 when `actor.github_user_id` has no token. | ~30 |
+| `src/worker/session-do.ts` | New event type `pr.ready` from runner (carries `branch`, `commits`, `title`, `body`); Worker-side `openPullRequest()` calls the GitHub REST `POST /pulls` with the user's OAuth token; emits `pr.created` on success. Remove the runner's PR-creation REST call. | ~80 (worker side) |
+| `src/runner/sandbox-runner.ts` | Drop the `POST /pulls` REST call after `git push`. Emit `pr.ready` over WS instead. | ~-30 (net) |
+| `src/launcher/provision.ts` | No change. Launcher still mints the App installation token for `git push`. | 0 |
+| `src/core/types.ts` | Add `pr.ready` event type; add `actor` field on `Session`. | ~20 |
+| `src/core/crypto.ts` | AES-256-GCM helpers (encrypt/decrypt with random IV). | ~50 |
+| `migrations/0001-add-actor.ts` (DO storage) | Backfill: existing sessions get `actor = { hermes_user_id: "legacy", github_user_id: null }`; new sessions require non-null `github_user_id`. | ~30 |
+| `scripts/rotate-oauth-key.ts` | Re-encrypt every token in the users-DO under a new key. Run during quarterly rotation (`§4.4`). | ~60 |
+| `tests/oauth.test.ts` | Routes, encryption round-trip, refresh-on-expired, precondition middleware. | ~200 |
+| `tests/pr-flow.test.ts` | End-to-end with mock GH API: bot pushes, user opens PR; assert `user.login = "real-user"`. | ~120 |
+| `docs/openapi.yaml` | OpenAPI doc generated from routes. Used by `skills/*/skill.json` `$ref`s. | ~300 |
+
+**Total: ~1100 LoC + 320 lines of tests.** Bigger than the §11.5
+estimate of ~400 because we also lock the OpenAPI doc (consumed by
+`skills/`) and add the migration + rotation script.
+
+### 14.4 Route shapes
+
+```
+GET  /auth/github/start?return_to=<url>     → 302 to github.com/login/oauth/authorize
+GET  /auth/github/callback?code=…&state=…   → 200 sets session cookie OR
+                                              302 to return_to if provided
+GET  /users/me/github                       → { ok: true, login, scopes } OR 401
+DELETE /users/me/github                     → 204, removes token (revoke)
+
+# precondition middleware on:
+POST /sessions          → 412 if actor.github_user_id unknown
+POST /sessions/:id/prompt  → 412 if actor.github_user_id unknown
+```
+
+### 14.5 Acceptance criteria (all must pass before release)
+
+1. **PR authored by real user.** Live test: user A's session opens a
+   PR; GitHub API `GET /repos/{o}/{r}/pulls/{n}` returns
+   `user.login: "user-a"`, not `hermes-bot[bot]`.
+2. **No-self-approve enforced.** User A creates a PR via Hermes,
+   tries to approve it themselves on GitHub → blocked by branch
+   protection. User B can approve. Verified manually once,
+   documented in the release ticket.
+3. **412 on missing token.** `POST /sessions` with an
+   `actor.github_user_id` not in users-DO returns
+   `412 { error: "user not authenticated", auth_url: "/auth/github/start?return_to=…" }`.
+   Integration test in `tests/oauth.test.ts`.
+4. **Token refresh.** Expired token (mock GH returns 401 on
+   `POST /pulls`) triggers refresh; second attempt succeeds. Tested
+   with mock GH in `tests/pr-flow.test.ts`.
+5. **Encryption round-trip.** Write token, read token, decrypt;
+   bytes match. Wrong key fails. Tested in
+   `tests/oauth.test.ts`.
+6. **Key rotation.** `scripts/rotate-oauth-key.ts` with new key →
+   every token re-encrypted; old key file deleted; new sessions
+   work; existing sessions work. Tested with 3 fake users.
+7. **Push still bot-authored.** Commit "author" and "committer" on
+   the pushed branch are the GitHub App (this is intentional and
+   matches Ramp Inspect's split: bot pushes, user opens the PR).
+   Verified by inspecting `git log --pretty=fuller` on the PR head.
+8. **Skills file kept in sync.** `skills/hermes-code-task/skill.json`
+   `$ref`s `docs/openapi.yaml`; CI fails if openapi.yaml changes
+   without a skill version bump.
+9. **No regression.** All existing tests pass; the existing M5
+   resume flow still works (resume path doesn't touch OAuth because
+   the token was already validated at session-create time).
+
+### 14.6 What this does NOT cover
+
+- **OAuth scopes finer than `repo`.** GitHub doesn't offer a "PR-only"
+  scope; `repo` is the minimum that allows opening a PR. Document
+  this in the auth-start screen so users know what they're granting.
+- **Per-repo allow-list at the OAuth layer.** Hermes' existing
+  allow-list (repo-routing) is the right place for this; the
+  control plane does not duplicate it.
+- **Token revocation on user offboarding.** Out of scope for release 1;
+  manual `DELETE /users/me/github` works. Auto-revoke on Slack
+  deactivation is a Hermes-side concern.
+
+### 14.7 Migration story for existing sessions
+
+Sessions created before P1.1 have no `actor.github_user_id`. The
+migration backfills with `null`; the precondition middleware allows
+null only on **resume** of an existing session (so M5 long-pause
+resume keeps working), never on `POST /sessions`. New sessions must
+have a real user.
+
+### 14.8 Status
+
+**Designed, not started.** Implementation is the next PR after the
+doc sync that lands this section. Owner: TBA in the release ticket.

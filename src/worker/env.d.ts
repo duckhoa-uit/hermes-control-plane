@@ -5,7 +5,6 @@ interface CloudflareEnv {
   E2B_API_KEY?: string;
   GITHUB_APP_ID?: string;
   GITHUB_PRIVATE_KEY?: string;
-  MAX_SESSION_RUNTIME_MS: number;
   HEARTBEAT_TIMEOUT_MS: number;
   // Hobby-tier concurrency guard (M3). See docs/ROADMAP.md section 8.
   MAX_CONCURRENT_SESSIONS: number;

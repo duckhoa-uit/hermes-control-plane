@@ -20,9 +20,8 @@ for what's next is in [`ROADMAP.md`](ROADMAP.md).
 
 ```bash
 bun install
-bun run test         # 57 tests should pass, no external creds needed
+bun run test         # 87 tests should pass, no external creds needed
 bun run typecheck    # tsc --noEmit clean
-bun run db:init      # local D1 schema
 ```
 
 `bun run dev` will boot the Cloudflare Worker on `localhost:8788`. Without
@@ -268,7 +267,7 @@ follow-up).
 
 | Step | Command | Pass criterion |
 |---|---|---|
-| Unit + integration tests | `bun run test` | 57/57 |
+| Unit + integration tests | `bun run test` | 87/87 |
 | Typecheck | `bun run typecheck` | no output |
 | Worker boots | `bun run dev` then `curl http://localhost:8788/health` | `{"status":"ok",...}` |
 | Template build | `bun run template:build` | `template id written to …` |
