@@ -6,7 +6,9 @@ changes, opens a real GitHub PR, then tears the sandbox down.
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the gap analysis against a
 production-grade background agent ([Ramp Inspect](https://builders.ramp.com/post/why-we-built-our-background-agent))
-and the prioritized improvement plan. See [`docs/SETUP.md`](docs/SETUP.md)
+and the prioritized improvement plan (including the locked P1.1 OAuth
+design in §14). See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the
+release plan + Hermes + Slack integration, and [`docs/SETUP.md`](docs/SETUP.md)
 for local-development setup.
 
 ## Architecture
@@ -102,18 +104,26 @@ src/
     sweeper.ts                orphan reaper (kills sandboxes tied to terminal/unknown sessions)
   runner/                     runs inside the sandbox
     supervisor.ts             baked into the template; waits for start.json, execs runner
-    sandbox-runner.ts         opencode driver, WS bridge, PR creation
+    supervisor-helpers.ts     env-prep / readiness helpers used by supervisor
+    sandbox-runner.ts         opencode SDK + SSE driver, WS bridge, PR creation
+    bridge.ts                 WS bridge: DO ↔ runner framing + reconnect loop
+    event-mapper.ts           OpenCode SSE → HermesEvent mapping (locked in §11.9)
   providers/
-    github.ts                 (legacy broker; launcher uses github-token.ts directly)
     mock.ts                   in-memory sandbox provider for unit tests
 infra/e2b/
   build-template.ts           builds the `hermes-runner` E2B template
 scripts/
   launch-session.ts           CLI: calls the sidecar by default, direct-mode fallback
 tests/                        vitest suites (state machine, event log, sweeper, provision, etc.)
+skills/                       Hermes-agent skill files (see docs/DEPLOYMENT.md §12)
+  README.md                   loader contract + how to add a skill
+  hermes-code-task/           run a coding task, open a PR (the primary skill)
+  hermes-session-status/      `/hermes status <id>` lookup
+  hermes-abort-task/          cancel + tear down a session
 docs/
   SETUP.md                    local-dev setup
-  ROADMAP.md                  gap analysis + sidecar architecture + verified results
+  ROADMAP.md                  gap analysis + verified results + locked P1.1 OAuth design (§14)
+  DEPLOYMENT.md               deployment plan, release pipeline, Hermes + Slack integration
 ```
 
 ## Running it locally
@@ -123,7 +133,6 @@ Full step-by-step in [`docs/SETUP.md`](docs/SETUP.md). The short version:
 
 ```bash
 bun install
-bun run db:init                              # local D1 schema
 
 # Build the E2B template once (or whenever runner/supervisor change)
 E2B_API_KEY=… bun run template:build
@@ -173,8 +182,7 @@ The Worker (`.dev.vars` or `wrangler secret put`):
 
 | Var | Purpose |
 |-----|---------|
-| `MAX_SESSION_RUNTIME_MS` | cap for a single session (default 45 min) |
-| `HEARTBEAT_TIMEOUT_MS` | runner stall threshold (default 60 s) |
+| `HEARTBEAT_TIMEOUT_MS` | runner stall threshold (default 15 min — see `src/core/constants.ts` for rationale) |
 | `MAX_CONCURRENT_SESSIONS` | Hobby-tier headroom (default 10; E2B Hobby cap is 20) |
 | `PUBLIC_BASE_URL` | optional; if unset, the Worker uses the request origin |
 
@@ -223,7 +231,7 @@ sweeper can map strays back to sessions. Untagged sandboxes are never touched.
 
 ## Tech stack
 
-- **Control plane**: Cloudflare Workers + Durable Objects + D1 + R2
+- **Control plane**: Cloudflare Workers + Durable Objects (DO Storage is the sole persistent store; D1/R2 were removed in §12.16 of ROADMAP)
 - **Sandbox lifecycle**: Bun sidecar, E2B Sandboxes (Hobby tier)
 - **Sandbox interior**: Node 22 + bun + OpenCode CLI + custom supervisor/runner
 - **Agent runtime**: OpenCode driving Z.AI (`zai-coding-plan/glm-5.2` default)

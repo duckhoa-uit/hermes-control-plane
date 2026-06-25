@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "name": "hermes-session-status",
+  "version": "1.0.0",
+  "description": "Look up the current state of a Hermes coding session.",
+  "trigger": {
+    "intents": ["session_status", "check_session"],
+    "slash_commands": ["/hermes status"],
+    "requires": ["session_id"]
+  },
+  "transport": {
+    "kind": "http",
+    "method": "GET",
+    "url_env": "HERMES_BASE_URL",
+    "path": "/sessions/{sessionId}"
+  },
+  "input": {
+    "type": "object",
+    "required": ["sessionId"],
+    "properties": {
+      "sessionId": { "type": "string" }
+    }
+  },
+  "output": {
+    "type": "object",
+    "properties": {
+      "session": { "type": "object", "description": "see docs/openapi.yaml#/components/schemas/Session" },
+      "events": { "type": "array" },
+      "artifacts": { "type": "object" }
+    }
+  },
+  "error_contract": {
+    "404": {
+      "meaning": "Unknown session id.",
+      "handler_directive": "report_unknown_session"
+    }
+  },
+  "render_directive": {
+    "summary_fields": ["session.status", "artifacts.prUrl", "events.length"],
+    "tail_events": 5
+  }
+}
