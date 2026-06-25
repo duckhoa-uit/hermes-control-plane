@@ -27,3 +27,6 @@ HEARTBEAT_TIMEOUT_MS = 900000  # 15 min — see comment on the constant in src/c
 # Hobby tier cap is 20 concurrent sandboxes. Leave headroom for retries and
 # template builds. See docs/ROADMAP.md section 8.
 MAX_CONCURRENT_SESSIONS = 10
+# M5: launcher sidecar URL — DO posts /resume here to thaw paused sandboxes.
+# Defaults to localhost; override per-environment.
+HERMES_LAUNCHER_URL = "http://localhost:8789"

@@ -14,6 +14,10 @@ interface CloudflareEnv {
   // Public base URL the sandbox runner uses to dial back over WS.
   // Locally: an ngrok URL pointing at wrangler dev. Production: deployed Worker URL.
   PUBLIC_BASE_URL?: string;
+  // M5: launcher sidecar URL (so DO can POST /resume to thaw a paused
+  // sandbox). Optional — when unset, DO returns 409 with recoverable:false
+  // on follow-up to a disconnected runner (pre-M5 behaviour).
+  HERMES_LAUNCHER_URL?: string;
   // Zai (z.ai) LLM provider - OpenAI-compatible
   ZAI_API_KEY?: string;
   ZAI_MODEL?: string;

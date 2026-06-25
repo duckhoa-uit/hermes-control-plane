@@ -54,6 +54,10 @@ export interface Session {
   runnerConnected: boolean;
   lastHeartbeat?: number;
   errorMessage?: string;
+  // M5: single-slot follow-up prompt queue. POST /prompt while runner
+  // disconnected stores the prompt here + asks launcher to resume; on
+  // runner.connected we flush it as an agent.prompt command.
+  pendingPrompt?: string;
 }
 
 // ---- Events (append-only log) ----

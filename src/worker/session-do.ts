@@ -22,7 +22,7 @@ import type {
 import { EventLog } from "../core/event-log";
 import { canTransition, isTerminal } from "../core/state-machine";
 import { generateCommandId, generateRunnerToken, generateRequestId } from "../core/id";
-import { HEARTBEAT_INTERVAL_MS, HEARTBEAT_TIMEOUT_MS, WS_TAGS } from "../core/constants";
+import { HEARTBEAT_INTERVAL_MS, HEARTBEAT_TIMEOUT_MS, PAUSED_HEARTBEAT_THRESHOLD_MS, WS_TAGS } from "../core/constants";
 import { MockSandboxProvider } from "../providers/mock";
 
 interface WSConnection {
@@ -283,6 +283,25 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
       this.sendInitialPrompt();
     }
 
+    // M5: if a follow-up prompt was queued while the runner was
+    // disconnected (sandbox paused), drain it now.
+    if (this.session.pendingPrompt) {
+      const queued = this.session.pendingPrompt;
+      this.session.pendingPrompt = undefined;
+      void this.persist();
+      // If we're sitting at review_ready, transition back to running so
+      // the second runner.complete doesn't re-fail the state machine.
+      if (this.session.status === "review_ready") {
+        this.transition("running");
+      }
+      this.sendRunnerCommand("agent.prompt", {
+        taskDescription: queued,
+        context: queued,
+        model: this.profile?.model ?? "",
+        allowedTools: this.profile?.allowedTools ?? [],
+      });
+    }
+
     ws.addEventListener("message", (e) => this.handleRunnerMessage(conn, e));
     ws.addEventListener("close", () => {
       this.connections.delete(conn);
@@ -526,11 +545,14 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     // for the next prompt. E2B may pause the sandbox after 15 min idle (M2
     // auto-pause), which silences heartbeats — but the session is fine and
     // a follow-up prompt should still work. Don't flag this as failed; the
-    // launcher's 35-min hard deadline is still the absolute cap.
+    // launcher's hard deadline (24h) is the absolute cap.
     if (this.session.status === "review_ready") return;
 
     const now = Date.now();
     const lastBeat = this.session.lastHeartbeat ?? 0;
+    // M5: runner disconnected (sandbox likely paused) is no longer the
+    // same as "runner crashed". POST /prompt will trigger /resume; until
+    // then, stay quiet rather than transition to failed.
     if (!this.session.runnerConnected || lastBeat === 0) return;
 
     if (now - lastBeat > HEARTBEAT_TIMEOUT_MS) {
@@ -646,42 +668,96 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     }
 
     if (path === "/prompt" && request.method === "POST") {
-      // Follow-up prompt requires a still-connected runner. The follow-up
-      // window today is bounded by §12.12: ~15 min while `running`, ~55
-      // min while `review_ready`, then the sandbox is killed and we cannot
-      // bring it back without §12 M5 (long-pause resume). Surface that
-      // clearly so the caller knows whether to retry, abort, or start a
-      // fresh session.
       const status = this.session?.status;
-      if (!this.runnerConn) {
-        // Session is in a terminal state — sandbox is gone, no recovery.
-        if (status && isTerminal(status)) {
-          return new Response(
-            JSON.stringify({
-              error: "Session ended",
-              status,
-              reason:
-                "The session reached a terminal state and its sandbox has been torn down. " +
-                "Start a new session to continue the work; the previous diff and PR (if any) " +
-                "are preserved in the session record.",
-              recoverable: false,
-            }),
-            { status: 410, headers: corsHeaders },
-          );
-        }
-        // Session is non-terminal but the runner WS is gone (typically:
-        // sandbox got paused/killed by E2B between turns; see §12.12).
+      // Session is in a terminal state — sandbox is gone, no recovery.
+      if (status && isTerminal(status)) {
         return new Response(
           JSON.stringify({
-            error: "Runner not connected",
+            error: "Session ended",
             status,
             reason:
-              "The follow-up window has elapsed. The sandbox is no longer reachable; " +
-              "long-pause resume is not implemented yet (tracked under §12 M5). " +
-              "Start a new session to continue.",
+              "The session reached a terminal state and its sandbox has been torn down. " +
+              "Start a new session to continue the work; the previous diff and PR (if any) " +
+              "are preserved in the session record.",
             recoverable: false,
           }),
-          { status: 409, headers: corsHeaders },
+          { status: 410, headers: corsHeaders },
+        );
+      }
+      // M5: detect "sandbox paused" by either explicit WS close OR stale
+      // heartbeat. E2B pause freezes the TCP socket without sending a FIN,
+      // so a paused sandbox can look like runnerConn != null but heartbeat
+      // is stale (verified by the §12.14 probe). Either signal routes us
+      // through the queue+resume path.
+      const now = Date.now();
+      const lastBeat = this.session?.lastHeartbeat ?? 0;
+      const heartbeatStale = lastBeat > 0 && (now - lastBeat) > PAUSED_HEARTBEAT_THRESHOLD_MS;
+      if (!this.runnerConn || heartbeatStale) {
+        const launcherUrl = this.env.HERMES_LAUNCHER_URL;
+        // Clear the dead WS reference so subsequent runner-state checks
+        // (heartbeat watchdog, future sends) don't see a phantom alive
+        // runner. The actual close event will fire later once the sandbox
+        // resumes (M5 §12.14 probe finding), at which point handleClose
+        // is a no-op because runnerConn is already null.
+        if (this.runnerConn && heartbeatStale) {
+          try { this.runnerConn.ws.close(4000, "paused"); } catch {}
+          this.connections.delete(this.runnerConn);
+          this.runnerConn = null;
+          if (this.session) this.session.runnerConnected = false;
+          this.appendEvent("runner.disconnected", "system", { reason: "heartbeat stale, sandbox likely paused" });
+        }
+        if (!launcherUrl) {
+          // Pre-M5 deployment: no launcher URL configured. Fall back to
+          // the §12.13 fail-fast 409.
+          return new Response(
+            JSON.stringify({
+              error: "Runner not connected",
+              status,
+              reason:
+                "Resume is not configured (HERMES_LAUNCHER_URL unset). Start a new session.",
+              recoverable: false,
+            }),
+            { status: 409, headers: corsHeaders },
+          );
+        }
+        const { text } = await request.json<{ text: string }>();
+        if (this.session) {
+          this.session.pendingPrompt = text;
+          await this.persist();
+        }
+        this.appendEvent("agent.started", "user", { taskDescription: text, queued: true });
+        // Fire-and-forget the resume; runner.connected handler drains the
+        // queue. We do NOT await — that would block the caller for the full
+        // ~1s Sandbox.connect roundtrip + the runner's reconnect budget.
+        const sessionId = this.session?.id;
+        if (sessionId) {
+          this.ctx.waitUntil(
+            (async () => {
+              try {
+                const r = await fetch(
+                  `${launcherUrl}/sessions/${sessionId}/resume`,
+                  { method: "POST", headers: { "content-type": "application/json" } },
+                );
+                if (!r.ok) {
+                  const body = await r.text().catch(() => "<no body>");
+                  console.error(`[DO] launcher /resume failed ${r.status}: ${body}`);
+                }
+              } catch (err) {
+                console.error(`[DO] launcher /resume error: ${(err as Error).message}`);
+              }
+            })(),
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            queued: true,
+            status,
+            reason:
+              "Sandbox is paused; resume initiated. The follow-up prompt will be delivered as soon as the runner reconnects (usually < 5 s).",
+            recoverable: true,
+          }),
+          { status: 202, headers: corsHeaders },
         );
       }
       const { text } = await request.json<{ text: string }>();

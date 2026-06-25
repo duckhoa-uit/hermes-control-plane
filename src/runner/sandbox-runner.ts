@@ -41,9 +41,79 @@ const wsBaseUrl = CONTROL_WS
   .replace(/\/$/, "");
 const wsUrl = wsBaseUrl + "/sessions/" + SESSION_ID + "/runner?token=" + RUNNER_TOKEN;
 
-console.log("[runner] Connecting to:", wsUrl);
-const ws = new WebSocket(wsUrl);
+console.log("[runner] Initial connect to:", wsUrl);
+
+// WebSocket manager — owns reconnect loop. Spec (M5 §12.14):
+//   - exp backoff 500ms, 1s, 2s, 4s, 8s, cap 15s, total budget 60s
+//   - re-read /opt/hermes/start.json on each retry so a rotated runner
+//     token (M5 follow-up) is picked up
+//   - if budget exhausts, exit(1) so the supervisor babysit chain tears
+//     the sandbox down cleanly
+import { readFileSync as fsReadFileSync, existsSync as fsExistsSync } from "fs";
+const RECONNECT_BACKOFFS_MS = [500, 1000, 2000, 4000, 8000, 15000];
+const RECONNECT_TOTAL_BUDGET_MS = 60000;
+let ws: WebSocket = new WebSocket(wsUrl);
 let heartbeat: ReturnType<typeof setInterval> | null = null;
+let reconnecting = false;
+let shuttingDown = false;
+
+function refreshWsUrl(): string {
+  // Re-read start.json so a rotated runner token (post-resume) is used.
+  try {
+    if (fsExistsSync("/opt/hermes/start.json")) {
+      const cfg = JSON.parse(fsReadFileSync("/opt/hermes/start.json", "utf-8")) as Record<string, string>;
+      const tok = cfg.HERMES_RUNNER_TOKEN;
+      const cws = cfg.HERMES_CONTROL_WS;
+      if (tok && cws) {
+        const base = cws.replace(/^http:\/\//, "ws://").replace(/^https:\/\//, "wss://").replace(/\/$/, "");
+        return `${base}/sessions/${SESSION_ID}/runner?token=${tok}`;
+      }
+    }
+  } catch {}
+  return wsUrl; // fall back to initial
+}
+
+async function reconnect(): Promise<void> {
+  if (reconnecting || shuttingDown) return;
+  reconnecting = true;
+  const startedAt = Date.now();
+  let attempt = 0;
+  while (Date.now() - startedAt < RECONNECT_TOTAL_BUDGET_MS) {
+    const delay = RECONNECT_BACKOFFS_MS[Math.min(attempt, RECONNECT_BACKOFFS_MS.length - 1)];
+    await new Promise((r) => setTimeout(r, delay));
+    attempt++;
+    const url = refreshWsUrl();
+    console.log(`[runner] reconnect attempt ${attempt} -> ${url.slice(0, 80)}…`);
+    try {
+      const next = new WebSocket(url);
+      const ok = await new Promise<boolean>((resolve) => {
+        const onOpen = () => { cleanup(); resolve(true); };
+        const onErr = () => { cleanup(); resolve(false); };
+        const onClose = () => { cleanup(); resolve(false); };
+        const cleanup = () => {
+          next.off("open", onOpen);
+          next.off("error", onErr);
+          next.off("close", onClose);
+        };
+        next.on("open", onOpen);
+        next.on("error", onErr);
+        next.on("close", onClose);
+      });
+      if (ok) {
+        console.log(`[runner] reconnect succeeded on attempt ${attempt} (${Date.now() - startedAt}ms)`);
+        ws = next;
+        attachHandlers();
+        reconnecting = false;
+        return;
+      }
+    } catch (err) {
+      console.log(`[runner] reconnect attempt ${attempt} threw: ${(err as Error).message}`);
+    }
+  }
+  console.error(`[runner] reconnect budget exhausted after ${attempt} attempts; exiting`);
+  reconnecting = false;
+  process.exit(1);
+}
 
 const opencode = createOpencodeClient({ baseUrl: OPENCODE_BASE_URL });
 let opencodeSessionId: string | null = null;
@@ -283,57 +353,69 @@ async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
   }
 }
 
-ws.on("open", () => {
-  console.log("[runner] Connected to control plane");
-  heartbeat = setInterval(() => {
-    if (ws.readyState === 1) {
-      ws.send(JSON.stringify({ type: "runner.heartbeat", sessionId: SESSION_ID }));
-    }
-  }, 10000);
-});
-
-ws.on("message", async (data: Buffer) => {
-  const raw = data.toString();
-  let msg: { type: string; command?: { commandId: string; type: string; payload: Record<string, unknown> } };
-  try { msg = JSON.parse(raw); } catch { return; }
-
-  if (msg.type !== "command" || !msg.command) return;
-  const cmd = msg.command;
-  console.log("[runner] Command:", cmd.type);
-
-  ws.send(JSON.stringify({
-    type: "runner.command_ack",
-    sessionId: SESSION_ID,
-    payload: { commandId: cmd.commandId },
-  }));
-
-  if (cmd.type === "agent.prompt") {
-    const task = cmd.payload.taskDescription as string;
-    const context = (cmd.payload.context as string) || "";
-    await runPromptTurn(task, context);
-    return;
-  }
-
-  if (cmd.type === "pr.create") {
-    await runPrCreation(cmd.payload);
-    return;
-  }
-
-  if (cmd.type === "session.shutdown") {
+function attachHandlers(): void {
+  ws.on("open", () => {
+    console.log("[runner] Connected to control plane");
     if (heartbeat) clearInterval(heartbeat);
-    if (sseAbort) sseAbort.abort();
-    ws.close(1000, "shutdown");
-    process.exit(0);
-  }
-});
+    heartbeat = setInterval(() => {
+      if (ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: "runner.heartbeat", sessionId: SESSION_ID }));
+      }
+    }, 10000);
+  });
 
-ws.on("close", (code: number) => {
-  console.log("[runner] WS closed:", code);
-  if (heartbeat) clearInterval(heartbeat);
-  if (sseAbort) sseAbort.abort();
-});
+  ws.on("message", async (data: Buffer) => {
+    const raw = data.toString();
+    let msg: { type: string; command?: { commandId: string; type: string; payload: Record<string, unknown> } };
+    try { msg = JSON.parse(raw); } catch { return; }
 
-ws.on("error", (err: Error) => {
-  console.error("[runner] WS error:", err.message);
-});
+    if (msg.type !== "command" || !msg.command) return;
+    const cmd = msg.command;
+    console.log("[runner] Command:", cmd.type);
+
+    ws.send(JSON.stringify({
+      type: "runner.command_ack",
+      sessionId: SESSION_ID,
+      payload: { commandId: cmd.commandId },
+    }));
+
+    if (cmd.type === "agent.prompt") {
+      const task = cmd.payload.taskDescription as string;
+      const context = (cmd.payload.context as string) || "";
+      await runPromptTurn(task, context);
+      return;
+    }
+
+    if (cmd.type === "pr.create") {
+      await runPrCreation(cmd.payload);
+      return;
+    }
+
+    if (cmd.type === "session.shutdown") {
+      shuttingDown = true;
+      if (heartbeat) clearInterval(heartbeat);
+      if (sseAbort) sseAbort.abort();
+      ws.close(1000, "shutdown");
+      process.exit(0);
+    }
+  });
+
+  ws.on("close", (code: number) => {
+    console.log("[runner] WS closed:", code);
+    if (heartbeat) clearInterval(heartbeat);
+    if (shuttingDown) return;
+    // M5: outbound WS dies on sandbox pause/resume (verified §12.14
+    // probe — close fires with code 1006). Try to reconnect; if budget
+    // exhausts, process.exit(1) so the supervisor babysit chain tears
+    // down opencode serve.
+    void reconnect();
+  });
+
+  ws.on("error", (err: Error) => {
+    console.error("[runner] WS error:", err.message);
+    // close will fire after this; reconnect happens there.
+  });
+}
+
+attachHandlers();
 

@@ -9,12 +9,14 @@
 //   POST /sessions           { taskDescription, repoUrl, projectId?, baseBranch? }
 //   GET  /sessions/:id        passthrough to Worker
 //   DELETE /sessions/:id      kill sandbox + abort DO session
+//   POST /sessions/:id/resume  M5: Sandbox.connect() on a paused sandbox
 //
 // Run:
 //   E2B_API_KEY=... ZAI_API_KEY=... GITHUB_APP_ID=... GITHUB_PRIVATE_KEY_FILE=... \
 //   HERMES_BASE_URL=http://localhost:8788 HERMES_PUBLIC_URL=https://<ngrok>.ngrok-free.app \
 //   bun run src/launcher/server.ts
 
+import { Sandbox } from "e2b";
 import { provisionSession, killSandbox, type ProvisionResult } from "./provision";
 import { sweepOrphans } from "./sweeper";
 
@@ -237,6 +239,77 @@ async function handleDelete(sessionId: string): Promise<Response> {
   return Response.json({ ok: true });
 }
 
+/** Find the (active or paused) E2B sandbox tagged with this session id.
+ *  Returns the sandbox id, or null if no sandbox exists for the session
+ *  any more (E2B never auto-kills, so this only happens after an explicit
+ *  kill). M5: launcher /resume uses this to locate the sandbox without
+ *  relying on activeSessions, so resume works across launcher restarts. */
+async function findSandboxForSession(sessionId: string): Promise<string | null> {
+  // Prefer in-memory tracking when available (fast path, no E2B round-trip).
+  const tracked = activeSessions.get(sessionId);
+  if (tracked) return tracked.sandboxId;
+  try {
+    const paginator = Sandbox.list({
+      apiKey: E2B_API_KEY!,
+      query: { state: ["running", "paused"] },
+    });
+    while (paginator.hasNext) {
+      const items = await paginator.nextItems();
+      for (const sbx of items) {
+        const meta = (sbx as unknown as { metadata?: Record<string, string> }).metadata ?? {};
+        if (meta.hermes_session_id === sessionId && sbx.sandboxId) {
+          return sbx.sandboxId;
+        }
+      }
+    }
+  } catch {
+    // fall through
+  }
+  return null;
+}
+
+/** POST /sessions/:id/resume — M5: thaw the paused sandbox so the runner
+ *  reconnects to the DO and a queued follow-up prompt can be delivered. */
+async function handleResume(sessionId: string): Promise<Response> {
+  const sandboxId = await findSandboxForSession(sessionId);
+  if (!sandboxId) {
+    return Response.json(
+      {
+        error: "Sandbox not found",
+        reason: "No live or paused sandbox is tagged with this session id. The session may have been explicitly killed or its sandbox sweeped. Start a new session.",
+        recoverable: false,
+      },
+      { status: 410 },
+    );
+  }
+  const t0 = Date.now();
+  try {
+    await Sandbox.connect(sandboxId, { apiKey: E2B_API_KEY! });
+    log(`session ${sessionId.slice(0, 8)} resumed sandbox=${sandboxId} (${Date.now() - t0}ms)`);
+    return Response.json({ ok: true, sandboxId, resumedInMs: Date.now() - t0 });
+  } catch (err) {
+    const msg = (err as Error).message;
+    // E2B returns 404 when the sandbox has been killed despite paused-is-
+    // forever guarantee. Treat as terminal.
+    if (msg.includes("404")) {
+      return Response.json(
+        {
+          error: "Sandbox no longer exists",
+          reason: "The sandbox was killed (likely by an explicit DELETE). Start a new session.",
+          recoverable: false,
+        },
+        { status: 410 },
+      );
+    }
+    log(`session ${sessionId.slice(0, 8)} resume failed: ${msg}`);
+    return Response.json(
+      { error: "Resume failed", reason: msg, recoverable: true },
+      { status: 502 },
+    );
+  }
+}
+
+
 async function handleGet(sessionId: string): Promise<Response> {
   const r = await fetch(`${HERMES_BASE_URL}/sessions/${sessionId}`);
   return new Response(await r.text(), {
@@ -291,6 +364,8 @@ async function main(): Promise<void> {
           if (req.method === "DELETE") return await handleDelete(id);
           if (req.method === "GET") return await handleGet(id);
         }
+        const rm = url.pathname.match(/^\/sessions\/([^/]+)\/resume$/);
+        if (rm && req.method === "POST") return await handleResume(rm[1]);
         return Response.json({ error: "not found" }, { status: 404 });
       } catch (err) {
         log(`fetch error: ${(err as Error).message}`);

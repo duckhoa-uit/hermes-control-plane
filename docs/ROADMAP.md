@@ -1590,3 +1590,114 @@ enforcement.
 
 **Updated proposal. Not started.** The original §12.1–§12.10 stays as
 history; M5 implementation should follow this §12.14 design instead.
+
+---
+
+### 12.15 M5 shipped — live e2e verification (2026-06-25)
+
+Implemented §12.14's revised design + uncovered one architectural
+issue during e2e that needed fixing on the fly. **Status: working
+end-to-end** with PR #8 as proof:
+
+- <https://github.com/duckhoa-uit/hermes-control-plane/pull/8>
+  (open, mergeable, +3/-0, 2 files — README + docs/SETUP.md edits
+  from two turns separated by an explicit `sandbox.pause()` + 60 s wait)
+
+#### Architectural finding from first e2e attempt
+
+After the §12.14 implementation, the first e2e run on a paused sandbox
+**did not** take the resume path. Symptom: `POST /sessions/:id/prompt`
+returned 200 (the "runner alive" branch) instead of 202 with
+`recoverable: true`. Cause:
+
+> E2B's pause does NOT send a TCP FIN. From the DO's perspective the
+> `runnerConn` reference is still non-null and `readyState === OPEN`
+> — only the heartbeat stops.
+
+So `!this.runnerConn` is **not** a reliable "is the sandbox paused?"
+signal. The DO can't tell a frozen-but-open WS from a healthy WS by
+inspecting the socket state.
+
+#### Fix
+
+Added a second signal: **stale heartbeat detection** keyed off
+`PAUSED_HEARTBEAT_THRESHOLD_MS = 45_000` (4× the runner's 10 s
+heartbeat interval). The DO `/prompt` handler now takes the queue+
+resume path when EITHER:
+- `runnerConn` is null (true close already happened), OR
+- `lastHeartbeat` is older than 45 s
+
+When the second branch fires, the DO also proactively closes the
+phantom WS, deletes the connection, sets `runnerConnected = false`,
+and emits a `runner.disconnected` event so subsequent operations see
+a consistent state.
+
+New constant in `src/core/constants.ts`:
+```ts
+export const PAUSED_HEARTBEAT_THRESHOLD_MS = 45_000;
+```
+
+#### Verified flow in PR #8
+
+| Event | Source | Notes |
+|---|---|---|
+| Provision + turn 1 | `POST /sessions` | 22 s wall to `review_ready`, README edited |
+| Pause | Manual `Sandbox.pause()` | 518 ms |
+| Wait | 60 s | Heartbeat goes stale (≥45 s threshold crossed) |
+| `POST /prompt` (follow-up) | client | 202 with `queued:true, recoverable:true` |
+| DO closes phantom WS | DO | `runner.disconnected` (`reason: heartbeat stale, sandbox likely paused`) |
+| DO calls launcher `/resume` | DO | `ctx.waitUntil` fire-and-forget |
+| Launcher `Sandbox.connect()` | launcher log: `resumed sandbox=… (363ms)` | 363 ms |
+| Runner WS dies on thaw | runner | `close` code 1006 (verified §12.14.B) |
+| Runner reconnect loop | runner | `attempt 1 -> ws://…` after 500 ms backoff |
+| Runner re-dial succeeds | worker log: `101 Switching Protocols` | |
+| DO accepts rebind, flushes `pendingPrompt` | DO | second `runner.connected` event |
+| Turn 2 runs | runner | docs/SETUP.md edited |
+| Both turns → `create-pr` | client | PR #8 with cumulative diff |
+
+#### Final event counts on the session
+
+```
+agent.done                     2
+agent.message.complete         4
+agent.started                  4  (2 system-initiated + 2 user via /prompt)
+agent.usage                    2  (cumulative tokens roll up across turns)
+file.changed                   2  (README, docs/SETUP.md)
+git.diff.ready                 4
+runner.connected               2  (initial + reconnect after resume)
+runner.disconnected            1  (heartbeat-stale detection M5)
+sandbox.provisioning           1
+session.created                1
+session.status_changed         7
+tool.completed                 4
+tool.started                   4
+```
+
+#### Tests added
+
+`tests/m5-resume-contract.test.ts` — 8 cases (pendingPrompt slot,
+state machine drain, /prompt response shapes including 202 vs 409 vs
+410). All green; 87/87 total tests passing; `tsc --noEmit` clean.
+
+#### What still applies from §12.14
+
+All of it. The §12.14 scope was correct; em added the stale-heartbeat
+detection as a sixth code change beyond what §12.14 explicitly listed.
+The expanded total: ~395 LoC + tests + docs (vs the §12.14 estimate
+of ~355 LoC) — within striking distance.
+
+#### Cleanup status (against §12.4 strategy)
+
+- E2B sandbox: launcher kills on session terminal (✅ unchanged) OR 24 h
+  hard deadline (✅, from baseline cleanup)
+- DO instance: Cloudflare hibernates between events (✅ platform)
+- D1 / R2 / DO storage retention cron: **not yet implemented** — still
+  on the §12 follow-up list per §12.5 criterion 4
+
+#### Status
+
+**Shipped.** §12.5 success criteria 1, 3, 4 verified live (1-hour-idle
+multi-turn flow, multi-cycle implicit via the queue mechanism, reconnect
+loop tested). Criterion 2 (24-hour-idle) and criterion 5 (retention
+cron) deferred; the platform guarantees behind #2 (paused indefinite
++ free) make it low-risk; #5 is its own cron PR.
