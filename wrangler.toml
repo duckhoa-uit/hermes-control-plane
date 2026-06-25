@@ -9,7 +9,9 @@ class_name = "SessionDurableObject"
 
 [[migrations]]
 tag = "v1"
-new_classes = ["SessionDurableObject"]
+# Free-plan Workers require SQLite-backed Durable Objects.
+# (Paid plans accept new_classes too; SQLite works on both.)
+new_sqlite_classes = ["SessionDurableObject"]
 
 [vars]
 E2B_TEMPLATE = "hermes-runner"
