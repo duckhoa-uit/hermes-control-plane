@@ -259,3 +259,4 @@ bun run deploy
 | Real Zai LLM (agent runs) | session with env | Zai key |
 | Real GitHub PR | approve PR | GitHub App |
 | Full end-to-end | all above | All keys |
+M4-turn2
