@@ -1,0 +1,108 @@
+// provisionSession must:
+//   - call Sandbox.create with auto-pause+autoResume AND metadata.hermes_session_id
+//   - clone repo + drop /opt/hermes/start.json
+//   - skip GH token mint when no creds; runner will surface the error
+//   - return a kill() that's idempotent
+
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { provisionSession } from "../src/launcher/provision";
+
+const filesWrite = vi.fn(async (_p: string, _c: string) => {});
+const cmdRun = vi.fn(async (_cmd: string, _opts?: unknown) => ({
+  exitCode: 0,
+  stdout: "Cloning into ...\n__exit=0\n",
+  stderr: "",
+}));
+const killMock = vi.fn(async () => {});
+const createMock = vi.fn(async (_template: string, _opts: unknown) => ({
+  sandboxId: "sbx_provision_1",
+  getHost: (_p: number) => `host-${_p}`,
+  files: { write: filesWrite },
+  commands: { run: cmdRun },
+  kill: killMock,
+}));
+
+vi.mock("e2b", () => ({
+  Sandbox: {
+    create: (...args: unknown[]) => createMock(...(args as [string, unknown])),
+    connect: async (_id: string, _opts: unknown) => ({ kill: killMock }),
+  },
+}));
+
+describe("provisionSession", () => {
+  beforeEach(() => {
+    filesWrite.mockClear();
+    cmdRun.mockClear();
+    killMock.mockClear();
+    createMock.mockClear();
+  });
+
+  it("tags the sandbox with hermes_session_id and uses auto-pause", async () => {
+    const p = await provisionSession({
+      sessionId: "sess_abc",
+      runnerToken: "tok",
+      controlWsUrl: "wss://x",
+      repoUrl: "https://github.com/test/repo",
+      e2bApiKey: "key",
+      e2bTemplate: "hermes-runner",
+    });
+    expect(p.sandboxId).toBe("sbx_provision_1");
+    const [, opts] = createMock.mock.calls[0] as [string, Record<string, unknown>];
+    const meta = opts.metadata as Record<string, string>;
+    expect(meta.hermes_session_id).toBe("sess_abc");
+    const lifecycle = opts.lifecycle as Record<string, unknown>;
+    expect(lifecycle.onTimeout).toBe("pause");
+    expect(lifecycle.autoResume).toBe(true);
+  });
+
+  it("writes /opt/hermes/start.json with required keys", async () => {
+    await provisionSession({
+      sessionId: "sess_keys",
+      runnerToken: "tok2",
+      controlWsUrl: "wss://y",
+      repoUrl: "https://github.com/test/repo",
+      e2bApiKey: "key",
+      e2bTemplate: "hermes-runner",
+    });
+    expect(filesWrite).toHaveBeenCalledTimes(1);
+    const [path, content] = filesWrite.mock.calls[0];
+    expect(path).toBe("/opt/hermes/start.json");
+    const cfg = JSON.parse(content as string);
+    expect(cfg.HERMES_SESSION_ID).toBe("sess_keys");
+    expect(cfg.HERMES_RUNNER_TOKEN).toBe("tok2");
+    expect(cfg.HERMES_CONTROL_WS).toBe("wss://y");
+  });
+
+  it("returns an idempotent kill()", async () => {
+    const p = await provisionSession({
+      sessionId: "sess_kill",
+      runnerToken: "tok",
+      controlWsUrl: "wss://x",
+      repoUrl: "https://github.com/test/repo",
+      e2bApiKey: "key",
+      e2bTemplate: "hermes-runner",
+    });
+    await p.kill();
+    await p.kill();
+    expect(killMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("kills the sandbox and throws if clone fails", async () => {
+    cmdRun.mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: "fatal: repo not found\n__exit=128\n",
+      stderr: "",
+    });
+    await expect(
+      provisionSession({
+        sessionId: "sess_bad",
+        runnerToken: "tok",
+        controlWsUrl: "wss://x",
+        repoUrl: "https://github.com/test/nope",
+        e2bApiKey: "key",
+        e2bTemplate: "hermes-runner",
+      }),
+    ).rejects.toThrow(/git clone failed \(exit 128\)/);
+    expect(killMock).toHaveBeenCalledTimes(1);
+  });
+});
