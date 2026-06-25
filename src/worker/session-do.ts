@@ -16,14 +16,11 @@ import type {
   ClientMessage,
   ProjectProfile,
   SessionArtifacts,
-  SandboxHandle,
-  SandboxProvider,
 } from "../core/types";
 import { EventLog } from "../core/event-log";
 import { canTransition, isTerminal } from "../core/state-machine";
 import { generateCommandId, generateRunnerToken, generateRequestId } from "../core/id";
 import { HEARTBEAT_INTERVAL_MS, HEARTBEAT_TIMEOUT_MS, PAUSED_HEARTBEAT_THRESHOLD_MS, WS_TAGS } from "../core/constants";
-import { MockSandboxProvider } from "../providers/mock";
 
 interface WSConnection {
   ws: WebSocket;
@@ -41,8 +38,6 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
   private pendingApprovals = new Map<string, { action: string; commandId: string }>();
   private artifacts: SessionArtifacts | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-  private sandboxHandle: SandboxHandle | null = null;
-  private sandboxProvider: SandboxProvider | null = null;
   private controlBaseUrl: string | null = null;
 
   // ---- Lifecycle ----
@@ -86,18 +81,6 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
 
   // ---- Sandbox lifecycle ----
 
-  private getSandboxProvider(): SandboxProvider {
-    if (this.sandboxProvider) return this.sandboxProvider;
-    // The Worker no longer drives real sandbox creation: the e2b SDK is not
-    // safe to call from inside workerd (silent crashes during long-running
-    // waitUntil work). The host-side launcher (scripts/launch-session.ts)
-    // creates the E2B sandbox and drops /opt/hermes/start.json; the runner
-    // inside dials the DO over WebSocket as an "external runner".
-    // The DO only keeps the mock provider for unit tests.
-    this.sandboxProvider = new MockSandboxProvider();
-    return this.sandboxProvider;
-  }
-
   private async provisionSandbox(): Promise<void> {
     if (!this.session || !this.profile || !this.runnerToken || !this.controlBaseUrl) return;
     if (!this.profile.repoUrl) {
@@ -105,53 +88,29 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
       // (e.g. fake-runner used in tests) connect on its own.
       return;
     }
-    if (this.env.E2B_API_KEY) {
-      // Real provider runs host-side (see scripts/launch-session.ts).
-      // The Worker just announces the session is awaiting a runner.
-      this.appendEvent("sandbox.provisioning", "system", {
-        template: this.env.E2B_TEMPLATE ?? "hermes-runner",
-        mode: "external",
-      });
-      if (canTransition(this.session.status, "provisioning")) {
-        this.transition("provisioning");
+    if (!this.env.E2B_API_KEY) {
+      // Fail fast on misconfigured deployments. The Worker does not drive
+      // real sandbox creation (workerd kills the E2B SDK) — it just gates
+      // on the secret being present. The host-side launcher
+      // (scripts/launch-session.ts) is the one that calls Sandbox.create()
+      // and drops /opt/hermes/start.json.
+      const msg =
+        "E2B_API_KEY is not configured on the Worker. Set it with `wrangler secret put E2B_API_KEY` before starting a coding session.";
+      console.error("[DO] sandbox provisioning blocked:", msg);
+      this.appendEvent("agent.error", "system", { error: msg });
+      if (canTransition(this.session.status, "failed")) {
+        this.transition("failed", msg);
       }
       return;
     }
-
-    try {
-      if (canTransition(this.session.status, "provisioning")) {
-        this.transition("provisioning");
-      }
-      this.appendEvent("sandbox.provisioning", "system", {
-        template: this.env.E2B_TEMPLATE ?? "opencode",
-      });
-
-      const provider = this.getSandboxProvider();
-      const handle = await provider.create({
-        sessionId: this.session.id,
-        runnerToken: this.runnerToken,
-        controlWsUrl: this.controlBaseUrl,
-        repoUrl: this.profile.repoUrl,
-        branch: this.profile.defaultBranch,
-        setupScript: this.profile.setupScript,
-        env: this.profile.env,
-      });
-
-      this.sandboxHandle = handle;
-      if (this.session) this.session.sandboxId = handle.sandboxId;
-      await this.persist();
-
-      this.appendEvent("sandbox.ready", "system", {
-        sandboxId: handle.sandboxId,
-        previewUrl: handle.previewUrl,
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error("[DO] sandbox provisioning failed:", msg);
-      this.appendEvent("agent.error", "system", { error: `Sandbox provisioning failed: ${msg}` });
-      if (this.session && canTransition(this.session.status, "failed")) {
-        this.transition("failed", `Sandbox provisioning failed: ${msg}`);
-      }
+    // Real provider runs host-side (see scripts/launch-session.ts).
+    // The Worker just announces the session is awaiting a runner.
+    this.appendEvent("sandbox.provisioning", "system", {
+      template: this.env.E2B_TEMPLATE ?? "hermes-runner",
+      mode: "external",
+    });
+    if (canTransition(this.session.status, "provisioning")) {
+      this.transition("provisioning");
     }
   }
 
