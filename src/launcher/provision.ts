@@ -124,11 +124,16 @@ export async function provisionSession(input: ProvisionInput): Promise<Provision
         `git remote set-url origin '${remoteUrl}'`,
       ];
       if (input.prMode) {
-        // Amend: fetch the PR branch (we cloned --depth 1 default branch so
-        // it isn't local yet) and check it out. The agent's commits go on
-        // top of the existing branch tip and `git push` updates the PR.
+        // Amend: fetch the PR branch and check it out. We cloned with
+        // --depth 1 --single-branch so the remote refspec only tracks
+        // HEAD; we have to fetch the PR branch by its full ref AND
+        // unshallow it (push will fail without enough history). The
+        // explicit refspec also creates the origin/<branch> tracking
+        // ref the subsequent checkout points at.
         const br = input.prMode.branch.replace(/'/g, "'\\''");
-        setupCmds.push(`git fetch origin '${br}'`);
+        setupCmds.push(
+          `git fetch --depth 50 origin '+refs/heads/${br}:refs/remotes/origin/${br}'`,
+        );
         setupCmds.push(`git checkout -B '${br}' 'origin/${br}'`);
       } else {
         // Fresh session: create a new hermes/<short-session-id> branch.

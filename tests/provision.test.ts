@@ -125,7 +125,7 @@ describe("provisionSession", () => {
     // cmdRun calls: [0]=clone, [1]=git config + fetch + checkout combo.
     const setupCall = cmdRun.mock.calls[1] as [string, unknown];
     const setupCmd = setupCall[0];
-    expect(setupCmd).toContain("git fetch origin 'hermes/abcd1234'");
+    expect(setupCmd).toContain("git fetch --depth 50 origin '+refs/heads/hermes/abcd1234:refs/remotes/origin/hermes/abcd1234'");
     expect(setupCmd).toContain("git checkout -B 'hermes/abcd1234' 'origin/hermes/abcd1234'");
     expect(setupCmd).not.toContain("hermes/ss_amend");
     // start.json must carry the amend env vars.
