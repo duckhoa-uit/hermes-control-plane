@@ -4,7 +4,7 @@ Three files in this directory:
 
 | File | Purpose |
 |---|---|
-| `install.sh` | One-shot bootstrap for a fresh Debian/Ubuntu VPS. Creates the `hermes-cp` user, installs bun + cloudflared, clones this repo, builds `launcher.js`, drops the systemd unit, and writes `/etc/hermes-control-plane/launcher.env` (prompts interactively for the 5 secrets, or reads them from env vars if already exported, or just drops the template when run non-interactively / with `HERMES_CP_NO_PROMPT=1`). Idempotent — re-run to update the bundle from the latest `main`. |
+| `install.sh` | One-shot bootstrap for a fresh Debian/Ubuntu VPS. Creates the `hermes-cp` user, installs bun + cloudflared, clones this repo, builds `launcher.js`, drops the systemd unit, and writes `/etc/hermes-control-plane/launcher.env` (prompts interactively for the 5 secrets, or reads them from env vars if already exported, or just drops the template when run non-interactively / with `CONTROL_PLANE_NO_PROMPT=1`). Idempotent — re-run to update the bundle from the latest `main`. |
 | `control-plane-launcher.service` | systemd unit. Loads `/etc/hermes-control-plane/launcher.env`, runs `bun /opt/hermes-control-plane/launcher.js` as the `hermes-cp` user, restarts on crash. |
 | `env.example` | Template for `/etc/hermes-control-plane/launcher.env`. Copy + fill in real values. |
 
@@ -24,7 +24,7 @@ Or pin a tag (recommended for repeatable installs):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/duckhoa-uit/hermes-control-plane/main/infra/launcher/install.sh \
-  | sudo HERMES_CP_REPO_REF=v0.4.0 bash
+  | sudo CONTROL_PLANE_REPO_REF=v0.4.0 bash
 ```
 
 `install.sh` is idempotent: re-run to refresh `launcher.js` from the latest
@@ -40,17 +40,17 @@ curl -fsSL https://raw.githubusercontent.com/duckhoa-uit/hermes-control-plane/ma
   | sudo bash
 # install.sh asks for E2B_API_KEY, ZAI_API_KEY, GITHUB_USER_TOKEN,
 # GITHUB_USER_LOGIN, GITHUB_USER_EMAIL (optional),
-# HERMES_CP_BASE_URL (default: the deployed Worker URL).
+# CONTROL_PLANE_BASE_URL (default: the deployed Worker URL).
 
 # 2. Pre-exported env vars (good when piping into bash):
 curl -fsSL https://raw.githubusercontent.com/duckhoa-uit/hermes-control-plane/main/infra/launcher/install.sh \
   | sudo E2B_API_KEY=... ZAI_API_KEY=... GITHUB_USER_TOKEN=... \
          GITHUB_USER_LOGIN=duckhoa-uit \
-         HERMES_CP_BASE_URL=https://hermes-control-plane.duckhoa-dev.workers.dev \
+         CONTROL_PLANE_BASE_URL=https://hermes-control-plane.duckhoa-dev.workers.dev \
          bash
 
 # 3. Skip prompts entirely — drop the env.example template and edit by hand later:
-curl -fsSL .../install.sh | sudo HERMES_CP_NO_PROMPT=1 bash
+curl -fsSL .../install.sh | sudo CONTROL_PLANE_NO_PROMPT=1 bash
 ```
 
 
@@ -60,7 +60,7 @@ After it finishes, the script prints the 6 remaining manual steps:
 2. `sudo systemctl enable --now control-plane-launcher`.
 3. Smoke-test: `curl http://localhost:8789/health`.
 4. Set up Cloudflare Tunnel for `launcher.<your-domain>` → `localhost:8789`.
-5. From your dev machine: `wrangler secret put HERMES_CP_LAUNCHER_URL`, then `bun run deploy`.
+5. From your dev machine: `wrangler secret put CONTROL_PLANE_LAUNCHER_URL`, then `bun run deploy`.
 6. Wire Hermes Agent → MCP server + skill: edit `~/.hermes/config.yaml` with `mcp_servers.hermes-control-plane.url: http://localhost:8789/mcp` and `skills.external_dirs: [/opt/hermes-control-plane/src/skills]`. Full runbook: [`infra/mcp/README.md`](../mcp/README.md).
 
 You should see:

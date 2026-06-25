@@ -17,7 +17,7 @@
 //
 // Run:
 //   E2B_API_KEY=... ZAI_API_KEY=... GITHUB_USER_TOKEN=... GITHUB_USER_LOGIN=... \
-//   HERMES_CP_BASE_URL=https://<deployed-worker>.workers.dev \
+//   CONTROL_PLANE_BASE_URL=https://<deployed-worker>.workers.dev \
 //   bun run src/launcher/server.ts
 
 import { Sandbox } from "e2b";
@@ -25,8 +25,8 @@ import { provisionSession, killSandbox, type ProvisionResult } from "./provision
 import { sweepOrphans } from "./sweeper";
 import { buildMcpHandler } from "../mcp/server";
 
-const PORT = Number(process.env.HERMES_CP_LAUNCHER_PORT ?? 8789);
-const HERMES_CP_BASE_URL = process.env.HERMES_CP_BASE_URL;
+const PORT = Number(process.env.CONTROL_PLANE_LAUNCHER_PORT ?? 8789);
+const CONTROL_PLANE_BASE_URL = process.env.CONTROL_PLANE_BASE_URL;
 const E2B_API_KEY = process.env.E2B_API_KEY;
 const E2B_TEMPLATE = process.env.E2B_TEMPLATE ?? "hermes-runner";
 const ZAI_API_KEY = process.env.ZAI_API_KEY;
@@ -36,14 +36,14 @@ const MAX_CONCURRENT_SESSIONS = Number(process.env.MAX_CONCURRENT_SESSIONS ?? 10
 // When false, the sidecar will NOT auto-trigger /create-pr on review_ready.
 // Useful for e2e tests that need to send follow-up prompts before the
 // runner exits. Default true (production behaviour).
-const AUTO_PR = (process.env.HERMES_CP_AUTO_PR ?? "1") !== "0";
+const AUTO_PR = (process.env.CONTROL_PLANE_AUTO_PR ?? "1") !== "0";
 
 const requiredEnv: Array<[string, string | undefined]> = [
   ["E2B_API_KEY", E2B_API_KEY],
   ["ZAI_API_KEY", ZAI_API_KEY],
   ["GITHUB_USER_TOKEN", GITHUB_USER_TOKEN],
   ["GITHUB_USER_LOGIN", GITHUB_USER_LOGIN],
-  ["HERMES_CP_BASE_URL", HERMES_CP_BASE_URL],
+  ["CONTROL_PLANE_BASE_URL", CONTROL_PLANE_BASE_URL],
 ];
 const missing = requiredEnv.filter(([, v]) => !v).map(([k]) => k);
 if (missing.length > 0) {
@@ -95,7 +95,7 @@ function watchSession(sessionId: string): void {
 
     let done = false;
     try {
-      const r = await fetch(`${HERMES_CP_BASE_URL}/sessions/${sessionId}`);
+      const r = await fetch(`${CONTROL_PLANE_BASE_URL}/sessions/${sessionId}`);
       if (r.ok) {
         const data = (await r.json()) as { session?: { status: string } };
         const status = data.session?.status ?? "";
@@ -103,7 +103,7 @@ if (status === "review_ready" && !prTriggered && AUTO_PR) {
           prTriggered = true;
           log(`session ${sessionId.slice(0, 8)} review_ready -> trigger create-pr`);
           try {
-            await fetch(`${HERMES_CP_BASE_URL}/sessions/${sessionId}/create-pr`, {
+            await fetch(`${CONTROL_PLANE_BASE_URL}/sessions/${sessionId}/create-pr`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
             });
@@ -163,7 +163,7 @@ async function handleCreate(req: Request): Promise<Response> {
   }
 
   // 1. Create the session DO via the Worker.
-  const wResp = await fetch(`${HERMES_CP_BASE_URL}/sessions`, {
+  const wResp = await fetch(`${CONTROL_PLANE_BASE_URL}/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -186,7 +186,7 @@ async function handleCreate(req: Request): Promise<Response> {
     provisioned = await provisionSession({
       sessionId: session.id,
       runnerToken: session.runnerToken,
-      controlWsUrl: HERMES_CP_BASE_URL!,
+      controlWsUrl: CONTROL_PLANE_BASE_URL!,
       repoUrl: body.repoUrl,
       baseBranch: body.baseBranch,
       e2bApiKey: E2B_API_KEY!,
@@ -197,7 +197,7 @@ async function handleCreate(req: Request): Promise<Response> {
       githubUserEmail: process.env.GITHUB_USER_EMAIL,
     });
   } catch (err) {
-    await fetch(`${HERMES_CP_BASE_URL}/sessions/${session.id}/abort`, { method: "POST" });
+    await fetch(`${CONTROL_PLANE_BASE_URL}/sessions/${session.id}/abort`, { method: "POST" });
     return Response.json(
       { error: "provision failed", sessionId: session.id, detail: (err as Error).message },
       { status: 500 },
@@ -218,8 +218,8 @@ async function handleCreate(req: Request): Promise<Response> {
     {
       sessionId: session.id,
       sandboxId: provisioned.sandboxId,
-      streamUrl: `${HERMES_CP_BASE_URL}/sessions/${session.id}/stream`,
-      stateUrl: `${HERMES_CP_BASE_URL}/sessions/${session.id}`,
+      streamUrl: `${CONTROL_PLANE_BASE_URL}/sessions/${session.id}/stream`,
+      stateUrl: `${CONTROL_PLANE_BASE_URL}/sessions/${session.id}`,
     },
     { status: 201 },
   );
@@ -249,7 +249,7 @@ async function handleDelete(sessionId: string): Promise<Response> {
       // ignore
     }
   }
-  await fetch(`${HERMES_CP_BASE_URL}/sessions/${sessionId}/abort`, { method: "POST" });
+  await fetch(`${CONTROL_PLANE_BASE_URL}/sessions/${sessionId}/abort`, { method: "POST" });
   return Response.json({ ok: true });
 }
 
@@ -325,7 +325,7 @@ async function handleResume(sessionId: string): Promise<Response> {
 
 
 async function handleGet(sessionId: string): Promise<Response> {
-  const r = await fetch(`${HERMES_CP_BASE_URL}/sessions/${sessionId}`);
+  const r = await fetch(`${CONTROL_PLANE_BASE_URL}/sessions/${sessionId}`);
   return new Response(await r.text(), {
     status: r.status,
     headers: { "Content-Type": "application/json" },
@@ -341,7 +341,7 @@ async function handleHealth(): Promise<Response> {
       sandboxId: s.sandboxId,
       startedAt: s.startedAt,
     })),
-    worker: HERMES_CP_BASE_URL,
+    worker: CONTROL_PLANE_BASE_URL,
     cap: MAX_CONCURRENT_SESSIONS,
   });
 }
@@ -351,7 +351,7 @@ async function main(): Promise<void> {
   try {
     const sweep = await sweepOrphans({
       e2bApiKey: E2B_API_KEY!,
-      hermesBaseUrl: HERMES_CP_BASE_URL!,
+      hermesBaseUrl: CONTROL_PLANE_BASE_URL!,
     });
     log(
       `startup sweep: scanned=${sweep.scanned} killed=${sweep.killed.length} kept=${sweep.kept.length}`,
@@ -364,7 +364,7 @@ async function main(): Promise<void> {
   // MCP server bundled into the launcher (the Hermes Agent — see
   // docs/DEPLOYMENT.md §12 and infra/mcp/README.md.
   const mcpHandler = buildMcpHandler({
-    workerBaseUrl: HERMES_CP_BASE_URL!,
+    workerBaseUrl: CONTROL_PLANE_BASE_URL!,
     launcherBaseUrl: `http://localhost:${PORT}`,
     log,
   });
@@ -399,7 +399,7 @@ async function main(): Promise<void> {
   });
 
   log(`control-plane-launcher listening on http://localhost:${server.port}`);
-  log(`  worker = ${HERMES_CP_BASE_URL}`);
+  log(`  worker = ${CONTROL_PLANE_BASE_URL}`);
   log(`  cap    = ${MAX_CONCURRENT_SESSIONS}`);
   log(`  autoPR = ${AUTO_PR}`);
   log(`  mcp    = http://localhost:${server.port}/mcp`);

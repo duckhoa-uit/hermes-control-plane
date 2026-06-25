@@ -68,9 +68,9 @@ describe("provisionSession", () => {
     const [path, content] = filesWrite.mock.calls[0];
     expect(path).toBe("/opt/control-plane/start.json");
     const cfg = JSON.parse(content as string);
-    expect(cfg.HERMES_CP_SESSION_ID).toBe("sess_keys");
-    expect(cfg.HERMES_CP_RUNNER_TOKEN).toBe("tok2");
-    expect(cfg.HERMES_CP_CONTROL_WS).toBe("wss://y");
+    expect(cfg.CONTROL_PLANE_SESSION_ID).toBe("sess_keys");
+    expect(cfg.CONTROL_PLANE_RUNNER_TOKEN).toBe("tok2");
+    expect(cfg.CONTROL_PLANE_WS).toBe("wss://y");
   });
 
   it("returns an idempotent kill()", async () => {

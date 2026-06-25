@@ -17,6 +17,6 @@ new_sqlite_classes = ["SessionDurableObject"]
 E2B_TEMPLATE = "hermes-runner"
 # M5: launcher sidecar URL — DO posts /resume here to thaw paused sandboxes.
 # Defaults to localhost (only useful for `wrangler dev` against a local launcher);
-# in production override with `wrangler secret put HERMES_CP_LAUNCHER_URL` pointing
+# in production override with `wrangler secret put CONTROL_PLANE_LAUNCHER_URL` pointing
 # at the Cloudflare Tunnel URL of your VPS launcher.
-HERMES_CP_LAUNCHER_URL = "http://localhost:8789"
+CONTROL_PLANE_LAUNCHER_URL = "http://localhost:8789"

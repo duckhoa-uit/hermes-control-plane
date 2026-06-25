@@ -272,7 +272,7 @@ Sources: `e2b.mintlify.app/docs` (`template/how-it-works`, `template/build`,
 2. **`setStartCmd` runs at template build time, not on `Sandbox.create()`.**
    Env vars passed to `Sandbox.create({ envs })` are **not visible** to the
    start command — it already ran. Our runner needs per-session
-   `HERMES_CP_SESSION_ID`, `HERMES_CP_RUNNER_TOKEN`, `HERMES_CP_CONTROL_WS`
+   `CONTROL_PLANE_SESSION_ID`, `CONTROL_PLANE_RUNNER_TOKEN`, `CONTROL_PLANE_WS`
    (`src/runner/sandbox-runner.ts`), so we cannot just put the runner in
    `setStartCmd` directly.
    - **Design:** `setStartCmd` launches a *supervisor* that waits for
@@ -554,7 +554,7 @@ needs E2B locally.
 | `src/launcher/provision.ts` | Create the E2B sandbox, clone the repo, drop `/opt/control-plane/start.json`; returns an idempotent `kill()` |
 | `src/launcher/sweeper.ts` | Orphan sweeper: kills E2B sandboxes whose `metadata.hermes_session_id` is terminal/unknown on the Worker |
 | `src/launcher/server.ts` | Bun HTTP server: `POST /sessions`, `GET /sessions/:id`, `DELETE /sessions/:id`, `GET /health`. Watches each session and reaps the sandbox on terminal status; triggers `/create-pr` on `review_ready` |
-| `scripts/launch-session.ts` | CLI that calls the sidecar when `HERMES_CP_LAUNCHER_URL` is set; falls back to direct in-process provisioning otherwise |
+| `scripts/launch-session.ts` | CLI that calls the sidecar when `CONTROL_PLANE_LAUNCHER_URL` is set; falls back to direct in-process provisioning otherwise |
 
 ### 10.2 Sandbox lifecycle rules (implemented)
 
@@ -1047,7 +1047,7 @@ green when M2.3 ships.
 ### 11.13 Follow-up prompt e2e — criterion 2 verified live (2026-06-25)
 
 Two-turn run against the same hermes session, real Worker + ngrok +
-launcher (`HERMES_CP_AUTO_PR=0` to keep the runner alive past the first
+launcher (`CONTROL_PLANE_AUTO_PR=0` to keep the runner alive past the first
 turn), real Z.AI + real GitHub App. PR opened with the cumulative diff
 from both turns: <https://github.com/duckhoa-uit/hermes-control-plane/pull/7>.
 
@@ -1057,7 +1057,7 @@ from both turns: <https://github.com/duckhoa-uit/hermes-control-plane/pull/7>.
 |---|---|
 | `src/core/state-machine.ts` | Allow `review_ready → running` so a follow-up prompt doesn't break the DO state machine. |
 | `src/worker/session-do.ts` | `POST /sessions/:id/prompt` transitions `review_ready → running` before sending `agent.prompt` (so the second `runner.complete` can transition back to `review_ready` cleanly). |
-| `src/launcher/server.ts` | New env toggle `HERMES_CP_AUTO_PR=0` to skip the sidecar's auto-PR trigger on `review_ready`. Default `1` (production behaviour); set to `0` for follow-up e2e + future M2.3 prompt-queue work. |
+| `src/launcher/server.ts` | New env toggle `CONTROL_PLANE_AUTO_PR=0` to skip the sidecar's auto-PR trigger on `review_ready`. Default `1` (production behaviour); set to `0` for follow-up e2e + future M2.3 prompt-queue work. |
 | `tests/state-machine.test.ts` | Added test case for `review_ready → running` transition. |
 
 #### Live evidence

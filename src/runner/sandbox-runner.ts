@@ -22,9 +22,9 @@ import { exec as execCb } from "child_process";
 import { createOpencodeClient } from "@opencode-ai/sdk";
 import { createEventMapper } from "./event-mapper";
 
-const SESSION_ID = process.env.HERMES_CP_SESSION_ID;
-const RUNNER_TOKEN = process.env.HERMES_CP_RUNNER_TOKEN;
-const CONTROL_WS = process.env.HERMES_CP_CONTROL_WS;
+const SESSION_ID = process.env.CONTROL_PLANE_SESSION_ID;
+const RUNNER_TOKEN = process.env.CONTROL_PLANE_RUNNER_TOKEN;
+const CONTROL_WS = process.env.CONTROL_PLANE_WS;
 const OPENCODE_BASE_URL = process.env.OPENCODE_BASE_URL || "http://127.0.0.1:4096";
 const MODEL_ID = process.env.OPENCODE_MODEL_ID || "glm-5.2";
 const PROVIDER_ID = process.env.OPENCODE_PROVIDER_ID || "zai-coding-plan";
@@ -51,7 +51,7 @@ const ALLOW_ALL_TOOLS: Record<string, boolean> = {
 };
 
 if (!SESSION_ID || !RUNNER_TOKEN || !CONTROL_WS) {
-  console.error("Missing required env vars (HERMES_CP_SESSION_ID, HERMES_CP_RUNNER_TOKEN, HERMES_CP_CONTROL_WS)");
+  console.error("Missing required env vars (CONTROL_PLANE_SESSION_ID, CONTROL_PLANE_RUNNER_TOKEN, CONTROL_PLANE_WS)");
   process.exit(1);
 }
 
@@ -82,8 +82,8 @@ function refreshWsUrl(): string {
   try {
     if (fsExistsSync("/opt/control-plane/start.json")) {
       const cfg = JSON.parse(fsReadFileSync("/opt/control-plane/start.json", "utf-8")) as Record<string, string>;
-      const tok = cfg.HERMES_CP_RUNNER_TOKEN;
-      const cws = cfg.HERMES_CP_CONTROL_WS;
+      const tok = cfg.CONTROL_PLANE_RUNNER_TOKEN;
+      const cws = cfg.CONTROL_PLANE_WS;
       if (tok && cws) {
         const base = cws.replace(/^http:\/\//, "ws://").replace(/^https:\/\//, "wss://").replace(/\/$/, "");
         return `${base}/sessions/${SESSION_ID}/runner?token=${tok}`;

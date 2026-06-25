@@ -22,8 +22,8 @@
 
 set -euo pipefail
 
-REPO_URL="${HERMES_CP_REPO_URL:-https://github.com/duckhoa-uit/hermes-control-plane.git}"
-REPO_REF="${HERMES_CP_REPO_REF:-main}"
+REPO_URL="${CONTROL_PLANE_REPO_URL:-https://github.com/duckhoa-uit/hermes-control-plane.git}"
+REPO_REF="${CONTROL_PLANE_REPO_REF:-main}"
 SRC_DIR="/opt/hermes-control-plane/src"
 HERMES_USER="hermes-cp"
 
@@ -109,7 +109,7 @@ log "installed /etc/systemd/system/control-plane-launcher.service"
 #   - --no-prompt skips prompting and just copies env.example so the
 #     operator can edit it later (CI / scripted runs).
 ENV_FILE=/etc/hermes-control-plane/launcher.env
-NO_PROMPT="${HERMES_CP_NO_PROMPT:-0}"
+NO_PROMPT="${CONTROL_PLANE_NO_PROMPT:-0}"
 
 ask() {
   # ask VAR_NAME "prompt label" [default]
@@ -129,7 +129,7 @@ ask() {
 env_complete() {
   [[ -f "$ENV_FILE" ]] || return 1
   grep -q "REPLACE_ME" "$ENV_FILE" && return 1
-  for k in E2B_API_KEY ZAI_API_KEY GITHUB_USER_TOKEN GITHUB_USER_LOGIN HERMES_CP_BASE_URL; do
+  for k in E2B_API_KEY ZAI_API_KEY GITHUB_USER_TOKEN GITHUB_USER_LOGIN CONTROL_PLANE_BASE_URL; do
     grep -qE "^${k}=..*" "$ENV_FILE" || return 1
   done
   return 0
@@ -150,10 +150,10 @@ else
   ask GITHUB_USER_TOKEN  "GITHUB_USER_TOKEN (fine-grained PAT, Contents+PullRequests RW)"
   ask GITHUB_USER_LOGIN  "GITHUB_USER_LOGIN (your GitHub handle)"
   ask GITHUB_USER_EMAIL  "GITHUB_USER_EMAIL (blank → <login>@users.noreply.github.com)"
-  ask HERMES_CP_BASE_URL    "HERMES_CP_BASE_URL (deployed Worker URL)" \
+  ask CONTROL_PLANE_BASE_URL    "CONTROL_PLANE_BASE_URL (deployed Worker URL)" \
                          "https://hermes-control-plane.duckhoa-dev.workers.dev"
 
-  for k in E2B_API_KEY ZAI_API_KEY GITHUB_USER_TOKEN GITHUB_USER_LOGIN HERMES_CP_BASE_URL; do
+  for k in E2B_API_KEY ZAI_API_KEY GITHUB_USER_TOKEN GITHUB_USER_LOGIN CONTROL_PLANE_BASE_URL; do
     if [[ -z "${!k}" ]]; then
       die "$k is required; re-run install.sh or edit $ENV_FILE by hand"
     fi
@@ -177,12 +177,12 @@ GITHUB_USER_LOGIN=$GITHUB_USER_LOGIN
 ${GITHUB_USER_EMAIL:+GITHUB_USER_EMAIL=$GITHUB_USER_EMAIL}
 
 # ---- Worker ----
-HERMES_CP_BASE_URL=$HERMES_CP_BASE_URL
+CONTROL_PLANE_BASE_URL=$CONTROL_PLANE_BASE_URL
 
 # ---- Launcher tunables (defaults are fine) ----
-HERMES_CP_LAUNCHER_PORT=8789
+CONTROL_PLANE_LAUNCHER_PORT=8789
 MAX_CONCURRENT_SESSIONS=10
-HERMES_CP_AUTO_PR=1
+CONTROL_PLANE_AUTO_PR=1
 ENVEOF
   chown "$HERMES_USER:$HERMES_USER" "$ENV_FILE"
   chmod 0600 "$ENV_FILE"
@@ -218,7 +218,7 @@ Next steps (Cloudflare cannot be automated):
       sudo cloudflared service install <tunnel-token>
 
 5.  Set the Worker secret (from your dev machine):
-      echo "https://launcher.<your-domain>" | bun x wrangler secret put HERMES_CP_LAUNCHER_URL
+      echo "https://launcher.<your-domain>" | bun x wrangler secret put CONTROL_PLANE_LAUNCHER_URL
       bun run deploy
 
 6.  Wire Hermes Agent to the MCP server + skill. Edit ~/.hermes/config.yaml:
