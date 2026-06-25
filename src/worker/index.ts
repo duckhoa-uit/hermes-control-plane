@@ -4,7 +4,42 @@
 // ============================================================
 
 import { SessionDurableObject } from "./session-do";
-import type { ProjectProfile } from "../core/types";
+import type { PromptResult } from "./session-do";
+import type {
+  ProjectProfile,
+  Session,
+  HermesEvent,
+  SessionArtifacts,
+} from "../core/types";
+
+// RPC contract surface — explicit interface so TS does not have to walk the
+// full DO class (whose return shapes contain Record<string, unknown> which
+// fails CF's Rpc.Serializable<T> check). The DO class implements the same
+// signatures.
+interface SessionDORpc {
+  initSession(
+    profile: ProjectProfile,
+    taskDescription: string,
+    controlBaseUrl: string,
+  ): Promise<Session & { runnerToken: string | null }>;
+  getState(): Promise<{
+    session: Session | null;
+    events: HermesEvent[];
+    artifacts: SessionArtifacts | null;
+  }>;
+  approveRequest(requestId: string): Promise<{ ok: true }>;
+  abortSession(): Promise<{ ok: true }>;
+  createPR(): Promise<{ ok: true }>;
+  sendPrompt(text: string): Promise<PromptResult>;
+}
+
+// Cast helper: the DO stub really does implement these methods at runtime,
+// but workers-types' Rpc.Provider<T> resolves to `never` here because our
+// payloads use `Record<string, unknown>`. Use a single cast so the rest of
+// this file stays type-safe.
+function asRpc(stub: unknown): SessionDORpc {
+  return stub as SessionDORpc;
+}
 
 export { SessionDurableObject };
 
@@ -23,6 +58,18 @@ const DEFAULT_PROFILE: ProjectProfile = {
   },
 };
 
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Content-Type": "application/json",
+};
+
+const PROMPT_STATUS_BY_KIND: Record<string, number> = {
+  terminal: 410,
+  no_resume: 409,
+  queued: 202,
+  ok: 200,
+};
+
 export default {
   async fetch(request: Request, env: CloudflareEnv): Promise<Response> {
     const url = new URL(request.url);
@@ -39,11 +86,6 @@ export default {
       });
     }
 
-    const corsHeaders = {
-      "Access-Control-Allow-Origin": "*",
-      "Content-Type": "application/json",
-    };
-
     try {
       // Debug: log all requests
       console.log(`[debug] ${request.method} ${path} Upgrade=${request.headers.get("Upgrade")}`);
@@ -52,7 +94,7 @@ export default {
       if (path === "/health" || path === "/") {
         return new Response(
           JSON.stringify({ status: "ok", service: "hermes-control-plane" }),
-          { headers: corsHeaders },
+          { headers: CORS_HEADERS },
         );
       }
 
@@ -66,11 +108,6 @@ export default {
           repoUrl?: string;
           profile?: Partial<ProjectProfile>;
         }>();
-
-        // M3 concurrency guard is enforced host-side by the launcher
-        // (scripts/launch-session.ts) — the Worker runtime hangs/dies when
-        // it does an outbound HTTPS fetch to E2B's API from this code path.
-        // See docs/ROADMAP.md section 8.6 for the constraint.
 
         // Build profile. LLM credentials (ZAI_API_KEY etc.) and any other
         // per-session env vars are injected host-side by the launcher into
@@ -97,31 +134,11 @@ export default {
         // when the client hits the deployed Worker directly.
         const controlBaseUrl = env.PUBLIC_BASE_URL?.replace(/\/$/, "") ?? url.origin;
 
-        // Initialize session
-        const initResp = await stub.fetch(
-          new Request("https://do.internal/init", {
-            method: "POST",
-            body: JSON.stringify({
-              profile,
-              taskDescription: body.taskDescription,
-              controlBaseUrl,
-            }),
-            headers: { "Content-Type": "application/json" },
-          }),
-        );
-
-        if (!initResp.ok) {
-          return new Response(
-            JSON.stringify({ error: "Failed to init session" }),
-            { status: 500, headers: corsHeaders },
-          );
-        }
-
-        const session = await initResp.json();
+        const session = await asRpc(stub).initSession(profile, body.taskDescription, controlBaseUrl);
 
         return new Response(JSON.stringify(session), {
           status: 201,
-          headers: corsHeaders,
+          headers: CORS_HEADERS,
         });
       }
 
@@ -133,7 +150,7 @@ export default {
 
       if (isWSUpgrade && wsMatch) {
         const sessionId = wsMatch[1];
-        const wsType = wsMatch[2]; // "stream" or "runner"
+        const wsType = wsMatch[2];
         const id = env.SESSION_DO.idFromString(sessionId);
         const stub = env.SESSION_DO.get(id);
 
@@ -147,30 +164,27 @@ export default {
       // GET /sessions/:id
       if (path.startsWith("/sessions/") && request.method === "GET") {
         const sessionId = path.split("/")[2];
-        // Guard against malformed/unknown ids so the orphan sweeper and other
-        // callers get a clean 404 instead of an idFromString crash.
-        let id;
+        let id: DurableObjectId;
         try {
           id = env.SESSION_DO.idFromString(sessionId);
         } catch {
           return new Response(
             JSON.stringify({ error: "session not found" }),
-            { status: 404, headers: corsHeaders },
+            { status: 404, headers: CORS_HEADERS },
           );
         }
         const stub = env.SESSION_DO.get(id);
 
-        const resp = await stub.fetch(new Request("https://do.internal/state"));
-        const data = await resp.json();
-        // The DO will auto-instantiate empty; treat a missing session.id as 404.
-        if (!(data as { session?: unknown }).session) {
+        const data = await asRpc(stub).getState();
+        // DO auto-instantiates empty; treat a missing session as 404.
+        if (!data.session) {
           return new Response(
             JSON.stringify({ error: "session not found" }),
-            { status: 404, headers: corsHeaders },
+            { status: 404, headers: CORS_HEADERS },
           );
         }
 
-        return new Response(JSON.stringify(data), { headers: corsHeaders });
+        return new Response(JSON.stringify(data), { headers: CORS_HEADERS });
       }
 
       // ---- Approve action ----
@@ -179,14 +193,9 @@ export default {
         const sessionId = path.split("/")[2];
         const id = env.SESSION_DO.idFromString(sessionId);
         const stub = env.SESSION_DO.get(id);
-
-        return stub.fetch(
-          new Request("https://do.internal/approve", {
-            method: "POST",
-            body: request.body,
-            headers: { "Content-Type": "application/json" },
-          }),
-        );
+        const body = await request.json<{ requestId: string }>();
+        const result = await asRpc(stub).approveRequest(body.requestId);
+        return new Response(JSON.stringify(result), { headers: CORS_HEADERS });
       }
 
       // ---- Abort session ----
@@ -195,8 +204,8 @@ export default {
         const sessionId = path.split("/")[2];
         const id = env.SESSION_DO.idFromString(sessionId);
         const stub = env.SESSION_DO.get(id);
-
-        return stub.fetch(new Request("https://do.internal/abort", { method: "POST" }));
+        const result = await asRpc(stub).abortSession();
+        return new Response(JSON.stringify(result), { headers: CORS_HEADERS });
       }
 
       // ---- Follow-up prompt (M2) ----
@@ -205,13 +214,13 @@ export default {
         const sessionId = path.split("/")[2];
         const id = env.SESSION_DO.idFromString(sessionId);
         const stub = env.SESSION_DO.get(id);
-        return stub.fetch(
-          new Request("https://do.internal/prompt", {
-            method: "POST",
-            body: request.body,
-            headers: { "Content-Type": "application/json" },
-          }),
-        );
+        const { text } = await request.json<{ text: string }>();
+        const result = await asRpc(stub).sendPrompt(text);
+        const status = PROMPT_STATUS_BY_KIND[result.kind] ?? 200;
+        return new Response(JSON.stringify(result.body), {
+          status,
+          headers: CORS_HEADERS,
+        });
       }
 
       // ---- Create PR ----
@@ -220,21 +229,19 @@ export default {
         const sessionId = path.split("/")[2];
         const id = env.SESSION_DO.idFromString(sessionId);
         const stub = env.SESSION_DO.get(id);
-
-        return stub.fetch(
-          new Request("https://do.internal/create-pr", { method: "POST" }),
-        );
+        const result = await asRpc(stub).createPR();
+        return new Response(JSON.stringify(result), { headers: CORS_HEADERS });
       }
 
       return new Response(JSON.stringify({ error: "Not found" }), {
         status: 404,
-        headers: corsHeaders,
+        headers: CORS_HEADERS,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
       return new Response(
         JSON.stringify({ error: message }),
-        { status: 500, headers: corsHeaders },
+        { status: 500, headers: CORS_HEADERS },
       );
     }
   },

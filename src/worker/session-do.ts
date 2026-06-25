@@ -22,23 +22,49 @@ import { canTransition, isTerminal } from "../core/state-machine";
 import { generateCommandId, generateRunnerToken, generateRequestId } from "../core/id";
 import { HEARTBEAT_INTERVAL_MS, HEARTBEAT_TIMEOUT_MS, PAUSED_HEARTBEAT_THRESHOLD_MS, WS_TAGS } from "../core/constants";
 
-interface WSConnection {
-  ws: WebSocket;
+// Zero-padded so storage.list({ prefix: "evt:" }) returns events in seq order.
+const eventKey = (seq: number) => `evt:${seq.toString().padStart(10, "0")}`;
+
+// Per-WebSocket metadata that survives DO hibernation. Persisted via
+// ws.serializeAttachment() in handleClientWS / handleRunnerWS so the
+// hibernation API can wake us with the WS state intact.
+type WSAttachment = {
   tag: typeof WS_TAGS.CLIENT | typeof WS_TAGS.RUNNER;
   lastSeq: number;
-}
+};
 
 export class SessionDurableObject extends DurableObject<CloudflareEnv> {
   private session: Session | null = null;
   private profile: ProjectProfile | null = null;
   private eventLog = new EventLog();
-  private connections = new Set<WSConnection>();
-  private runnerConn: WSConnection | null = null;
   private runnerToken: string | null = null;
   private pendingApprovals = new Map<string, { action: string; commandId: string }>();
   private artifacts: SessionArtifacts | null = null;
-  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private controlBaseUrl: string | null = null;
+
+  // ---- WebSocket accessors (hibernation-safe) ----
+  // ctx.getWebSockets(tag) is the canonical source of truth — survives
+  // hibernation, no in-memory bookkeeping needed.
+
+  private getRunnerWS(): WebSocket | null {
+    return this.ctx.getWebSockets(WS_TAGS.RUNNER)[0] ?? null;
+  }
+
+  private getAllWebSockets(): WebSocket[] {
+    return this.ctx.getWebSockets();
+  }
+
+  private readAttachment(ws: WebSocket): WSAttachment {
+    return (ws.deserializeAttachment() as WSAttachment | null) ?? {
+      tag: WS_TAGS.CLIENT,
+      lastSeq: -1,
+    };
+  }
+
+  private writeAttachment(ws: WebSocket, patch: Partial<WSAttachment>): void {
+    const current = this.readAttachment(ws);
+    ws.serializeAttachment({ ...current, ...patch });
+  }
 
   // ---- Lifecycle ----
 
@@ -47,36 +73,41 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     taskDescription: string,
     controlBaseUrl: string,
   ): Promise<Session> {
-    if (this.session) {
-      throw new Error(`Session already initialized: ${this.session.id}`);
-    }
+    // Skill: durable-objects/gotchas "Race Condition Despite Single-Threading".
+    // The mutate-then-persist sequence has an await point, so block any
+    // concurrent init() to make the double-create check + persist atomic.
+    return this.ctx.blockConcurrencyWhile(async () => {
+      if (this.session) {
+        throw new Error(`Session already initialized: ${this.session.id}`);
+      }
 
-    const sessionId = this.ctx.id.toString();
-    const now = Date.now();
+      const sessionId = this.ctx.id.toString();
+      const now = Date.now();
 
-    this.session = {
-      id: sessionId,
-      projectId: profile.id,
-      taskDescription,
-      status: "created",
-      branch: `hermes/${sessionId.slice(-8)}`,
-      createdAt: now,
-      updatedAt: now,
-      runnerConnected: false,
-    };
-    this.profile = profile;
-    this.runnerToken = generateRunnerToken();
-    this.controlBaseUrl = controlBaseUrl;
+      this.session = {
+        id: sessionId,
+        projectId: profile.id,
+        taskDescription,
+        status: "created",
+        branch: `hermes/${sessionId.slice(-8)}`,
+        createdAt: now,
+        updatedAt: now,
+        runnerConnected: false,
+      };
+      this.profile = profile;
+      this.runnerToken = generateRunnerToken();
+      this.controlBaseUrl = controlBaseUrl;
 
-    this.appendEvent("session.created", "system", { taskDescription, projectId: profile.id });
-    await this.persist();
+      this.appendEvent("session.created", "system", { taskDescription, projectId: profile.id });
+      await this.persist();
 
-    // Kick off sandbox provisioning in the background. The HTTP response
-    // returns immediately; status will advance via events as the sandbox
-    // boots and the runner connects back over WebSocket.
-    this.ctx.waitUntil(this.provisionSandbox());
+      // Kick off sandbox provisioning in the background. The HTTP response
+      // returns immediately; status will advance via events as the sandbox
+      // boots and the runner connects back over WebSocket.
+      this.ctx.waitUntil(this.provisionSandbox());
 
-    return this.session;
+      return this.session;
+    });
   }
 
   // ---- Sandbox lifecycle ----
@@ -106,7 +137,7 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     // Real provider runs host-side (see scripts/launch-session.ts).
     // The Worker just announces the session is awaiting a runner.
     this.appendEvent("sandbox.provisioning", "system", {
-      template: this.env.E2B_TEMPLATE ?? "hermes-runner",
+      template: this.env.E2B_TEMPLATE ?? "control-plane-runner",
       mode: "external",
     });
     if (canTransition(this.session.status, "provisioning")) {
@@ -161,18 +192,26 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     if (!this.session) throw new Error("Session not initialized");
     const event = this.eventLog.append(this.session.id, type, source, payload);
     this.broadcastEvent(event);
+    // Persist just this event (per-key) instead of rewriting the whole array.
+    // Skill: durable-objects/patterns — append-only event log on SQLite-backed DOs.
+    // Key is zero-padded so list({ prefix }) returns events in seq order.
+    this.ctx.waitUntil(
+      this.ctx.storage.put(eventKey(event.seq), event),
+    );
     return event;
   }
 
   private broadcastEvent(event: HermesEvent): void {
     const msg = JSON.stringify({ type: "event", event });
-    for (const conn of this.connections) {
-      if (conn.lastSeq < event.seq) {
+    for (const ws of this.getAllWebSockets()) {
+      const att = this.readAttachment(ws);
+      if (att.lastSeq < event.seq) {
         try {
-          conn.ws.send(msg);
-          conn.lastSeq = event.seq;
+          ws.send(msg);
+          this.writeAttachment(ws, { lastSeq: event.seq });
         } catch {
-          this.connections.delete(conn);
+          // The runtime will fire webSocketClose on the next tick; nothing
+          // to do here — ctx.getWebSockets() will stop returning it then.
         }
       }
     }
@@ -181,41 +220,39 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
   // ---- WebSocket: Client ----
 
   async handleClientWS(ws: WebSocket): Promise<void> {
-    ws.accept();
-    const conn: WSConnection = { ws, tag: WS_TAGS.CLIENT, lastSeq: -1 };
-    this.connections.add(conn);
+    // Hibernation API: DO can sleep while this WS stays open.
+    // Inbound messages/closes are delivered via webSocketMessage / webSocketClose
+    // overrides below (skill: workers/gotchas "WebSocket connection closes
+    // unexpectedly").
+    this.ctx.acceptWebSocket(ws, [WS_TAGS.CLIENT]);
+    ws.serializeAttachment({ tag: WS_TAGS.CLIENT, lastSeq: -1 } satisfies WSAttachment);
 
     // Replay events to new client
     const replay = this.eventLog.getAll();
     if (replay.length > 0) {
       ws.send(JSON.stringify({ type: "replay", events: replay }));
-      conn.lastSeq = this.eventLog.getLatestSeq();
+      this.writeAttachment(ws, { lastSeq: this.eventLog.getLatestSeq() });
     }
 
     ws.send(JSON.stringify({ type: "session_state", session: this.session }));
-
-    ws.addEventListener("message", (e) => this.handleClientMessage(conn, e));
-    ws.addEventListener("close", () => this.connections.delete(conn));
-    ws.addEventListener("error", () => this.connections.delete(conn));
   }
 
   // ---- WebSocket: Runner ----
 
   async handleRunnerWS(ws: WebSocket, token: string): Promise<void> {
-    ws.accept();
-
     if (token !== this.runnerToken) {
+      this.ctx.acceptWebSocket(ws);
       ws.close(4001, "Invalid runner token");
       return;
     }
     if (!this.session) {
+      this.ctx.acceptWebSocket(ws);
       ws.close(4002, "Session not found");
       return;
     }
 
-    const conn: WSConnection = { ws, tag: WS_TAGS.RUNNER, lastSeq: -1 };
-    this.connections.add(conn);
-    this.runnerConn = conn;
+    this.ctx.acceptWebSocket(ws, [WS_TAGS.RUNNER]);
+    ws.serializeAttachment({ tag: WS_TAGS.RUNNER, lastSeq: -1 } satisfies WSAttachment);
 
     this.session.runnerConnected = true;
     this.session.lastHeartbeat = Date.now();
@@ -248,8 +285,6 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
       const queued = this.session.pendingPrompt;
       this.session.pendingPrompt = undefined;
       void this.persist();
-      // If we're sitting at review_ready, transition back to running so
-      // the second runner.complete doesn't re-fail the state machine.
       if (this.session.status === "review_ready") {
         this.transition("running");
       }
@@ -260,25 +295,14 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
         allowedTools: this.profile?.allowedTools ?? [],
       });
     }
-
-    ws.addEventListener("message", (e) => this.handleRunnerMessage(conn, e));
-    ws.addEventListener("close", () => {
-      this.connections.delete(conn);
-      if (this.runnerConn === conn) {
-        this.runnerConn = null;
-        this.appendEvent("runner.disconnected", "runner");
-        this.stopHeartbeatCheck();
-      }
-    });
-    ws.addEventListener("error", () => this.connections.delete(conn));
   }
 
   // ---- Client message handling ----
 
-  private handleClientMessage(conn: WSConnection, e: MessageEvent): void {
+  private handleClientMessage(_ws: WebSocket, data: string | ArrayBuffer): void {
     let msg: ClientMessage;
     try {
-      msg = JSON.parse(e.data as string);
+      msg = JSON.parse(typeof data === "string" ? data : new TextDecoder().decode(data));
     } catch {
       return;
     }
@@ -339,10 +363,10 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
 
   // ---- Runner message handling ----
 
-  private handleRunnerMessage(conn: WSConnection, e: MessageEvent): void {
+  private handleRunnerMessage(_ws: WebSocket, data: string | ArrayBuffer): void {
     let msg: RunnerMessage;
     try {
-      msg = JSON.parse(e.data as string);
+      msg = JSON.parse(typeof data === "string" ? data : new TextDecoder().decode(data));
     } catch {
       return;
     }
@@ -408,7 +432,8 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
   // ---- Runner commands ----
 
   private sendRunnerCommand(type: RunnerCommand["type"], payload: Record<string, unknown>): void {
-    if (!this.runnerConn) return;
+    const ws = this.getRunnerWS();
+    if (!ws) return;
 
     const command: RunnerCommand = {
       commandId: generateCommandId(),
@@ -417,7 +442,11 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
       createdAt: Date.now(),
     };
 
-    this.runnerConn.ws.send(JSON.stringify({ type: "command", command }));
+    try {
+      ws.send(JSON.stringify({ type: "command", command }));
+    } catch {
+      // Runner socket dead; webSocketClose will clean up state.
+    }
   }
 
   private sendInitialPrompt(): void {
@@ -477,15 +506,36 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
 
   // ---- Heartbeat ----
 
+  // Uses ctx.storage.setAlarm() instead of setInterval so the watchdog
+  // survives DO eviction/hibernation (skill: durable-objects/gotchas
+  // "setTimeout Didn't Fire After Restart"). The alarm() handler reschedules
+  // itself for as long as the session is active and connected.
   private startHeartbeatCheck(): void {
-    this.stopHeartbeatCheck();
-    this.heartbeatTimer = setInterval(() => this.checkHeartbeat(), HEARTBEAT_INTERVAL_MS);
+    this.ctx.waitUntil(this.ctx.storage.setAlarm(Date.now() + HEARTBEAT_INTERVAL_MS));
   }
 
   private stopHeartbeatCheck(): void {
-    if (this.heartbeatTimer) {
-      clearInterval(this.heartbeatTimer);
-      this.heartbeatTimer = null;
+    this.ctx.waitUntil(this.ctx.storage.deleteAlarm());
+  }
+
+  // Single alarm handler — currently only used for the heartbeat watchdog.
+  // If you add more scheduled work, use a queue pattern (one alarm, many
+  // tasks) per skill: durable-objects/gotchas "Only One Alarm Allowed".
+  override async alarm(): Promise<void> {
+    if (!this.session) {
+      await this.restore();
+      if (!this.session) return;
+    }
+    this.checkHeartbeat();
+    // Reschedule unless the watchdog decided to stop (terminal state, or
+    // checkHeartbeat already transitioned to failed and called stop).
+    if (
+      this.session &&
+      !isTerminal(this.session.status) &&
+      this.session.status !== "creating_pr" &&
+      this.session.status !== "review_ready"
+    ) {
+      await this.ctx.storage.setAlarm(Date.now() + HEARTBEAT_INTERVAL_MS);
     }
   }
 
@@ -552,7 +602,6 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     if (!this.session) return;
     await this.ctx.storage.put("session", this.session);
     if (this.profile) await this.ctx.storage.put("profile", this.profile);
-    await this.ctx.storage.put("events", this.eventLog.getAll());
     if (this.runnerToken) await this.ctx.storage.put("runnerToken", this.runnerToken);
   }
 
@@ -564,201 +613,254 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     if (session) this.session = session;
     if (profile) this.profile = profile;
     if (token) this.runnerToken = token;
+
+    // Restore the event log from per-key entries. list() returns keys in
+    // lexicographic order — eventKey() zero-pads to keep that == seq order.
+    const stored = await this.ctx.storage.list<HermesEvent>({ prefix: "evt:" });
+    if (stored.size > 0) {
+      this.eventLog.clear();
+      for (const event of stored.values()) {
+        this.eventLog.appendExisting(event);
+      }
+    }
   }
 
-  // ---- HTTP fetch (routes from Worker) ----
+  // ---- RPC methods (called via stub.<method>() from the Worker) ----
+
+  // initSession is the RPC-facing wrapper around init(). It also returns the
+  // runnerToken in the response payload — keeping the previous /init shape.
+  async initSession(
+    profile: ProjectProfile,
+    taskDescription: string,
+    controlBaseUrl: string,
+  ): Promise<Session & { runnerToken: string | null }> {
+    await this.ensureRestored();
+    const session = await this.init(profile, taskDescription, controlBaseUrl);
+    return { ...session, runnerToken: this.runnerToken };
+  }
+
+  async getState(): Promise<{
+    session: Session | null;
+    events: HermesEvent[];
+    artifacts: SessionArtifacts | null;
+  }> {
+    await this.ensureRestored();
+    return {
+      session: this.session,
+      events: this.eventLog.getAll(),
+      artifacts: this.artifacts,
+    };
+  }
+
+  async approveRequest(requestId: string): Promise<{ ok: true }> {
+    await this.ensureRestored();
+    this.handleApproval(true, { requestId });
+    return { ok: true };
+  }
+
+  async abortSession(): Promise<{ ok: true }> {
+    await this.ensureRestored();
+    this.handleAbort();
+    return { ok: true };
+  }
+
+  async createPR(): Promise<{ ok: true }> {
+    await this.ensureRestored();
+    this.handleCreatePR();
+    return { ok: true };
+  }
+
+  async sendPrompt(text: string): Promise<PromptResult> {
+    await this.ensureRestored();
+    const status = this.session?.status;
+    // Session is in a terminal state — sandbox is gone, no recovery.
+    if (status && isTerminal(status)) {
+      return {
+        kind: "terminal",
+        status,
+        body: {
+          error: "Session ended",
+          status,
+          reason:
+            "The session reached a terminal state and its sandbox has been torn down. " +
+            "Start a new session to continue the work; the previous diff and PR (if any) " +
+            "are preserved in the session record.",
+          recoverable: false,
+        },
+      };
+    }
+    // M5: detect "sandbox paused" by either explicit WS close OR stale
+    // heartbeat. E2B pause freezes the TCP socket without sending a FIN,
+    // so a paused sandbox can look like runnerConn != null but heartbeat
+    // is stale (verified by the §12.14 probe). Either signal routes us
+    // through the queue+resume path.
+    const now = Date.now();
+    const lastBeat = this.session?.lastHeartbeat ?? 0;
+    const heartbeatStale = lastBeat > 0 && (now - lastBeat) > PAUSED_HEARTBEAT_THRESHOLD_MS;
+    const runnerWS = this.getRunnerWS();
+    if (!runnerWS || heartbeatStale) {
+      const launcherUrl = this.env.CONTROL_PLANE_LAUNCHER_URL;
+      // Force-close the dead WS so getRunnerWS() reports null on the next call.
+      // E2B pause freezes the TCP socket without sending a FIN; without this
+      // explicit close, ctx.getWebSockets("runner") would still return it.
+      // webSocketClose will fire when the sandbox eventually resumes — by then
+      // session.runnerConnected is already false.
+      if (runnerWS && heartbeatStale) {
+        try { runnerWS.close(4000, "paused"); } catch {}
+        if (this.session) this.session.runnerConnected = false;
+        this.appendEvent("runner.disconnected", "system", { reason: "heartbeat stale, sandbox likely paused" });
+      }
+      if (!launcherUrl) {
+        // Pre-M5 deployment: no launcher URL configured. Fall back to
+        // the §12.13 fail-fast 409.
+        return {
+          kind: "no_resume",
+          status,
+          body: {
+            error: "Runner not connected",
+            status,
+            reason:
+              "Resume is not configured (CONTROL_PLANE_LAUNCHER_URL unset). Start a new session.",
+            recoverable: false,
+          },
+        };
+      }
+      if (this.session) {
+        this.session.pendingPrompt = text;
+        await this.persist();
+      }
+      this.appendEvent("agent.started", "user", { taskDescription: text, queued: true });
+      // Fire-and-forget the resume; runner.connected handler drains the
+      // queue. We do NOT await — that would block the caller for the full
+      // ~1s Sandbox.connect roundtrip + the runner's reconnect budget.
+      const sessionId = this.session?.id;
+      if (sessionId) {
+        this.ctx.waitUntil(
+          (async () => {
+            try {
+              const r = await fetch(
+                `${launcherUrl}/sessions/${sessionId}/resume`,
+                { method: "POST", headers: { "content-type": "application/json" } },
+              );
+              if (!r.ok) {
+                const body = await r.text().catch(() => "<no body>");
+                console.error(`[DO] launcher /resume failed ${r.status}: ${body}`);
+              }
+            } catch (err) {
+              console.error(`[DO] launcher /resume error: ${(err as Error).message}`);
+            }
+          })(),
+        );
+      }
+      return {
+        kind: "queued",
+        status,
+        body: {
+          ok: true,
+          queued: true,
+          status,
+          reason:
+            "Sandbox is paused; resume initiated. The follow-up prompt will be delivered as soon as the runner reconnects (usually < 5 s).",
+          recoverable: true,
+        },
+      };
+    }
+    // If the session is sitting at review_ready (first turn done, no
+    // PR yet), transition back to running so the second turn doesn't
+    // throw on the runner.complete -> review_ready re-transition.
+    if (this.session?.status === "review_ready") {
+      this.transition("running");
+    }
+    this.appendEvent("agent.started", "user", { taskDescription: text });
+    this.sendRunnerCommand("agent.prompt", {
+      taskDescription: text,
+      context: text,
+      model: this.profile?.model ?? "",
+      allowedTools: this.profile?.allowedTools ?? [],
+    });
+    return { kind: "ok", body: { ok: true } };
+  }
+
+  private async ensureRestored(): Promise<void> {
+    if (!this.session) await this.restore();
+  }
+
+  // ---- HTTP fetch — WebSocket upgrade only ----
+  // All non-WS routes are RPC methods above (skill: workers/gotchas
+  // "Durable Object RPC errors with deprecated fetch pattern").
 
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    const path = url.pathname;
 
-    // Restore from storage if needed
     if (!this.session) {
       await this.restore();
     }
 
-    const corsHeaders = {
-      "Access-Control-Allow-Origin": "*",
-      "Content-Type": "application/json",
-    };
-
-    // ---- Internal routes (from Worker API) ----
-
-    if (path === "/init" && request.method === "POST") {
-      const { profile, taskDescription, controlBaseUrl } = await request.json<{
-        profile: ProjectProfile;
-        taskDescription: string;
-        controlBaseUrl: string;
-      }>();
-      const session = await this.init(profile, taskDescription, controlBaseUrl);
-      return new Response(JSON.stringify({
-        ...session,
-        runnerToken: this.getRunnerToken(),
-      }), { headers: corsHeaders });
-    }
-
-    if (path === "/state" && request.method === "GET") {
-      return new Response(
-        JSON.stringify({
-          session: this.session,
-          events: this.eventLog.getAll(),
-          artifacts: this.artifacts,
-        }),
-        { headers: corsHeaders },
-      );
-    }
-
-    if (path === "/approve" && request.method === "POST") {
-      const body = await request.json<{ requestId: string }>();
-      this.handleApproval(true, { requestId: body.requestId });
-      return new Response(JSON.stringify({ ok: true }), { headers: corsHeaders });
-    }
-
-    if (path === "/abort" && request.method === "POST") {
-      this.handleAbort();
-      return new Response(JSON.stringify({ ok: true }), { headers: corsHeaders });
-    }
-
-    if (path === "/create-pr" && request.method === "POST") {
-      this.handleCreatePR();
-      return new Response(JSON.stringify({ ok: true }), { headers: corsHeaders });
-    }
-
-    if (path === "/prompt" && request.method === "POST") {
-      const status = this.session?.status;
-      // Session is in a terminal state — sandbox is gone, no recovery.
-      if (status && isTerminal(status)) {
-        return new Response(
-          JSON.stringify({
-            error: "Session ended",
-            status,
-            reason:
-              "The session reached a terminal state and its sandbox has been torn down. " +
-              "Start a new session to continue the work; the previous diff and PR (if any) " +
-              "are preserved in the session record.",
-            recoverable: false,
-          }),
-          { status: 410, headers: corsHeaders },
-        );
-      }
-      // M5: detect "sandbox paused" by either explicit WS close OR stale
-      // heartbeat. E2B pause freezes the TCP socket without sending a FIN,
-      // so a paused sandbox can look like runnerConn != null but heartbeat
-      // is stale (verified by the §12.14 probe). Either signal routes us
-      // through the queue+resume path.
-      const now = Date.now();
-      const lastBeat = this.session?.lastHeartbeat ?? 0;
-      const heartbeatStale = lastBeat > 0 && (now - lastBeat) > PAUSED_HEARTBEAT_THRESHOLD_MS;
-      if (!this.runnerConn || heartbeatStale) {
-        const launcherUrl = this.env.CONTROL_PLANE_LAUNCHER_URL;
-        // Clear the dead WS reference so subsequent runner-state checks
-        // (heartbeat watchdog, future sends) don't see a phantom alive
-        // runner. The actual close event will fire later once the sandbox
-        // resumes (M5 §12.14 probe finding), at which point handleClose
-        // is a no-op because runnerConn is already null.
-        if (this.runnerConn && heartbeatStale) {
-          try { this.runnerConn.ws.close(4000, "paused"); } catch {}
-          this.connections.delete(this.runnerConn);
-          this.runnerConn = null;
-          if (this.session) this.session.runnerConnected = false;
-          this.appendEvent("runner.disconnected", "system", { reason: "heartbeat stale, sandbox likely paused" });
-        }
-        if (!launcherUrl) {
-          // Pre-M5 deployment: no launcher URL configured. Fall back to
-          // the §12.13 fail-fast 409.
-          return new Response(
-            JSON.stringify({
-              error: "Runner not connected",
-              status,
-              reason:
-                "Resume is not configured (CONTROL_PLANE_LAUNCHER_URL unset). Start a new session.",
-              recoverable: false,
-            }),
-            { status: 409, headers: corsHeaders },
-          );
-        }
-        const { text } = await request.json<{ text: string }>();
-        if (this.session) {
-          this.session.pendingPrompt = text;
-          await this.persist();
-        }
-        this.appendEvent("agent.started", "user", { taskDescription: text, queued: true });
-        // Fire-and-forget the resume; runner.connected handler drains the
-        // queue. We do NOT await — that would block the caller for the full
-        // ~1s Sandbox.connect roundtrip + the runner's reconnect budget.
-        const sessionId = this.session?.id;
-        if (sessionId) {
-          this.ctx.waitUntil(
-            (async () => {
-              try {
-                const r = await fetch(
-                  `${launcherUrl}/sessions/${sessionId}/resume`,
-                  { method: "POST", headers: { "content-type": "application/json" } },
-                );
-                if (!r.ok) {
-                  const body = await r.text().catch(() => "<no body>");
-                  console.error(`[DO] launcher /resume failed ${r.status}: ${body}`);
-                }
-              } catch (err) {
-                console.error(`[DO] launcher /resume error: ${(err as Error).message}`);
-              }
-            })(),
-          );
-        }
-        return new Response(
-          JSON.stringify({
-            ok: true,
-            queued: true,
-            status,
-            reason:
-              "Sandbox is paused; resume initiated. The follow-up prompt will be delivered as soon as the runner reconnects (usually < 5 s).",
-            recoverable: true,
-          }),
-          { status: 202, headers: corsHeaders },
-        );
-      }
-      const { text } = await request.json<{ text: string }>();
-      // If the session is sitting at review_ready (first turn done, no
-      // PR yet), transition back to running so the second turn doesn't
-      // throw on the runner.complete -> review_ready re-transition.
-      if (this.session?.status === "review_ready") {
-        this.transition("running");
-      }
-      this.appendEvent("agent.started", "user", { taskDescription: text });
-      this.sendRunnerCommand("agent.prompt", {
-        taskDescription: text,
-        context: text,
-        model: this.profile?.model ?? "",
-        allowedTools: this.profile?.allowedTools ?? [],
-      });
-      return new Response(JSON.stringify({ ok: true }), { headers: corsHeaders });
-    }
-
-    // ---- WebSocket upgrade ----
     const upgradeHeader = request.headers.get("Upgrade");
-    console.log(`[DO fetch] path=${url.pathname} upgrade=${upgradeHeader} role=${url.searchParams.get("role")}`);
-    if (upgradeHeader === "websocket") {
-      // Determine role from path: /sessions/:id/runner = runner, /sessions/:id/stream = client
-      const pathParts = url.pathname.split("/");
-      const wsRole = pathParts[pathParts.length - 1] === "runner" ? "runner" : "client";
-      const role = wsRole;
-      const token = url.searchParams.get("token") ?? "";
-
-      const pair = new WebSocketPair();
-      const [client, server] = Object.values(pair);
-
-      if (role === "runner") {
-        await this.handleRunnerWS(server, token);
-      } else {
-        await this.handleClientWS(server);
-      }
-
-      return new Response(null, { status: 101, webSocket: client });
+    if (upgradeHeader !== "websocket") {
+      return new Response(JSON.stringify({ error: "Not found" }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      });
     }
 
-    return new Response(JSON.stringify({ error: "Not found" }), {
-      status: 404,
-      headers: corsHeaders,
-    });
+    // Determine role from path: /sessions/:id/runner = runner, /sessions/:id/stream = client
+    const pathParts = url.pathname.split("/");
+    const role = pathParts[pathParts.length - 1] === "runner" ? "runner" : "client";
+    const token = url.searchParams.get("token") ?? "";
+
+    const pair = new WebSocketPair();
+    const [client, server] = Object.values(pair);
+
+    if (role === "runner") {
+      await this.handleRunnerWS(server, token);
+    } else {
+      await this.handleClientWS(server);
+    }
+
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  // ---- Hibernation API handlers ----
+  // Called by the runtime when an inbound message/close arrives on a
+  // hibernated WS (skill: workers/gotchas "WebSocket connection closes
+  // unexpectedly"). this.session may be null until restore() runs.
+
+  override async webSocketMessage(ws: WebSocket, data: string | ArrayBuffer): Promise<void> {
+    if (!this.session) await this.restore();
+    const att = this.readAttachment(ws);
+    if (att.tag === WS_TAGS.RUNNER) {
+      this.handleRunnerMessage(ws, data);
+    } else {
+      this.handleClientMessage(ws, data);
+    }
+  }
+
+  override async webSocketClose(
+    ws: WebSocket,
+    _code: number,
+    _reason: string,
+    _wasClean: boolean,
+  ): Promise<void> {
+    if (!this.session) await this.restore();
+    const att = this.readAttachment(ws);
+    if (att.tag === WS_TAGS.RUNNER && this.session) {
+      this.session.runnerConnected = false;
+      this.appendEvent("runner.disconnected", "runner");
+      this.stopHeartbeatCheck();
+    }
+    // Client closes are noise — no event to emit.
+  }
+
+  override async webSocketError(_ws: WebSocket, _error: unknown): Promise<void> {
+    // Errors are always followed by webSocketClose; nothing to do here.
   }
 }
+
+// Result envelope for sendPrompt — discriminated union so the Worker can
+// map RPC results back onto HTTP status codes without re-parsing strings.
+export type PromptResult =
+  | { kind: "terminal"; status: SessionStatus | undefined; body: Record<string, unknown> }
+  | { kind: "no_resume"; status: SessionStatus | undefined; body: Record<string, unknown> }
+  | { kind: "queued"; status: SessionStatus | undefined; body: Record<string, unknown> }
+  | { kind: "ok"; body: { ok: true } };

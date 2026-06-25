@@ -49,4 +49,14 @@ export class EventLog {
     this.events = [];
     this.nextSeq = 0;
   }
+
+  /**
+   * Restore a previously-persisted event into the log, preserving its seq.
+   * Caller must pass events in seq order (DO restore() iterates the storage
+   * list, which is already sorted by our zero-padded key).
+   */
+  appendExisting(event: HermesEvent): void {
+    this.events.push(event);
+    if (event.seq >= this.nextSeq) this.nextSeq = event.seq + 1;
+  }
 }

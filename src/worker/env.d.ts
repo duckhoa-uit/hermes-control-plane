@@ -1,6 +1,8 @@
-// Cloudflare bindings type
+// Cloudflare bindings type.
+// Mirrors `wrangler types` output shape; the generic on
+// DurableObjectNamespace<T> makes stub RPC calls type-safe.
 interface CloudflareEnv {
-  SESSION_DO: DurableObjectNamespace;
+  SESSION_DO: DurableObjectNamespace<import("./session-do").SessionDurableObject>;
   E2B_TEMPLATE: string;
   // Gates session creation. Worker doesn't call E2B directly (workerd kills
   // the SDK); it just refuses to provision when this is unset so the host
