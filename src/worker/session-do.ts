@@ -682,12 +682,19 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     session: Session | null;
     events: HermesEvent[];
     artifacts: SessionArtifacts | null;
+    repoUrl: string | null;
+    baseBranch: string | null;
   }> {
     await this.ensureRestored();
     return {
       session: this.session,
       events: this.eventLog.getAll(),
       artifacts: this.artifacts,
+      // Surface just the project fields the launcher needs to re-provision
+      // for amend mode. Keeping the full profile out for now — it carries
+      // model + tool allow-lists that are not part of the public contract.
+      repoUrl: this.profile?.repoUrl ?? null,
+      baseBranch: this.profile?.defaultBranch ?? null,
     };
   }
 

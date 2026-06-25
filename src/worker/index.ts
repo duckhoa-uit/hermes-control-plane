@@ -29,6 +29,8 @@ interface SessionDORpc {
     session: Session | null;
     events: HermesEvent[];
     artifacts: SessionArtifacts | null;
+    repoUrl: string | null;
+    baseBranch: string | null;
   }>;
   approveRequest(requestId: string): Promise<{ ok: true }>;
   abortSession(): Promise<{ ok: true }>;
@@ -123,6 +125,30 @@ export default {
           JSON.stringify({ status: "ok", service: "hermes-control-plane" }),
           { headers: CORS_HEADERS },
         );
+      }
+
+      // ---- PR index lookup ----
+      // GET /pr-index?key=<owner/repo#N>
+      // Returns the PR index row for a given prKey, or 404 if missing.
+      // Used by the launcher to decide whether send_followup_prompt should
+      // re-provision in amend mode against an open PR.
+      if (path === "/pr-index" && request.method === "GET") {
+        const key = url.searchParams.get("key");
+        if (!key) {
+          return new Response(
+            JSON.stringify({ error: "missing ?key=" }),
+            { status: 400, headers: CORS_HEADERS },
+          );
+        }
+        const stub = getPrIndexStub(env);
+        const row = await asPrIndex(stub).lookup(key);
+        if (!row) {
+          return new Response(
+            JSON.stringify({ error: "not found", key }),
+            { status: 404, headers: CORS_HEADERS },
+          );
+        }
+        return new Response(JSON.stringify({ row }), { headers: CORS_HEADERS });
       }
 
       // ---- GitHub webhook (HMAC-verified) ----
