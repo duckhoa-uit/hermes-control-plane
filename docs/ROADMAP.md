@@ -8,10 +8,46 @@ background coding agent, and the prioritized plan to close those gaps.
 - **Reference:** Ramp "Why We Built Our Own Background Agent" — <https://builders.ramp.com/post/why-we-built-our-background-agent>
 - **Status legend:** ✅ done · 🟡 partial · ❌ missing · ⚠ governance/security risk
 
-When you change scope, update the matrix **and** the roadmap section. Keep the
-two in sync. Mark items done with a PR link in the "Notes" column.
+### How to use this document
+
+- When picking up work, move the item to "in progress" by adding your name and
+  date in the Notes column.
+- When closing an item, replace the checkbox with the merge commit / PR link.
+  Do not delete items — keep history.
+- When the reference architecture (section 1) evolves (new blog, new product
+  decision), append a dated bullet rather than rewriting silently.
+- If you add a new gap, add a row to the matrix **and** a roadmap item with a
+  success criterion. No success criterion → no roadmap item.
+- When you change scope, update the matrix **and** the roadmap section. Keep
+  the two in sync. Mark items done with a PR link in the "Notes" column.
+
+### What's in this document
+
+**Part A — Plan** (forward-looking; update as scope changes)
+- §1 Reference architecture (Ramp Inspect)
+- §2 Current architecture (hermes-control-plane)
+- §3 Gap matrix
+- §4 Roadmap (P0–P4 priorities)
+- §5 Out of scope (intentionally)
+
+**Part B — Implementation log** (chronological; append-only history)
+- §7 E2B capability check (2026-06-25)
+- §8 MVP scope — Hobby tier, single user (2026-06-25)
+- §9 M1 implementation log (2026-06-25) — pre-baked template + concurrency
+- §10 Launcher sidecar (2026-06-25) — host-side provisioning
+- §11 M4 — Runner ↔ OpenCode SDK/SSE (2026-06-25)
+- §12 M5 — long-pause resume + lifecycle GC (2026-06-25)
+- §13 (if present) ROADMAP sync log
+- §14 P1.1 multi-user OAuth — locked design (next PR)
+
+P1.1 **single-user variant** (PR `author` = real user via `GITHUB_USER_TOKEN`
+env) is **shipped** through the launcher + runner; see `docs/SETUP.md` §5
+"Single-user mode". §14 is the locked design for the multi-user OAuth
+variant required by the multi-user Slack rollout in `docs/DEPLOYMENT.md`.
 
 ---
+
+> **Part A — Plan** (forward-looking; update as scope changes)
 
 ## 1. Reference architecture (Ramp Inspect)
 
@@ -84,8 +120,8 @@ row in the **Notes / PR** column._
 | 8 | Prompt queue / mid-run stop | Queued, stoppable | Single-slot `pendingPrompt` shipped (drained on `runner.connected` reconnect); follow-ups while runner alive forwarded immediately. Full FIFO queue + `/stop` (distinct from `/abort`) still ❌. | 🟡 | Low | Single-slot shipped §12.15 (M5); full M2.3 deferred |
 | 9 | DO + SQLite per session | Yes | DO Storage only (D1/R2 declared but unused — deleted §12.16) | 🟡 | Low | Split-store deferred per §8.5 |
 | 10 | WebSocket hibernation | Cloudflare Agents SDK | Plain WS in DO | 🟡 | Low (cost) | |
-| 11 | Multiplayer / author attribution | Yes, per-prompt author | Single implicit owner; no `author_user_id` on events | ❌ | Med | |
-| 12 | PR auth | User GitHub OAuth token | GitHub **App** installation token (`src/providers/github.ts`) | ⚠ | **High (governance)** | Users can self-approve their own PRs |
+| 11 | Multiplayer / author attribution | Yes, per-prompt author | Single implicit owner; no `author_user_id` on events. Explicitly a single-user app until §14 ships (`docs/DEPLOYMENT.md` multi-user Slack rollout depends on §14). | ❌ | Med | P3.1 / §14 |
+| 12 | PR auth | User GitHub OAuth token | **Single-user shipped:** `GITHUB_USER_TOKEN` env (PAT/OAuth) used by the runner for `git push` + `POST /pulls`; PR `author` = real user. App token is fallback. Multi-user (per-user OAuth storage) still locked design in §14. | 🟡 | Low (single user) | P1.1 single-user shipped; §14 = multi-user |
 | 13 | GitHub webhooks | PR open/merge/close → events | None | ❌ | Med | |
 | 14 | Verification tools | Sentry/DD/LD/Braintrust/screenshots/computer-use | Test runner only (per profile) | ❌ | Med | |
 | 15 | Skills/MCPs | Encode shipping conventions | None | ❌ | Low | |
@@ -207,18 +243,9 @@ Capture decisions to *not* do something, so we stop re-litigating.
 
 ---
 
-## 6. How to use this document
-
-- When picking up work, move the item to "in progress" by adding your name and
-  date in the Notes column.
-- When closing an item, replace the checkbox with the merge commit / PR link.
-  Do not delete items — keep history.
-- When the reference architecture (section 1) evolves (new blog, new product
-  decision), append a dated bullet rather than rewriting silently.
-- If you add a new gap, add a row to the matrix **and** a roadmap item with a
-  success criterion. No success criterion → no roadmap item.
-
----
+> **Part B — Implementation log** (chronological; append-only history.
+> Numbering jumps from §5 to §7 because the old §6 "How to use this document"
+> moved into the doc preamble.)
 
 ## 7. E2B capability check (2026-06-25)
 
@@ -343,13 +370,14 @@ described, revisit.
   (M2) covers single-session continuity. *Limitation while deferred:* cannot
   branch a session ("retry this prompt with a different model") without
   re-running from scratch. Acceptable for MVP.
-- ~~**User GitHub OAuth for PR creation (was P1.1).**~~ **No longer
-  deferred — promoted to release blocker.** Design locked in §14;
-  implementation is the next PR after this sync. *Reason for promotion:*
-  the deployment plan (`docs/DEPLOYMENT.md`) calls for multi-user Slack
-  rollout in release 1, which requires the no-self-approve rule, which
-  requires the PR `user` to be the real user (not the App). Cannot be
-  deferred without dropping the multi-user goal.
+- ~~**User GitHub OAuth for PR creation (was P1.1).**~~ **Single-user
+  variant shipped; multi-user variant is the locked §14 design.** The
+  runner now uses `GITHUB_USER_TOKEN` (operator's PAT/OAuth, supplied via
+  launcher env) for `git push` + `POST /pulls` — PR `author` = real user,
+  no self-approve loophole for the single human operator. *Still pending:*
+  per-user OAuth storage (`UsersDurableObject`, `/auth/github/callback`,
+  per-route auth) required by the multi-user Slack rollout in
+  `docs/DEPLOYMENT.md`. Tracked in §14.
 - **GitHub webhooks (was P1.2).** *Purposes in our system:* (a) drive
   session state machine to a real terminal state on
   `pr.merged`/`pr.closed`/`check_run.failed`; (b) auto-resume a paused

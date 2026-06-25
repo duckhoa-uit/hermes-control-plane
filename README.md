@@ -138,11 +138,12 @@ bun install
 E2B_API_KEY=… bun run template:build
 
 # Three terminals:
-bun run dev                                  # 1. Cloudflare Worker on :8788
-ngrok http 8788                              # 2. public URL for the runner to dial
+bun run dev                                  # 1. Cloudflare Worker on :8787
+ngrok http 8787                              # 2. public URL for the runner to dial
 HERMES_PUBLIC_URL=https://<ngrok> \
 E2B_API_KEY=… ZAI_API_KEY=… \
 GITHUB_APP_ID=… GITHUB_PRIVATE_KEY_FILE=… \
+GITHUB_USER_TOKEN=$(gh auth token) GITHUB_USER_LOGIN=<your-handle> \
 bun run launcher                             # 3. sidecar on :8789
 
 # Trigger a session:
@@ -162,7 +163,7 @@ curl -X POST http://localhost:8789/sessions \
 | `GET` | `/sessions/:id` | passthrough to Worker state |
 | `DELETE` | `/sessions/:id` | kill sandbox + abort DO session (works even if sidecar forgot the session) |
 
-### Worker (`http://localhost:8788` by default)
+### Worker (`http://localhost:8787` by default)
 
 | Method | Path | Notes |
 |--------|------|---|
@@ -192,11 +193,13 @@ The launcher (process env):
 |-----|---------|
 | `E2B_API_KEY` | required |
 | `E2B_TEMPLATE` | template alias, default `hermes-runner` |
-| `HERMES_BASE_URL` | where to reach the Worker, default `http://localhost:8788` |
+| `HERMES_BASE_URL` | where to reach the Worker, default `http://localhost:8787` |
 | `HERMES_PUBLIC_URL` | URL the runner inside the sandbox dials over WS (ngrok in dev) |
 | `HERMES_LAUNCHER_PORT` | default `8789` |
 | `ZAI_API_KEY`, `ZAI_MODEL` | OpenCode model config |
-| `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY` *or* `GITHUB_PRIVATE_KEY_FILE` | PKCS#8 PEM; used to mint short-lived, repo-scoped installation tokens |
+| `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY` *or* `GITHUB_PRIVATE_KEY_FILE` | PKCS#8 PEM; used to mint short-lived, repo-scoped installation tokens (fallback identity) |
+| `GITHUB_USER_TOKEN` | Single-user mode: the human's GitHub PAT or OAuth token. When set, the runner uses it for `git push` + `POST /pulls` so the PR `author` is the real user. Falls back to the App token when unset. |
+| `GITHUB_USER_LOGIN`, `GITHUB_USER_EMAIL` | Git author identity used inside the sandbox when `GITHUB_USER_TOKEN` is set. Email defaults to `<login>@users.noreply.github.com`. |
 
 ## Sandbox lifecycle
 
@@ -208,7 +211,7 @@ Owned by the launcher, not the Worker. The rules:
 | Session reaches `review_ready` | launcher auto-triggers `/create-pr` |
 | Launcher starts | orphan sweep: for each E2B sandbox tagged `metadata.hermes_session_id`, query Worker; kill if terminal or 404 |
 | `DELETE /sessions/:id` | kill tracked sandbox, plus scan E2B for matching `hermes_session_id` metadata (covers post-restart cleanup) |
-| Watcher hits 35-min deadline | force-kill (safety net above E2B's 15-min idle cap) |
+| Watcher hits 24-h deadline | force-kill (runaway-job backstop; paused sandboxes are free at E2B so the only reason to kill is a forgotten session — see ROADMAP §12.14) |
 | Provision fails (bad repo, bad template, E2B down) | sandbox killed; DO aborted |
 
 Every sandbox carries `metadata: { hermes_session_id, hermes_repo }` so the
@@ -217,9 +220,13 @@ sweeper can map strays back to sessions. Untagged sandboxes are never touched.
 ## Security model
 
 - Runner gets a session-scoped WS token, never broad credentials.
-- GitHub access is via short-lived (≤ 1 hour), single-repo installation tokens
-  minted per session. PR authorship is the App identity (`hermes-bot`); see
-  [`docs/ROADMAP.md §8.3`](docs/ROADMAP.md) for the per-user OAuth plan.
+- GitHub access uses two tokens per session: (a) a short-lived (≤ 1 h),
+  single-repo GitHub App installation token, used as a fallback identity and
+  for repo metadata; (b) the operator's `GITHUB_USER_TOKEN` (PAT or OAuth),
+  used by the runner for `git push` + `POST /pulls` so the PR `author` is the
+  real user. Single-user app: there is no per-user OAuth storage — the
+  operator's token is supplied via launcher env. Multi-user OAuth storage is
+  the locked design in [`docs/ROADMAP.md §14`](docs/ROADMAP.md).
 - The sandbox is throwaway — any `rm -rf`, `git push --force`, or runaway loop
   dies with the sandbox.
 - Task descriptions are treated as untrusted context, not as instructions to

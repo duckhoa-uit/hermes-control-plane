@@ -24,7 +24,7 @@ bun run test         # 87 tests should pass, no external creds needed
 bun run typecheck    # tsc --noEmit clean
 ```
 
-`bun run dev` will boot the Cloudflare Worker on `localhost:8788`. Without
+`bun run dev` will boot the Cloudflare Worker on `localhost:8787`. Without
 the launcher (next sections) you can hit `/health` and unit-test the API
 surface, but you cannot run a real session.
 
@@ -93,7 +93,7 @@ repo-scoped installation tokens minted per session.
    - org: `https://github.com/organizations/<org>/settings/apps/new`
 2. Fill in:
    - Name: `Hermes Control Plane` (must be globally unique)
-   - Homepage URL: `http://localhost:8788`
+   - Homepage URL: `http://localhost:8787`
 3. **Webhook**: uncheck "Active". Leave URL/secret blank.
 4. **Repository permissions**:
 
@@ -149,13 +149,41 @@ MIIEv…
 -----END PRIVATE KEY-----
 ```
 
+### Single-user mode: PR authored by you (P1.1)
+
+By default the runner pushes and opens the PR with the App installation
+token, so the PR `author` is the GitHub App bot (e.g. `hermes-bot`). For a
+single-user setup, point the runner at a personal access token so the PR
+`author` is your real user — required for branch-protection rules like "PRs
+must be reviewed by someone other than the author".
+
+1. Create a fine-grained PAT at https://github.com/settings/tokens?type=beta
+   - Resource owner: your user (or org).
+   - Repository access: select the repos Hermes touches.
+   - Repository permissions: **Contents: Read & write**,
+     **Pull requests: Read & write**. Leave everything else as No access.
+   - Expiration: 90 days (rotate).
+2. Export it alongside the App creds:
+   ```bash
+   export GITHUB_USER_TOKEN=github_pat_xxx
+   export GITHUB_USER_LOGIN=your-github-handle
+   export GITHUB_USER_EMAIL=you@example.com   # optional; falls back to
+                                              # <login>@users.noreply.github.com
+   ```
+
+When `GITHUB_USER_TOKEN` is set the runner uses it for `git push` and the
+`POST /pulls` call, and sets the git author from `GITHUB_USER_LOGIN/EMAIL`.
+The App token is still minted and forwarded as a fallback. When the user
+token is absent the runner falls back to the App-bot identity (the previous
+behaviour).
+
 ## 6. Public URL for the runner (ngrok in dev)
 
 The runner inside the sandbox dials your Worker over WebSocket. Locally that
 needs a public URL.
 
 ```bash
-ngrok http 8788
+ngrok http 8787
 # copy the https URL, e.g. https://abcd-1234.ngrok-free.app
 export HERMES_PUBLIC_URL=https://abcd-1234.ngrok-free.app
 ```
@@ -180,6 +208,11 @@ GITHUB_APP_ID=123456
 GITHUB_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----
 …
 -----END PRIVATE KEY-----
+
+# Single-user mode (P1.1): PR authored by the real user
+GITHUB_USER_TOKEN=github_pat_xxx
+GITHUB_USER_LOGIN=your-github-handle
+GITHUB_USER_EMAIL=you@example.com
 ```
 
 The launcher reads its own env from the shell that starts it, not from
@@ -191,10 +224,10 @@ them inline when launching.
 ```bash
 # Terminal 1 — Cloudflare Worker
 bun run dev
-# Ready on http://localhost:8788
+# Ready on http://localhost:8787
 
 # Terminal 2 — public URL for the runner to dial
-ngrok http 8788
+ngrok http 8787
 # https://abcd-1234.ngrok-free.app
 ```
 
@@ -202,7 +235,7 @@ ngrok http 8788
 # Terminal 3 — launcher (sidecar)
 export E2B_API_KEY=… ZAI_API_KEY=… ZAI_MODEL=glm-5.2
 export GITHUB_APP_ID=… GITHUB_PRIVATE_KEY_FILE=/abs/path/...pkcs8.pem
-export HERMES_BASE_URL=http://localhost:8788
+export HERMES_BASE_URL=http://localhost:8787
 export HERMES_PUBLIC_URL=https://abcd-1234.ngrok-free.app
 export E2B_TEMPLATE=hermes-runner
 bun run launcher
@@ -226,7 +259,7 @@ Watch the events (in another shell):
 
 ```bash
 SID=<sessionId>
-watch -n 2 "curl -s http://localhost:8788/sessions/$SID | jq '{status: .session.status, prUrl: .artifacts.prUrl, events: (.events|length)}'"
+watch -n 2 "curl -s http://localhost:8787/sessions/$SID | jq '{status: .session.status, prUrl: .artifacts.prUrl, events: (.events|length)}'"
 ```
 
 On success: status reaches `completed` in ~30–60 s, `artifacts.prUrl` is a
@@ -246,22 +279,94 @@ real GitHub PR, the sandbox is auto-killed.
   `HERMES_LAUNCHER_URL`. The CLI provisions the sandbox in-process and reaps
   it on exit.
 
-## 10. Cloudflare deployment (when you're ready)
+## 10. Deployment (single-user, production)
+
+Two long-running components: the **Worker** on Cloudflare and the
+**launcher** on any always-on host with public egress.
+
+### 10.1 Worker (Cloudflare)
+
+Durable Object Storage is the only persistent store (no D1/R2). Set
+secrets, then deploy:
 
 ```bash
-# DO Storage is the only persistent store (D1/R2 removed in §12.16).
-# Just set Worker secrets and deploy.
-wrangler secret put MAX_CONCURRENT_SESSIONS  # optional override
+# One-off: log into Cloudflare
+wrangler login
 
-# Deploy
+# Secrets (use `wrangler secret put` — do NOT commit them to wrangler.toml)
+wrangler secret put PUBLIC_BASE_URL          # https://hermes.<your-domain>.workers.dev
+wrangler secret put HERMES_LAUNCHER_URL      # https://<your-launcher-host>:8789
+
+# Optional override of the default 10 from wrangler.toml [vars]
+# wrangler secret put MAX_CONCURRENT_SESSIONS
+
 bun run deploy
 ```
 
-Note: the deployed Worker URL replaces the ngrok tunnel. Point the
-launcher's `HERMES_BASE_URL` and `HERMES_PUBLIC_URL` at it. The launcher
-itself still has to run somewhere with internet egress and the E2B+GH App
-credentials (see [`ROADMAP.md §10`](ROADMAP.md) for the deploy
-follow-up).
+Cloudflare will print the deployed Worker URL. Set that as
+`PUBLIC_BASE_URL` (the runner inside the sandbox dials this over WSS — no
+more ngrok needed in prod).
+
+### 10.2 Launcher (any always-on host)
+
+The launcher cannot run on Workers (workerd kills the E2B SDK). Run it on
+a tiny VPS, Fly.io machine, Railway service, or your own box. Required
+process env:
+
+```bash
+# E2B
+export E2B_API_KEY=e2b_...
+export E2B_TEMPLATE=hermes-runner
+
+# Model
+export ZAI_API_KEY=...
+export ZAI_MODEL=glm-5.2
+
+# GitHub App (bot fallback + repo metadata)
+export GITHUB_APP_ID=123456
+export GITHUB_PRIVATE_KEY_FILE=/etc/hermes/app.pkcs8.pem
+#   ...or paste the PEM inline:
+# export GITHUB_PRIVATE_KEY="$(cat /etc/hermes/app.pkcs8.pem)"
+
+# P1.1 single-user OAuth — PR author = real user
+export GITHUB_USER_TOKEN=github_pat_...     # fine-grained PAT, see §5 sub-section
+export GITHUB_USER_LOGIN=your-github-handle
+export GITHUB_USER_EMAIL=you@example.com
+
+# Wire to the deployed Worker
+export HERMES_BASE_URL=https://hermes.<your-domain>.workers.dev
+export HERMES_PUBLIC_URL=https://hermes.<your-domain>.workers.dev
+
+# Optional
+export HERMES_LAUNCHER_PORT=8789
+export MAX_CONCURRENT_SESSIONS=10
+export HERMES_AUTO_PR=1
+
+bun run launcher
+```
+
+Run it under a process supervisor (systemd, pm2, the platform's restart
+policy). On boot it runs the orphan sweep, so a crash + restart is safe.
+
+### 10.3 Token rotation
+
+- **GitHub App private key**: rotate from GitHub App settings → regenerate
+  PEM → replace `GITHUB_PRIVATE_KEY_FILE` → restart launcher.
+- **`GITHUB_USER_TOKEN`** (PAT): rotate every 90 days. Restart launcher to
+  pick up the new value. In-flight sessions started with the old token
+  finish on the old token (the token is captured in the sandbox env at
+  provision time).
+- **`E2B_API_KEY`, `ZAI_API_KEY`**: same pattern — replace env + restart
+  launcher.
+
+### 10.4 Single-user reminder
+
+There is no authentication on the Worker's session-mutating routes. Do
+**not** expose the deployed Worker URL publicly without a Cloudflare
+Access policy or equivalent (Zero Trust, IP allowlist, basic auth via a
+front-end Worker). A second operator hitting `POST /sessions` would push
+under your `GITHUB_USER_TOKEN`. Multi-user auth is tracked under P3.1 in
+[`ROADMAP.md`](ROADMAP.md).
 
 ## 11. Verification checklist
 
@@ -269,8 +374,9 @@ follow-up).
 |---|---|---|
 | Unit + integration tests | `bun run test` | 87/87 |
 | Typecheck | `bun run typecheck` | no output |
-| Worker boots | `bun run dev` then `curl http://localhost:8788/health` | `{"status":"ok",...}` |
+| Worker boots | `bun run dev` then `curl http://localhost:8787/health` | `200 OK` |
 | Template build | `bun run template:build` | `template id written to …` |
 | Launcher boots | `bun run launcher` then `curl http://localhost:8789/health` | `{"status":"ok",...,"activeSessions":0}` |
 | Orphan sweeper | restart launcher; existing tagged sandboxes whose sessions are terminal die | sweep log `scanned=N killed=N kept=0` |
 | Full e2e | `POST /sessions` on launcher | session reaches `completed`; real PR opened; E2B list empty after |
+| **P1.1 PR author** | `gh pr view <N> --json author` on the resulting PR | `author.login == $GITHUB_USER_LOGIN` and `author.is_bot == false` |
