@@ -1792,3 +1792,86 @@ single copy), accessible via the existing artifacts API path.
   the `session.completed` transition will now see it slightly earlier
   (runner-side, before review_ready). Documented contract is "emitted
   when diff is ready" — earlier emission still satisfies that.
+
+### 12.17 Permission auto-allow — close Gap #1 from research audit (2026-06-25)
+
+After the storage cleanup PR (§12.16) shipped, em did a deeper audit
+of opencode + OpenHands event taxonomy to find gaps. The biggest
+finding was Gap #1: the runner maps `permission.updated` →
+`approval.requested` and the DO routes `approval.grant`/`approval.deny`
+back, but `bridge.ts:144-148` only `sendCommandAck()`s without ever
+calling `opencode.permission.reply()`. So if opencode ever emits
+`permission.asked`, the tool call hangs until heartbeat timeout.
+
+#### Why it never broke live (until now)
+
+Default agent `"build"` (`packages/opencode/src/agent/agent.ts:120`)
+has `"*": "allow"` baked in. That covers 95% of cases. The remaining
+5% would block forever:
+
+| Edge case | Default agent rule | Triggered when |
+|---|---|---|
+| `.env`, `.env.*` files | `read` → `ask` | agent reads env config |
+| External directory access | `external_directory` → `ask` | agent `cd`s outside repo |
+| User `opencode.json` in repo | overrides above | agent profile churn |
+| `doom_loop` heuristic | `ask` | opencode flags suspected infinite tool loop |
+
+#### Why `--dangerously-skip-permissions` doesn't apply
+
+That flag belongs to **`opencode run` (CLI)**, not `opencode serve`
+(what Hermes spawns). Verified in
+`packages/opencode/src/cli/cmd/run.ts:783` — the CLI subscribes to
+SSE and self-replies `client.permission.reply({reply:"once"})` when
+it sees `permission.asked`. The `serve` command (`cmd/serve.ts`)
+has no equivalent flag — reply must come from the connecting client.
+
+#### The fix
+
+opencode's `session.prompt` body accepts
+`tools: { [name: string]: boolean }`. When set, opencode prepends
+`{permission: <name>, action: enabled?"allow":"deny", pattern: "*"}`
+rules to `session.permission`
+(`packages/opencode/src/session/prompt.ts:1163`). Pattern `*` +
+explicit allow beats both the agent default and any user
+`opencode.json`. This is the same effect as
+`--dangerously-skip-permissions` but enforced server-side via the
+session config rather than client SSE polling.
+
+Hermes runs unattended (no UI to reply), so we pre-declare every
+tool as allowed at every prompt:
+
+```ts
+// src/runner/sandbox-runner.ts
+const ALLOW_ALL_TOOLS = {
+  read: true, edit: true, write: true, bash: true,
+  grep: true, glob: true, list: true,
+  webfetch: true, websearch: true, todowrite: true, task: true,
+};
+// in opencode.session.prompt body:
+tools: ALLOW_ALL_TOOLS,
+```
+
+#### What this closes
+
+- Gap #1 (Permission round-trip) from the research audit — no longer
+  blocking. `bridge.ts:144-148` ack-only behavior is now harmless
+  because opencode never asks.
+- The dead `approval.grant`/`approval.deny` command paths stay (UI
+  may still want to no-op approve/deny for visibility), but the
+  asymmetry with opencode is no longer a correctness bug.
+
+#### Out of scope
+
+- Removing `bridge.ts` approval commands — keeps the protocol
+  forward-compatible if a future profile wants real approvals.
+- Closing Gap #2 (error classification), Gap #3 (retry events),
+  Gap #4 (aborted vs failed) — separate PR, see audit report.
+
+#### Success criteria
+
+1. `bun test` — 87/87 green
+2. `bun run typecheck` — clean
+3. Live E2E: run a session where the agent reads a `.env`-style file
+   (would have hit the `ask` edge case pre-fix). Verify:
+   - `permission.asked`/`permission.updated` events: 0
+   - Session completes without heartbeat-timeout failure

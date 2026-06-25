@@ -30,6 +30,26 @@ const MODEL_ID = process.env.OPENCODE_MODEL_ID || "glm-5.2";
 const PROVIDER_ID = process.env.OPENCODE_PROVIDER_ID || "zai-coding-plan";
 const REPO_DIR = "/home/user/repo";
 
+// §12.17 — Hermes runs unattended; pre-declare every tool as allowed so
+// opencode never blocks on permission.asked. The default "build" agent
+// allows "*" but adds edge-case asks (.env files, external_directory).
+// Passing `tools` in session.prompt body builds explicit allow rules per
+// tool with pattern "*", overriding the agent default + any user
+// opencode.json in the cloned repo (per packages/opencode/src/session/prompt.ts:1163).
+const ALLOW_ALL_TOOLS: Record<string, boolean> = {
+  read: true,
+  edit: true,
+  write: true,
+  bash: true,
+  grep: true,
+  glob: true,
+  list: true,
+  webfetch: true,
+  websearch: true,
+  todowrite: true,
+  task: true,
+};
+
 if (!SESSION_ID || !RUNNER_TOKEN || !CONTROL_WS) {
   console.error("Missing required env vars (HERMES_SESSION_ID, HERMES_RUNNER_TOKEN, HERMES_CONTROL_WS)");
   process.exit(1);
@@ -274,6 +294,11 @@ async function runPromptTurn(taskDescription: string, context: string): Promise<
       body: {
         model: { providerID: PROVIDER_ID, modelID: MODEL_ID },
         parts: [{ type: "text", text }],
+        // §12.17 — pre-declare every tool as allowed so opencode never emits
+        // permission.asked. Hermes runs unattended; there is no UI to reply.
+        // Overrides default "build" agent's edge-case asks (.env, external_directory)
+        // and any user-supplied opencode.json in the cloned repo.
+        tools: ALLOW_ALL_TOOLS,
       },
       throwOnError: true,
     });
