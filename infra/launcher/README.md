@@ -4,7 +4,7 @@ Three files in this directory:
 
 | File | Purpose |
 |---|---|
-| `install.sh` | One-shot bootstrap for a fresh Debian/Ubuntu VPS. Creates the `hermes-cp` user, installs bun + cloudflared, clones this repo, builds `launcher.js`, drops the systemd unit, copies `env.example` to `/etc/hermes-control-plane/launcher.env`. Idempotent — re-run to update the bundle from the latest `main`. |
+| `install.sh` | One-shot bootstrap for a fresh Debian/Ubuntu VPS. Creates the `hermes-cp` user, installs bun + cloudflared, clones this repo, builds `launcher.js`, drops the systemd unit, and writes `/etc/hermes-control-plane/launcher.env` (prompts interactively for the 5 secrets, or reads them from env vars if already exported, or just drops the template when run non-interactively / with `HERMES_NO_PROMPT=1`). Idempotent — re-run to update the bundle from the latest `main`. |
 | `hermes-launcher.service` | systemd unit. Loads `/etc/hermes-control-plane/launcher.env`, runs `bun /opt/hermes-control-plane/launcher.js` as the `hermes-cp` user, restarts on crash. |
 | `env.example` | Template for `/etc/hermes-control-plane/launcher.env`. Copy + fill in real values. |
 
@@ -28,8 +28,31 @@ curl -fsSL https://raw.githubusercontent.com/duckhoa-uit/hermes-control-plane/ma
 ```
 
 `install.sh` is idempotent: re-run to refresh `launcher.js` from the latest
-`main`. The `env.example` file is only copied on first run — your filled-in
-`/etc/hermes-control-plane/launcher.env` is preserved on re-runs.
+`main`. Your filled-in `/etc/hermes-control-plane/launcher.env` is
+preserved on re-runs (the prompts only fire when the file is missing
+or still contains `REPLACE_ME` placeholders).
+
+Three ways to provide the secrets:
+
+```bash
+# 1. Interactive (default when you `ssh` in and run the script with a TTY)
+curl -fsSL https://raw.githubusercontent.com/duckhoa-uit/hermes-control-plane/main/infra/launcher/install.sh \
+  | sudo bash
+# install.sh asks for E2B_API_KEY, ZAI_API_KEY, GITHUB_USER_TOKEN,
+# GITHUB_USER_LOGIN, GITHUB_USER_EMAIL (optional),
+# HERMES_BASE_URL (default: the deployed Worker URL), HERMES_PUBLIC_URL.
+
+# 2. Pre-exported env vars (good when piping into bash):
+curl -fsSL https://raw.githubusercontent.com/duckhoa-uit/hermes-control-plane/main/infra/launcher/install.sh \
+  | sudo E2B_API_KEY=... ZAI_API_KEY=... GITHUB_USER_TOKEN=... \
+         GITHUB_USER_LOGIN=duckhoa-uit \
+         HERMES_BASE_URL=https://hermes-control-plane.duckhoa-dev.workers.dev \
+         bash
+
+# 3. Skip prompts entirely — drop the env.example template and edit by hand later:
+curl -fsSL .../install.sh | sudo HERMES_NO_PROMPT=1 bash
+```
+
 
 After it finishes, the script prints the 6 remaining manual steps:
 
