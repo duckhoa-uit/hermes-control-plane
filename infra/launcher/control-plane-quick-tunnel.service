@@ -21,7 +21,8 @@ Requires=control-plane-launcher.service
 Type=simple
 User=hermes-cp
 Group=hermes-cp
-ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate --url http://localhost:8789
+# Cloudflare .deb installs to /usr/bin (not /usr/local/bin)
+ExecStart=/usr/bin/cloudflared tunnel --no-autoupdate --url http://localhost:8789
 Restart=always
 RestartSec=5
 
