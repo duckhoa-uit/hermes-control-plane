@@ -3,7 +3,7 @@
 # runs your Hermes agent.
 #
 # Run as root:
-#   sudo bash infra/launcher/setup.sh
+#   sudo bash infra/launcher/install.sh
 #
 # What it does (idempotent):
 #   1. apt deps + bun + cloudflared

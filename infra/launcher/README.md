@@ -4,7 +4,7 @@ Three files in this directory:
 
 | File | Purpose |
 |---|---|
-| `setup.sh` | One-shot bootstrap for a fresh Debian/Ubuntu VPS. Creates the `hermes` user, installs bun + cloudflared, clones this repo, builds `launcher.js`, drops the systemd unit, copies `env.example` to `/etc/hermes/launcher.env`. Idempotent — re-run to update the bundle from the latest `main`. |
+| `install.sh` | One-shot bootstrap for a fresh Debian/Ubuntu VPS. Creates the `hermes` user, installs bun + cloudflared, clones this repo, builds `launcher.js`, drops the systemd unit, copies `env.example` to `/etc/hermes/launcher.env`. Idempotent — re-run to update the bundle from the latest `main`. |
 | `hermes-launcher.service` | systemd unit. Loads `/etc/hermes/launcher.env`, runs `bun /opt/hermes/launcher.js` as the `hermes` user, restarts on crash. |
 | `env.example` | Template for `/etc/hermes/launcher.env`. Copy + fill in real values. |
 
@@ -13,21 +13,21 @@ See `docs/SETUP.md` §10.2 for the env block this file documents, and
 
 ## Quick install (on the VM, as root)
 
-One command (skip cloning by hand — `setup.sh` does it):
+One command (skip cloning by hand — `install.sh` does it):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/duckhoa-uit/hermes-control-plane/main/infra/launcher/setup.sh \
+curl -fsSL https://raw.githubusercontent.com/duckhoa-uit/hermes-control-plane/main/infra/launcher/install.sh \
   | sudo bash
 ```
 
 Or pin a tag (recommended for repeatable installs):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/duckhoa-uit/hermes-control-plane/main/infra/launcher/setup.sh \
+curl -fsSL https://raw.githubusercontent.com/duckhoa-uit/hermes-control-plane/main/infra/launcher/install.sh \
   | sudo HERMES_REPO_REF=v0.4.0 bash
 ```
 
-`setup.sh` is idempotent: re-run to refresh `launcher.js` from the latest
+`install.sh` is idempotent: re-run to refresh `launcher.js` from the latest
 `main`. The `env.example` file is only copied on first run — your filled-in
 `/etc/hermes/launcher.env` is preserved on re-runs.
 
