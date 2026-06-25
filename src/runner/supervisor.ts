@@ -25,7 +25,7 @@ const POLL_INTERVAL_MS = 250;
 const OPENCODE_HOST = "127.0.0.1";
 const OPENCODE_PORT = 4096;
 const OPENCODE_READY_LOG = "/var/log/opencode-serve.log";
-const SERVE_READY_TIMEOUT_MS = 30_000;
+const SERVE_READY_TIMEOUT_MS = 120_000;
 const SERVE_READY_LINE = "opencode server listening";
 
 interface StartConfig {
