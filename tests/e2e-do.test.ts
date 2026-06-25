@@ -1043,7 +1043,7 @@ describe("E2E: Worker + SessionDurableObject", () => {
 
     const resp = await worker.fetch(new Request("https://x/pr-index?key=" + encodeURIComponent("o/r#13")), env);
     expect(resp.status).toBe(200);
-    const { row } = await resp.json();
+    const { row } = (await resp.json()) as any;
     expect(row).toMatchObject({ prKey: "o/r#13", sessionId: id, ownerLogin: "alice", status: "open" });
   });
 
@@ -1076,7 +1076,7 @@ describe("E2E: Worker + SessionDurableObject", () => {
     const { id } = await createResp.json() as any;
     const getResp = await worker.fetch(new Request(`https://x/sessions/${id}`), env);
     expect(getResp.status).toBe(200);
-    const data = await getResp.json();
+    const data = (await getResp.json()) as any;
     expect(data.repoUrl).toBe("https://github.com/o/r");
     expect(data.baseBranch).toBe("develop");
   });

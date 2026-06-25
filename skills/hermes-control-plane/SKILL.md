@@ -215,23 +215,29 @@ Response shapes that work well — copy the spirit, not the words:
 
 ### 5. Handle follow-ups
 
-If the user replies with a change request in the same thread, call
-`send_followup_prompt` with the new text. The control plane will resume
-a paused sandbox automatically (M5). A 202 response with
-`recoverable: true` means "queued, sandbox resuming" — wait for the
-next `pr.created` or status change before responding to the user.
+Always call `send_followup_prompt(sessionId, text)` first. The tool
+picks the right flow automatically and tells you what it did via
+`structuredContent`:
 
-Follow-ups only work while the session is non-terminal. If the user
-asks for changes after the session reached `completed`, `failed`, or
-`aborted`, the sandbox is gone — call `start_coding_task` with a new
-task description that references the prior PR (e.g. "follow-up on
-<prUrl>: …") instead of `send_followup_prompt`. Don't try to revive a
-terminal session.
+- **Session still running** (paused or live) → prompt is delivered to
+  the existing sandbox. A 202 response with `recoverable: true` means
+  "queued, sandbox resuming" — wait for the next status change before
+  responding to the user.
+- **Session terminal AND its PR is still open** → the launcher
+  transparently spawns a fresh sandbox in *amend mode* against the
+  same PR. The new sandbox checks out the existing branch, the runner
+  pushes the new commit onto the open PR, and emits `pr.updated` (NOT
+  `pr.created` — the PR number stays the same). The response includes
+  `newSessionId`; start tracking it (the old `sessionId` is archived).
+  Tell the user "I'm pushing another commit to PR #N…" and link to
+  the existing PR URL — they should NOT expect a new PR.
+- **Session terminal AND its PR is merged or closed** → tool returns
+  `isError: true`. Fall back to `start_coding_task` with a fresh task
+  description that references the prior PR (e.g. "follow-up on
+  <prUrl>: …"); a new sandbox and a new PR will be opened.
 
-If `send_followup_prompt` returns a non-202 error, call
-`get_session_status` once before reporting the failure — the session
-may have moved to a terminal state between your last update and the
-follow-up.
+You don't need to inspect the session state beforehand — the tool's
+return value tells you which path it took.
 
 ## Pitfalls
 

@@ -72,7 +72,7 @@ describe("MCP send_followup_prompt", () => {
     };
     await withFetchMock(handler, async () => {
       const resp = await callTool("send_followup_prompt", { sessionId: "sess-1", text: "next step" });
-      const body = await resp.json();
+      const body = (await resp.json()) as any;
       expect(body.result.isError).toBeFalsy();
       expect(promptCalled).toBe(true);
       const structured = body.result.structuredContent;
@@ -106,7 +106,7 @@ describe("MCP send_followup_prompt", () => {
     };
     await withFetchMock(handler, async () => {
       const resp = await callTool("send_followup_prompt", { sessionId: "sess-old", text: "tweak the title" });
-      const body = await resp.json();
+      const body = (await resp.json()) as any;
       expect(body.result.isError).toBeFalsy();
       expect(launcherCalled).toMatchObject({ parentSessionId: "sess-old", taskDescription: "tweak the title" });
       const structured = body.result.structuredContent;
@@ -137,7 +137,7 @@ describe("MCP send_followup_prompt", () => {
     };
     await withFetchMock(handler, async () => {
       const resp = await callTool("send_followup_prompt", { sessionId: "sess-merged", text: "hi" });
-      const body = await resp.json();
+      const body = (await resp.json()) as any;
       expect(body.result.isError).toBe(true);
       const text = body.result.content[0].text as string;
       expect(text).toMatch(/410/);

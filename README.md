@@ -87,7 +87,7 @@ key, a fine-grained GitHub PAT. Step-by-step is in
 | Method | Path | Body / notes |
 |--------|------|---|
 | `GET` | `/health` | sidecar status + active sessions + cap |
-| `POST` | `/sessions` | `{ taskDescription, repoUrl, projectId?, baseBranch? }`. Returns `{ sessionId, sandboxId, streamUrl, stateUrl }` |
+| `POST` | `/sessions` | `{ taskDescription, repoUrl?, projectId?, baseBranch?, parentSessionId? }`. When `parentSessionId` is set, repo + base + amend triple are resolved from the parent's state + the global PR index (no new PR is opened — the runner pushes onto the parent PR's branch). Returns `{ sessionId, sandboxId, streamUrl, stateUrl, parentSessionId?, prMode? }`. |
 | `GET` | `/sessions/:id` | passthrough to Worker state |
 | `DELETE` | `/sessions/:id` | kill sandbox + abort DO session (works even if sidecar forgot the session) |
 | `POST` | `/sessions/:id/resume` | called by the DO to thaw a paused sandbox (`Sandbox.connect`) |
@@ -106,10 +106,14 @@ key, a fine-grained GitHub PAT. Step-by-step is in
 | `POST` | `/sessions/:id/abort` | force-abort |
 | `POST` | `/sessions/:id/prompt` | follow-up prompt (runner must still be connected) |
 | `POST` | `/sessions/:id/create-pr` | triggered automatically by the launcher on `review_ready` |
+| `POST` | `/webhooks/github` | HMAC-SHA-256 verified PR-lifecycle webhook. See [`docs/DEPLOYMENT.md` §13.3](docs/DEPLOYMENT.md). |
+| `GET` | `/pr-index?key=<owner/repo#N>` | Look up the PR index row (used by the launcher to verify a parent PR is still open before amend re-provision). |
 
 ## Tech stack
 
 - **Control plane**: Cloudflare Workers + Durable Objects (DO Storage is the sole persistent store; D1/R2 were removed in §12.16 of ROADMAP)
+  - SessionDurableObject — one DO instance per agent session.
+  - PrIndexDurableObject — singleton DO (`idFromName("global")`) mapping `owner/repo#N` -> session. Lets `POST /webhooks/github` and MCP `send_followup_prompt` find the parent session of an open PR. New event types: `pr.updated`, `pr.merged`, `pr.closed`.
 - **Sandbox lifecycle**: Bun sidecar, E2B Sandboxes (Hobby tier)
 - **Sandbox interior**: Node 22 + bun + `opencode serve` (HTTP/SSE) + custom supervisor/runner
 - **Agent runtime**: OpenCode driving Z.AI (`zai-coding-plan/glm-5.2` default)

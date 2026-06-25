@@ -688,6 +688,7 @@ wrangler login
 wrangler secret put E2B_API_KEY              # required; Worker refuses to provision otherwise
 wrangler secret put PUBLIC_BASE_URL          # https://hermes.<your-domain>.workers.dev
 wrangler secret put CONTROL_PLANE_LAUNCHER_URL      # https://<your-launcher-host>:8789 (Cloudflare Tunnel URL of the launcher VPS)
+wrangler secret put GITHUB_WEBHOOK_SECRET    # required for PR-lifecycle webhooks (see §13.3)
 
 bun run deploy
 ```
@@ -731,6 +732,62 @@ Run it under a process supervisor (systemd, pm2, the platform's
 restart policy). On boot it runs the orphan sweep, so a crash +
 restart is safe. The canonical `infra/launcher/install.sh` +
 `env.example` cover the systemd path.
+
+### 13.3 GitHub webhook (PR lifecycle)
+
+Hermes consumes one GitHub webhook event so the control plane knows
+when a Hermes-opened PR is **merged** or **closed**. The session
+transitions to `archived` (on merge) and the PR row is dropped from
+the global PR index DO.
+
+> **Why a webhook at all?** Without it, Hermes only knows the PR exists
+> and never gets a signal that it merged — so `send_followup_prompt`
+> against a merged PR cannot fail-closed, the event log misses
+> `pr.merged`/`pr.closed`, and the PR index grows monotonically. The
+> webhook is the only mechanism that closes the PR lifecycle loop.
+
+**Scope is intentionally narrow.** Hermes does NOT consume `@hermes`
+mentions, PR comments, or review events. Follow-up prompts go through
+the MCP gateway (Slack/Telegram → Hermes Agent → `send_followup_prompt`),
+not through GitHub. The only webhook subscription you need is:
+
+| Event | Why |
+|---|---|
+| `Pull requests` | merged/closed lifecycle |
+
+**Setup (per repository or per organization):**
+
+1. In the GitHub repo / org settings → **Webhooks → Add webhook**.
+2. **Payload URL:** `https://hermes.<your-domain>.workers.dev/webhooks/github`
+3. **Content type:** `application/json`
+4. **Secret:** generate a long random string (e.g. `openssl rand -hex 32`).
+   Save it; you will also pass it to the Worker.
+5. **SSL verification:** Enable.
+6. **Which events?** Select *"Let me select individual events"* and
+   tick **Pull requests** only. (Untick the default "Pushes".)
+7. **Active:** Enable.
+8. On the Worker:
+   ```bash
+   echo "<paste-the-secret>" | wrangler secret put GITHUB_WEBHOOK_SECRET
+   ```
+
+That's it. The Worker verifies `X-Hub-Signature-256` against the
+secret, parses the payload, looks up the PR in the global PR index DO
+(populated when Hermes opened the PR), and dispatches the lifecycle
+transition into the relevant session.
+
+**What the Worker does NOT need:**
+- A GitHub App or OAuth client — webhooks are repo-scoped and don't
+  require app installation.
+- An incoming firewall exception — GitHub originates the call to your
+  workers.dev domain; no inbound port on the launcher.
+
+**Local testing.** Use `gh webhook forward` against a `wrangler dev`
+instance. Set `GITHUB_WEBHOOK_SECRET` in `.dev.vars`. See
+`tests/github-webhook.test.ts` for the on-the-wire shape of the events
+we accept.
+
+---
 
 ---
 
