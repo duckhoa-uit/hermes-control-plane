@@ -646,13 +646,41 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     }
 
     if (path === "/prompt" && request.method === "POST") {
-      // Follow-up prompt to a still-connected runner.
-      // MVP scope: requires runner_connected; sandbox auto-pause + autoResume
-      // keeps the sandbox warm but cannot resurrect a dead runner WS, so we
-      // surface that limitation as 409.
+      // Follow-up prompt requires a still-connected runner. The follow-up
+      // window today is bounded by §12.12: ~15 min while `running`, ~55
+      // min while `review_ready`, then the sandbox is killed and we cannot
+      // bring it back without §12 M5 (long-pause resume). Surface that
+      // clearly so the caller knows whether to retry, abort, or start a
+      // fresh session.
+      const status = this.session?.status;
       if (!this.runnerConn) {
+        // Session is in a terminal state — sandbox is gone, no recovery.
+        if (status && isTerminal(status)) {
+          return new Response(
+            JSON.stringify({
+              error: "Session ended",
+              status,
+              reason:
+                "The session reached a terminal state and its sandbox has been torn down. " +
+                "Start a new session to continue the work; the previous diff and PR (if any) " +
+                "are preserved in the session record.",
+              recoverable: false,
+            }),
+            { status: 410, headers: corsHeaders },
+          );
+        }
+        // Session is non-terminal but the runner WS is gone (typically:
+        // sandbox got paused/killed by E2B between turns; see §12.12).
         return new Response(
-          JSON.stringify({ error: "Runner not connected", status: this.session?.status }),
+          JSON.stringify({
+            error: "Runner not connected",
+            status,
+            reason:
+              "The follow-up window has elapsed. The sandbox is no longer reachable; " +
+              "long-pause resume is not implemented yet (tracked under §12 M5). " +
+              "Start a new session to continue.",
+            recoverable: false,
+          }),
           { status: 409, headers: corsHeaders },
         );
       }

@@ -1351,3 +1351,67 @@ Three knobs tuned + one new launcher action:
 | opencode (agent only) | n/a — session in SQLite forever | n/a |
 
 Hermes after the fix sits between Codex (10 min) and OpenHands (∞).
+
+---
+
+### 12.13 Fail-fast contract for /sessions/:id/prompt (2026-06-25)
+
+Quick fix §12.12 extends the follow-up window to ~55 min, but it doesn't
+make the failure mode any less abrupt — at 55 min the sandbox is killed
+and any follow-up after that point cannot succeed. Codify what the
+client sees so it can handle this without guessing.
+
+#### Response shapes
+
+| Situation | HTTP | `error` | `recoverable` | `status` |
+|---|---|---|---|---|
+| Runner connected, follow-up forwarded | 200 | — | — | — |
+| Runner WS gone, session non-terminal (sandbox killed by deadline, lost connection during turn, etc.) | **409** | `"Runner not connected"` | `false` | DO's current status (e.g. `review_ready`, `running`, `stalled`) |
+| Session in terminal state (`completed` / `failed` / `aborted`) | **410** | `"Session ended"` | `false` | the terminal status |
+| Session row gone entirely (sweeper / D1 row deleted) | 404 | `"session not found"` | n/a | — |
+
+All non-success responses carry a `reason` string the client can render
+verbatim to the user. The `recoverable: false` field is the contract:
+**M5 will flip it to `true` for the 409 case when long-pause resume
+lands**; clients can pre-bake retry logic now.
+
+#### Example bodies
+
+```json
+// 409 Conflict — runner gone, session was review_ready
+{
+  "error": "Runner not connected",
+  "status": "review_ready",
+  "reason": "The follow-up window has elapsed. The sandbox is no longer reachable; long-pause resume is not implemented yet (tracked under §12 M5). Start a new session to continue.",
+  "recoverable": false
+}
+
+// 410 Gone — session reached terminal state, sandbox already torn down
+{
+  "error": "Session ended",
+  "status": "failed",
+  "reason": "The session reached a terminal state and its sandbox has been torn down. Start a new session to continue the work; the previous diff and PR (if any) are preserved in the session record.",
+  "recoverable": false
+}
+```
+
+#### What clients should do
+
+| Response | Recommended client action |
+|---|---|
+| 200 | Stream the next turn as normal |
+| 409 `recoverable: false` | Surface the `reason`; offer "Start a new session with this task" button (today's UX) |
+| 409 `recoverable: true` (post-M5) | Retry — server is bringing the sandbox back up; surface a spinner |
+| 410 | Surface the `reason`; same "Start a new session" button. The completed PR is still linked in the session record. |
+| 404 | Treat as 410 from the client's perspective — session is gone for good |
+
+#### Test coverage
+
+`tests/prompt-error-responses.test.ts` locks the shape of both 409 and
+410 bodies. Anyone changing those payloads has to touch the test, which
+keeps the client contract honest.
+
+#### Status
+
+Shipped together with §12.12. M5 (§12) will add `recoverable: true` +
+the actual `/resume` route + retry-aware client UX.
