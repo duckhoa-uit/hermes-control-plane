@@ -1,15 +1,15 @@
-# /etc/systemd/system/hermes-launcher.service
+# /etc/systemd/system/control-plane-launcher.service
 #
 # Install:
-#   sudo cp hermes-launcher.service /etc/systemd/system/
+#   sudo cp control-plane-launcher.service /etc/systemd/system/
 #   sudo systemctl daemon-reload
-#   sudo systemctl enable --now hermes-launcher
+#   sudo systemctl enable --now control-plane-launcher
 #
 # Logs:
-#   sudo journalctl -u hermes-launcher -f
+#   sudo journalctl -u control-plane-launcher -f
 #
 # Restart on env change:
-#   sudo systemctl restart hermes-launcher
+#   sudo systemctl restart control-plane-launcher
 
 [Unit]
 Description=Hermes launcher sidecar (E2B SDK + GitHub App + user OAuth token)

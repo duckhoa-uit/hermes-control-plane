@@ -1,4 +1,4 @@
-// MCP (Model Context Protocol) server bundled into the hermes-launcher.
+// MCP (Model Context Protocol) server bundled into the control-plane-launcher.
 //
 // Exposes hermes-control-plane as a single MCP server with four tools the
 // Hermes Agent (and any other MCP host) can call. Mounted on the launcher's

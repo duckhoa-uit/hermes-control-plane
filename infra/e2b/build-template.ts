@@ -4,14 +4,14 @@
 // Bakes into the snapshot:
 //   - Node 22 + npm + git + curl (from fromNodeImage)
 //   - opencode CLI (latest)
-//   - The supervisor (Node-runnable, bundled) at /opt/hermes/supervisor.js
-//   - The runner (Node-runnable, bundled) at /opt/hermes/runner.js
-//   - /opt/hermes (where the per-session start.json is dropped at runtime)
+//   - The supervisor (Node-runnable, bundled) at /opt/control-plane/supervisor.js
+//   - The runner (Node-runnable, bundled) at /opt/control-plane/runner.js
+//   - /opt/control-plane (where the per-session start.json is dropped at runtime)
 //   - Start command launches the supervisor; readiness check ensures it is up
 //
 // At runtime the launcher (src/launcher/provision.ts) only:
 //   1. Sandbox.create(templateId, { lifecycle: { onTimeout: 'pause', autoResume: true } })
-//   2. sandbox.files.write('/opt/hermes/start.json', JSON.stringify(env))
+//   2. sandbox.files.write('/opt/control-plane/start.json', JSON.stringify(env))
 //      -> the snapshotted supervisor wakes and execs the runner.
 //
 // Run (Hobby tier OK; build takes a couple of minutes the first time, near-
@@ -96,19 +96,19 @@ async function buildTemplate(): Promise<void> {
     // Build-time mutations (npm -g, mkdir under /opt and /var) need root.
     .setUser("root")
     .runCmd("npm install -g opencode-ai@1.17.10")
-    .makeDir("/opt/hermes")
+    .makeDir("/opt/control-plane")
     .makeDir("/var/log")
-    .copy("dist/supervisor.js", "/opt/hermes/supervisor.js")
-    .copy("dist/runner.js", "/opt/hermes/runner.js")
+    .copy("dist/supervisor.js", "/opt/control-plane/supervisor.js")
+    .copy("dist/runner.js", "/opt/control-plane/runner.js")
     // The runner does git operations as /home/user/repo's owner, so make sure
     // the user owns it.
-    .runCmd("mkdir -p /home/user/repo && chown -R user:user /home/user /opt/hermes /var/log")
+    .runCmd("mkdir -p /home/user/repo && chown -R user:user /home/user /opt/control-plane /var/log")
     // Back to the default unprivileged user for runtime.
     .setUser("user")
     .setStartCmd(
-      "node /opt/hermes/supervisor.js > /var/log/hermes-supervisor.log 2>&1",
+      "node /opt/control-plane/supervisor.js > /var/log/hermes-supervisor.log 2>&1",
       // M4: supervisor spawns `opencode serve` on port 4096 BEFORE waiting
-      // for /opt/hermes/start.json. We wait for the port to listen so the
+      // for /opt/control-plane/start.json. We wait for the port to listen so the
       // snapshot captures opencode warm.
       waitForPort(4096),
     );

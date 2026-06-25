@@ -1,5 +1,5 @@
 ---
-name: hermes-control-plane-coding
+name: hermes-control-plane
 description: Run a coding task in a sandbox; open a real GitHub PR.
 version: 1.0.0
 author: duckhoa-uit

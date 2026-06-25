@@ -93,7 +93,7 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
       // real sandbox creation (workerd kills the E2B SDK) — it just gates
       // on the secret being present. The host-side launcher
       // (scripts/launch-session.ts) is the one that calls Sandbox.create()
-      // and drops /opt/hermes/start.json.
+      // and drops /opt/control-plane/start.json.
       const msg =
         "E2B_API_KEY is not configured on the Worker. Set it with `wrangler secret put E2B_API_KEY` before starting a coding session.";
       console.error("[DO] sandbox provisioning blocked:", msg);
@@ -650,7 +650,7 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
       const lastBeat = this.session?.lastHeartbeat ?? 0;
       const heartbeatStale = lastBeat > 0 && (now - lastBeat) > PAUSED_HEARTBEAT_THRESHOLD_MS;
       if (!this.runnerConn || heartbeatStale) {
-        const launcherUrl = this.env.HERMES_LAUNCHER_URL;
+        const launcherUrl = this.env.HERMES_CP_LAUNCHER_URL;
         // Clear the dead WS reference so subsequent runner-state checks
         // (heartbeat watchdog, future sends) don't see a phantom alive
         // runner. The actual close event will fire later once the sandbox
@@ -671,7 +671,7 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
               error: "Runner not connected",
               status,
               reason:
-                "Resume is not configured (HERMES_LAUNCHER_URL unset). Start a new session.",
+                "Resume is not configured (HERMES_CP_LAUNCHER_URL unset). Start a new session.",
               recoverable: false,
             }),
             { status: 409, headers: corsHeaders },

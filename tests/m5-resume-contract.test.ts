@@ -73,15 +73,15 @@ describe("M5 — /prompt response shapes", () => {
     expect(body.reason).toMatch(/resume initiated/i);
   });
 
-  it("409 body keeps recoverable:false for the pre-M5 fallback when HERMES_LAUNCHER_URL is unset", () => {
+  it("409 body keeps recoverable:false for the pre-M5 fallback when HERMES_CP_LAUNCHER_URL is unset", () => {
     const body: PromptRunnerGone = {
       error: "Runner not connected",
       status: "review_ready",
-      reason: "Resume is not configured (HERMES_LAUNCHER_URL unset). Start a new session.",
+      reason: "Resume is not configured (HERMES_CP_LAUNCHER_URL unset). Start a new session.",
       recoverable: false,
     };
     expect(body.recoverable).toBe(false);
-    expect(body.reason).toMatch(/HERMES_LAUNCHER_URL unset/);
+    expect(body.reason).toMatch(/HERMES_CP_LAUNCHER_URL unset/);
   });
 
   it("410 body keeps recoverable:false for terminal sessions even when launcher is up", () => {

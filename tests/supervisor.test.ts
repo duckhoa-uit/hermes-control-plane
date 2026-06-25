@@ -1,6 +1,6 @@
 // The supervisor (src/runner/supervisor.ts) is mostly side-effectful glue:
 //   - spawn opencode serve, wait for "listening" line in log
-//   - poll /opt/hermes/start.json
+//   - poll /opt/control-plane/start.json
 //   - PUT /auth/zai-coding-plan with ZAI_API_KEY
 //   - spawn runner.js
 //   - if either child exits, kill the other

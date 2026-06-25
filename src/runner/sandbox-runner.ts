@@ -1,5 +1,5 @@
 // Standalone runner that runs inside the E2B sandbox. Bundled into
-// /opt/hermes/runner.js by infra/e2b/build-template.ts and execed by the
+// /opt/control-plane/runner.js by infra/e2b/build-template.ts and execed by the
 // supervisor once per-session secrets arrive.
 //
 // M4 shape:
@@ -22,9 +22,9 @@ import { exec as execCb } from "child_process";
 import { createOpencodeClient } from "@opencode-ai/sdk";
 import { createEventMapper } from "./event-mapper";
 
-const SESSION_ID = process.env.HERMES_SESSION_ID;
-const RUNNER_TOKEN = process.env.HERMES_RUNNER_TOKEN;
-const CONTROL_WS = process.env.HERMES_CONTROL_WS;
+const SESSION_ID = process.env.HERMES_CP_SESSION_ID;
+const RUNNER_TOKEN = process.env.HERMES_CP_RUNNER_TOKEN;
+const CONTROL_WS = process.env.HERMES_CP_CONTROL_WS;
 const OPENCODE_BASE_URL = process.env.OPENCODE_BASE_URL || "http://127.0.0.1:4096";
 const MODEL_ID = process.env.OPENCODE_MODEL_ID || "glm-5.2";
 const PROVIDER_ID = process.env.OPENCODE_PROVIDER_ID || "zai-coding-plan";
@@ -51,7 +51,7 @@ const ALLOW_ALL_TOOLS: Record<string, boolean> = {
 };
 
 if (!SESSION_ID || !RUNNER_TOKEN || !CONTROL_WS) {
-  console.error("Missing required env vars (HERMES_SESSION_ID, HERMES_RUNNER_TOKEN, HERMES_CONTROL_WS)");
+  console.error("Missing required env vars (HERMES_CP_SESSION_ID, HERMES_CP_RUNNER_TOKEN, HERMES_CP_CONTROL_WS)");
   process.exit(1);
 }
 
@@ -65,7 +65,7 @@ console.log("[runner] Initial connect to:", wsUrl);
 
 // WebSocket manager — owns reconnect loop. Spec (M5 §12.14):
 //   - exp backoff 500ms, 1s, 2s, 4s, 8s, cap 15s, total budget 60s
-//   - re-read /opt/hermes/start.json on each retry so a rotated runner
+//   - re-read /opt/control-plane/start.json on each retry so a rotated runner
 //     token (M5 follow-up) is picked up
 //   - if budget exhausts, exit(1) so the supervisor babysit chain tears
 //     the sandbox down cleanly
@@ -80,10 +80,10 @@ let shuttingDown = false;
 function refreshWsUrl(): string {
   // Re-read start.json so a rotated runner token (post-resume) is used.
   try {
-    if (fsExistsSync("/opt/hermes/start.json")) {
-      const cfg = JSON.parse(fsReadFileSync("/opt/hermes/start.json", "utf-8")) as Record<string, string>;
-      const tok = cfg.HERMES_RUNNER_TOKEN;
-      const cws = cfg.HERMES_CONTROL_WS;
+    if (fsExistsSync("/opt/control-plane/start.json")) {
+      const cfg = JSON.parse(fsReadFileSync("/opt/control-plane/start.json", "utf-8")) as Record<string, string>;
+      const tok = cfg.HERMES_CP_RUNNER_TOKEN;
+      const cws = cfg.HERMES_CP_CONTROL_WS;
       if (tok && cws) {
         const base = cws.replace(/^http:\/\//, "ws://").replace(/^https:\/\//, "wss://").replace(/\/$/, "");
         return `${base}/sessions/${SESSION_ID}/runner?token=${tok}`;

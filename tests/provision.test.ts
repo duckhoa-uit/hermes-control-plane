@@ -1,6 +1,6 @@
 // provisionSession must:
 //   - call Sandbox.create with auto-pause+autoResume AND metadata.hermes_session_id
-//   - clone repo + drop /opt/hermes/start.json
+//   - clone repo + drop /opt/control-plane/start.json
 //   - skip GH token mint when no creds; runner will surface the error
 //   - return a kill() that's idempotent
 
@@ -55,7 +55,7 @@ describe("provisionSession", () => {
     expect(lifecycle.autoResume).toBe(true);
   });
 
-  it("writes /opt/hermes/start.json with required keys", async () => {
+  it("writes /opt/control-plane/start.json with required keys", async () => {
     await provisionSession({
       sessionId: "sess_keys",
       runnerToken: "tok2",
@@ -66,11 +66,11 @@ describe("provisionSession", () => {
     });
     expect(filesWrite).toHaveBeenCalledTimes(1);
     const [path, content] = filesWrite.mock.calls[0];
-    expect(path).toBe("/opt/hermes/start.json");
+    expect(path).toBe("/opt/control-plane/start.json");
     const cfg = JSON.parse(content as string);
-    expect(cfg.HERMES_SESSION_ID).toBe("sess_keys");
-    expect(cfg.HERMES_RUNNER_TOKEN).toBe("tok2");
-    expect(cfg.HERMES_CONTROL_WS).toBe("wss://y");
+    expect(cfg.HERMES_CP_SESSION_ID).toBe("sess_keys");
+    expect(cfg.HERMES_CP_RUNNER_TOKEN).toBe("tok2");
+    expect(cfg.HERMES_CP_CONTROL_WS).toBe("wss://y");
   });
 
   it("returns an idempotent kill()", async () => {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-shot setup for hermes-launcher on a Debian/Ubuntu VPS that already
+# One-shot setup for control-plane-launcher on a Debian/Ubuntu VPS that already
 # runs your Hermes agent.
 #
 # Run as root:
@@ -15,15 +15,15 @@
 #   7. prints next steps for cloudflared + Worker secret
 #
 # After this script:
-#   - sudo systemctl start hermes-launcher
-#   - sudo journalctl -u hermes-launcher -f
+#   - sudo systemctl start control-plane-launcher
+#   - sudo journalctl -u control-plane-launcher -f
 #   - then run the cloudflared section at the bottom of the script's
 #     final output
 
 set -euo pipefail
 
-REPO_URL="${HERMES_REPO_URL:-https://github.com/duckhoa-uit/hermes-control-plane.git}"
-REPO_REF="${HERMES_REPO_REF:-main}"
+REPO_URL="${HERMES_CP_REPO_URL:-https://github.com/duckhoa-uit/hermes-control-plane.git}"
+REPO_REF="${HERMES_CP_REPO_REF:-main}"
 SRC_DIR="/opt/hermes-control-plane/src"
 HERMES_USER="hermes-cp"
 
@@ -96,10 +96,10 @@ log "wrote /opt/hermes-control-plane/launcher.js"
 
 # -------- 8. systemd unit --------
 install -m 0644 \
-  "$SRC_DIR/infra/launcher/hermes-launcher.service" \
-  /etc/systemd/system/hermes-launcher.service
+  "$SRC_DIR/infra/launcher/control-plane-launcher.service" \
+  /etc/systemd/system/control-plane-launcher.service
 systemctl daemon-reload
-log "installed /etc/systemd/system/hermes-launcher.service"
+log "installed /etc/systemd/system/control-plane-launcher.service"
 
 # -------- 9. env file --------
 # Idempotent:
@@ -109,7 +109,7 @@ log "installed /etc/systemd/system/hermes-launcher.service"
 #   - --no-prompt skips prompting and just copies env.example so the
 #     operator can edit it later (CI / scripted runs).
 ENV_FILE=/etc/hermes-control-plane/launcher.env
-NO_PROMPT="${HERMES_NO_PROMPT:-0}"
+NO_PROMPT="${HERMES_CP_NO_PROMPT:-0}"
 
 ask() {
   # ask VAR_NAME "prompt label" [default]
@@ -129,7 +129,7 @@ ask() {
 env_complete() {
   [[ -f "$ENV_FILE" ]] || return 1
   grep -q "REPLACE_ME" "$ENV_FILE" && return 1
-  for k in E2B_API_KEY ZAI_API_KEY GITHUB_USER_TOKEN GITHUB_USER_LOGIN HERMES_BASE_URL; do
+  for k in E2B_API_KEY ZAI_API_KEY GITHUB_USER_TOKEN GITHUB_USER_LOGIN HERMES_CP_BASE_URL; do
     grep -qE "^${k}=..*" "$ENV_FILE" || return 1
   done
   return 0
@@ -150,10 +150,10 @@ else
   ask GITHUB_USER_TOKEN  "GITHUB_USER_TOKEN (fine-grained PAT, Contents+PullRequests RW)"
   ask GITHUB_USER_LOGIN  "GITHUB_USER_LOGIN (your GitHub handle)"
   ask GITHUB_USER_EMAIL  "GITHUB_USER_EMAIL (blank → <login>@users.noreply.github.com)"
-  ask HERMES_BASE_URL    "HERMES_BASE_URL (deployed Worker URL)" \
+  ask HERMES_CP_BASE_URL    "HERMES_CP_BASE_URL (deployed Worker URL)" \
                          "https://hermes-control-plane.duckhoa-dev.workers.dev"
 
-  for k in E2B_API_KEY ZAI_API_KEY GITHUB_USER_TOKEN GITHUB_USER_LOGIN HERMES_BASE_URL; do
+  for k in E2B_API_KEY ZAI_API_KEY GITHUB_USER_TOKEN GITHUB_USER_LOGIN HERMES_CP_BASE_URL; do
     if [[ -z "${!k}" ]]; then
       die "$k is required; re-run install.sh or edit $ENV_FILE by hand"
     fi
@@ -177,12 +177,12 @@ GITHUB_USER_LOGIN=$GITHUB_USER_LOGIN
 ${GITHUB_USER_EMAIL:+GITHUB_USER_EMAIL=$GITHUB_USER_EMAIL}
 
 # ---- Worker ----
-HERMES_BASE_URL=$HERMES_BASE_URL
+HERMES_CP_BASE_URL=$HERMES_CP_BASE_URL
 
 # ---- Launcher tunables (defaults are fine) ----
-HERMES_LAUNCHER_PORT=8789
+HERMES_CP_LAUNCHER_PORT=8789
 MAX_CONCURRENT_SESSIONS=10
-HERMES_AUTO_PR=1
+HERMES_CP_AUTO_PR=1
 ENVEOF
   chown "$HERMES_USER:$HERMES_USER" "$ENV_FILE"
   chmod 0600 "$ENV_FILE"
@@ -193,7 +193,7 @@ fi
 cat <<MSG
 
 ────────────────────────────────────────────────────────────────────
-✅  hermes-launcher install done.
+✅  control-plane-launcher install done.
 
 Next steps (Cloudflare cannot be automated):
 
@@ -202,23 +202,23 @@ Next steps (Cloudflare cannot be automated):
       sudo nano $ENV_FILE
 
 2.  Start the launcher:
-      sudo systemctl enable --now hermes-launcher
-      sudo journalctl -u hermes-launcher -f
+      sudo systemctl enable --now control-plane-launcher
+      sudo journalctl -u control-plane-launcher -f
     Expect:
-      [launcher] hermes-launcher listening on http://localhost:8789
+      [launcher] control-plane-launcher listening on http://localhost:8789
 
 3.  Smoke-test from the same VPS (Hermes will use this URL):
       curl http://localhost:8789/health
 
 4.  Expose port 8789 to the Worker via Cloudflare Tunnel:
       cloudflared tunnel login
-      cloudflared tunnel create hermes-launcher
-      cloudflared tunnel route dns hermes-launcher launcher.<your-domain>
+      cloudflared tunnel create control-plane-launcher
+      cloudflared tunnel route dns control-plane-launcher launcher.<your-domain>
       # write /etc/cloudflared/config.yml — see infra/launcher/README.md §3
       sudo cloudflared service install <tunnel-token>
 
 5.  Set the Worker secret (from your dev machine):
-      echo "https://launcher.<your-domain>" | bun x wrangler secret put HERMES_LAUNCHER_URL
+      echo "https://launcher.<your-domain>" | bun x wrangler secret put HERMES_CP_LAUNCHER_URL
       bun run deploy
 
 6.  Wire Hermes Agent to the MCP server + skill. Edit ~/.hermes/config.yaml:

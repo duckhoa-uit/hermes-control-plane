@@ -12,5 +12,5 @@ interface CloudflareEnv {
   // M5: launcher sidecar URL (so DO can POST /resume to thaw a paused
   // sandbox). Optional — when unset, DO returns 409 with recoverable:false
   // on follow-up to a disconnected runner (pre-M5 behaviour).
-  HERMES_LAUNCHER_URL?: string;
+  HERMES_CP_LAUNCHER_URL?: string;
 }

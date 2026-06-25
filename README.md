@@ -17,7 +17,7 @@ Three processes:
 
 ```
 ┌─────────────────┐       ┌────────────────────────┐       ┌──────────────────┐
-│ Client          │       │ hermes-launcher        │       │ Cloudflare       │
+│ Client          │       │ control-plane-launcher        │       │ Cloudflare       │
 │ (web / Slack /  │ HTTPS │ (Bun, src/launcher)    │ HTTPS │ Worker + DO      │
 │  CLI / curl)    │──────▶│  - holds E2B + GH App  │──────▶│  - session state │
 │                 │       │    credentials         │       │  - event log     │
@@ -29,7 +29,7 @@ Three processes:
                                      ▼                              │  through PUBLIC_BASE_URL
                           ┌────────────────────────┐                │  — ngrok in dev)
                           │ E2B sandbox            │                │
-                          │  /opt/hermes/          │                │
+                          │  /opt/control-plane/          │                │
                           │   supervisor.js  ───┐  │                │
                           │   runner.js      ◀──┘  │────────────────┘
                           │  opencode CLI          │
@@ -53,7 +53,7 @@ credentials. Details in [`docs/ROADMAP.md §9.2`](docs/ROADMAP.md).
    snapshot. Cold start ≈ 700–1500 ms.
 4. Launcher mints a short-lived, repo-scoped GitHub App installation token,
    `git clone`s the repo inside the sandbox, then drops
-   `/opt/hermes/start.json` with per-session env (runner token, control WS URL,
+   `/opt/control-plane/start.json` with per-session env (runner token, control WS URL,
    GH token, model).
 5. The supervisor (already running in the snapshot, courtesy `setStartCmd`)
    sees the file appear and `exec`s the runner. The runner dials the Worker
@@ -140,7 +140,7 @@ E2B_API_KEY=… bun run template:build
 # Three terminals:
 bun run dev                                  # 1. Cloudflare Worker on :8787
 ngrok http 8787                              # 2. public URL for the runner to dial
-HERMES_BASE_URL=https://<ngrok> \
+HERMES_CP_BASE_URL=https://<ngrok> \
 E2B_API_KEY=… ZAI_API_KEY=… \
 GITHUB_USER_TOKEN=$(gh auth token) GITHUB_USER_LOGIN=<your-handle> \
 bun run launcher                             # 3. sidecar on :8789
@@ -192,8 +192,8 @@ The launcher (process env):
 |-----|---------|
 | `E2B_API_KEY` | required |
 | `E2B_TEMPLATE` | template alias, default `hermes-runner` |
-| `HERMES_BASE_URL` | required; URL of the deployed Worker (or ngrok in dev). Used both for launcher→Worker calls and as the WS dial-back URL given to the runner inside the sandbox. |
-| `HERMES_LAUNCHER_PORT` | default `8789` |
+| `HERMES_CP_BASE_URL` | required; URL of the deployed Worker (or ngrok in dev). Used both for launcher→Worker calls and as the WS dial-back URL given to the runner inside the sandbox. |
+| `HERMES_CP_LAUNCHER_PORT` | default `8789` |
 | `ZAI_API_KEY` | required; OpenCode (z.ai) provider key |
 | `GITHUB_USER_TOKEN` | required; fine-grained PAT (Contents + Pull-requests RW). Runner uses it for `git push` + `POST /pulls` so the PR `author` is the real user. |
 | `GITHUB_USER_LOGIN` | required; git author identity used inside the sandbox |

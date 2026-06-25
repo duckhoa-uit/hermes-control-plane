@@ -42,7 +42,7 @@ export interface ProvisionResult {
   kill(): Promise<void>;
 }
 
-const START_CONFIG_PATH = "/opt/hermes/start.json";
+const START_CONFIG_PATH = "/opt/control-plane/start.json";
 const REPO_DIR = "/home/user/repo";
 const SANDBOX_TIMEOUT_MS = 15 * 60 * 1000;
 
@@ -121,9 +121,9 @@ export async function provisionSession(input: ProvisionInput): Promise<Provision
     //    template, already running in the snapshot) is polling this path and
     //    will exec the runner with these env vars.
     const startConfig: Record<string, string> = {
-      HERMES_SESSION_ID: input.sessionId,
-      HERMES_RUNNER_TOKEN: input.runnerToken,
-      HERMES_CONTROL_WS: input.controlWsUrl,
+      HERMES_CP_SESSION_ID: input.sessionId,
+      HERMES_CP_RUNNER_TOKEN: input.runnerToken,
+      HERMES_CP_CONTROL_WS: input.controlWsUrl,
       ZAI_API_KEY: input.zaiApiKey ?? "",
       GITHUB_USER_TOKEN: userToken,
       GITHUB_USER_LOGIN: userLogin,

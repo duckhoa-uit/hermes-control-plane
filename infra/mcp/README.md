@@ -9,7 +9,7 @@ not a core tool, not a Python plugin).
 | Piece | What | Where |
 |---|---|---|
 | MCP server | Four tools wrapping the launcher + Worker HTTP API. Streamable HTTP transport. Bundled in the launcher (same Bun process, same port 8789). | `src/mcp/server.ts` |
-| Companion skill | `SKILL.md` teaching Hermes when/how to use the four tools. Validated against Hermes' `_validate_frontmatter` + the "Skill authoring HARDLINE" rules. | `skills/hermes-control-plane-coding/SKILL.md` |
+| Companion skill | `SKILL.md` teaching Hermes when/how to use the four tools. Validated against Hermes' `_validate_frontmatter` + the "Skill authoring HARDLINE" rules. | `skills/hermes-control-plane/SKILL.md` |
 
 ## Install
 
@@ -22,7 +22,7 @@ Add to `~/.hermes/config.yaml`:
 ```yaml
 mcp_servers:
   hermes-control-plane:
-    # When Hermes Agent runs on the same VPS as hermes-launcher (the
+    # When Hermes Agent runs on the same VPS as control-plane-launcher (the
     # default deployment shape — see docs/SETUP.md §10.2):
     url: "http://localhost:8789/mcp"
     timeout: 300
@@ -81,7 +81,7 @@ into the chat.
 ```bash
 # Start launcher locally (dummy E2B creds are fine — we only test MCP)
 E2B_API_KEY=dummy ZAI_API_KEY=dummy ZAI_MODEL=glm-5.2 \
-HERMES_BASE_URL=http://localhost:8787 \
+HERMES_CP_BASE_URL=http://localhost:8787 \
 E2B_TEMPLATE=hermes-runner bun run launcher &
 
 # initialize

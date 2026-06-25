@@ -7,11 +7,11 @@
 //   1. Spawn `opencode serve --hostname=127.0.0.1 --port=4096` immediately
 //      and wait until it logs "opencode server listening". The snapshot
 //      captures the listening socket so per-session boot is instant.
-//   2. Poll /opt/hermes/start.json for per-session secrets (written by the
+//   2. Poll /opt/control-plane/start.json for per-session secrets (written by the
 //      launcher after Sandbox.create()).
 //   3. Once start.json arrives, PUT the Z.AI key into opencode via
 //      /auth/zai-coding-plan so the SDK in the runner can prompt.
-//   4. Spawn the runner (node /opt/hermes/runner.js) with the secrets in env.
+//   4. Spawn the runner (node /opt/control-plane/runner.js) with the secrets in env.
 //   5. Babysit both children — if either exits, kill the other and exit
 //      with the same code. Avoids zombie processes / sandbox leaks.
 
@@ -19,8 +19,8 @@ import { spawn, type ChildProcess } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import { applyZaiAuthForTests as applyZaiAuth, babysitForTests as babysitImpl } from "./supervisor-helpers";
 
-const CONFIG_PATH = "/opt/hermes/start.json";
-const RUNNER_PATH = "/opt/hermes/runner.js";
+const CONFIG_PATH = "/opt/control-plane/start.json";
+const RUNNER_PATH = "/opt/control-plane/runner.js";
 const POLL_INTERVAL_MS = 250;
 const OPENCODE_HOST = "127.0.0.1";
 const OPENCODE_PORT = 4096;
@@ -29,9 +29,9 @@ const SERVE_READY_TIMEOUT_MS = 30_000;
 const SERVE_READY_LINE = "opencode server listening";
 
 interface StartConfig {
-  HERMES_SESSION_ID: string;
-  HERMES_RUNNER_TOKEN: string;
-  HERMES_CONTROL_WS: string;
+  HERMES_CP_SESSION_ID: string;
+  HERMES_CP_RUNNER_TOKEN: string;
+  HERMES_CP_CONTROL_WS: string;
   // M4: Z.AI key is applied via opencode REST auth.set, not env var.
   ZAI_API_KEY?: string;
   [k: string]: string | undefined;
@@ -87,7 +87,7 @@ async function waitForConfig(): Promise<StartConfig> {
       try {
         const raw = readFileSync(CONFIG_PATH, "utf-8");
         const cfg = JSON.parse(raw) as StartConfig;
-        if (cfg.HERMES_SESSION_ID && cfg.HERMES_RUNNER_TOKEN && cfg.HERMES_CONTROL_WS) {
+        if (cfg.HERMES_CP_SESSION_ID && cfg.HERMES_CP_RUNNER_TOKEN && cfg.HERMES_CP_CONTROL_WS) {
           return cfg;
         }
         log(`config file present but missing required keys; re-polling`);
@@ -106,7 +106,7 @@ async function applyZaiAuthLog(apiKey: string): Promise<void> {
 }
 
 function spawnRunner(cfg: StartConfig): ChildProcess {
-  log(`spawning runner (node ${RUNNER_PATH}) for session ${cfg.HERMES_SESSION_ID.slice(0, 8)}`);
+  log(`spawning runner (node ${RUNNER_PATH}) for session ${cfg.HERMES_CP_SESSION_ID.slice(0, 8)}`);
   const env: NodeJS.ProcessEnv = ensurePath({ ...process.env });
   for (const [k, v] of Object.entries(cfg)) {
     if (typeof v === "string") env[k] = v;
@@ -132,7 +132,7 @@ async function main(): Promise<void> {
 
   // 2. Block until launcher writes per-session secrets.
   const cfg = await waitForConfig();
-  log(`config loaded for session ${cfg.HERMES_SESSION_ID.slice(0, 8)}`);
+  log(`config loaded for session ${cfg.HERMES_CP_SESSION_ID.slice(0, 8)}`);
 
   // 3. Apply Z.AI credentials to opencode.
   const zaiKey = cfg.ZAI_API_KEY || "";

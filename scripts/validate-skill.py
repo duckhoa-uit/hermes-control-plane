@@ -9,7 +9,7 @@ Validate a Hermes-style SKILL.md against:
    words; required section order; author is a human; ...).
 
 Usage:
-    python3 scripts/validate-skill.py skills/hermes-control-plane-coding/SKILL.md
+    python3 scripts/validate-skill.py skills/hermes-control-plane/SKILL.md
 
 Exits 0 on pass, 1 on any failure. Lists every check it ran.
 """

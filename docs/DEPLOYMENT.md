@@ -36,7 +36,7 @@ else stays in `ROADMAP.md §5` (out of scope).
 shipped or in-flight, not new asks of this plan):
 
 - One Durable Object per session, treated as the only source of truth.
-- Supervisor in `setStartCmd`; runner exec'd on `/opt/hermes/start.json`.
+- Supervisor in `setStartCmd`; runner exec'd on `/opt/control-plane/start.json`.
 - `opencode serve` baked into the snapshot — verified surviving
   pause/resume with the same PID and warm cache (`ROADMAP.md §11.8.B`).
 - Author-attributed events (`author_user_id` on `session_events`, populated
@@ -78,7 +78,7 @@ Three logical components, three deploy targets:
                │                                   │ HTTPS
                │ status updates                    ▼
                │ (Block Kit)            ┌───────────────────────────┐
-               ▼                        │ hermes-launcher (Bun)     │
+               ▼                        │ control-plane-launcher (Bun)     │
         Slack thread                    │  - E2B SDK + GH App key   │
                                         │  - per-session reaper     │
                                         │  - orphan sweeper         │
@@ -176,7 +176,7 @@ mergeable=true`, deletes the branch. Failure aborts the promote step.
 
 - **Worker**: `wrangler rollback` (CF stores previous bundles).
 - **Launcher**: keep the previous binary on the VM as `launcher.js.prev`,
-  `systemctl restart hermes-launcher` with the env pointing at it.
+  `systemctl restart control-plane-launcher` with the env pointing at it.
 - **E2B template**: aliases are immutable per-version. To roll back, set
   `E2B_TEMPLATE=hermes-runner-prod-v<prev>` in the launcher env. No
   rebuild needed.
@@ -194,7 +194,7 @@ cadence:
 | `E2B_API_KEY` | launcher VM env | infra | quarterly | rotate via E2B dashboard, hot-swap env, restart launcher |
 | `ZAI_API_KEY` | launcher VM env | infra | quarterly | Forwarded into the sandbox; supervisor applies it to opencode via `auth.set` |
 | `GITHUB_USER_TOKEN` (fine-grained PAT) | launcher VM env | infra | every 90 days | P1.1 single-user OAuth. Runner uses it for `git push` + `POST /pulls`; PR `author` is the real user. |
-| `HERMES_BASE_URL` | launcher VM env | infra | n/a | the Worker URL; static per env. Used both for launcher→Worker calls and as the WS dial-back URL given to the runner inside the sandbox. |
+| `HERMES_CP_BASE_URL` | launcher VM env | infra | n/a | the Worker URL; static per env. Used both for launcher→Worker calls and as the WS dial-back URL given to the runner inside the sandbox. |
 | Slack signing secret + bot token | Hermes agent infra | Hermes team | yearly | not in this repo |
 
 Secrets that *do* live in the Worker (post-P1.1): the GitHub OAuth
@@ -527,7 +527,7 @@ the "Footprint Ladder" in [`hermes-agent/AGENTS.md`](https://github.com/NousRese
 | Hermes surface | What we ship | Where |
 |---|---|---|
 | **MCP server** (rung 5) | A Streamable HTTP MCP server bundled into the launcher, mounted on `/mcp`. Exposes four tools: `start_coding_task`, `get_session_status`, `send_followup_prompt`, `abort_session`. | `src/mcp/server.ts` |
-| **Skill** (rung 2 companion) | A single `SKILL.md` teaching Hermes when to call the tools and how to render their results. Hardline-validated against Hermes' `_validate_frontmatter` and the seven skill-authoring rules. | `skills/hermes-control-plane-coding/SKILL.md` |
+| **Skill** (rung 2 companion) | A single `SKILL.md` teaching Hermes when to call the tools and how to render their results. Hardline-validated against Hermes' `_validate_frontmatter` and the seven skill-authoring rules. | `skills/hermes-control-plane/SKILL.md` |
 
 We deliberately do NOT ship:
 
@@ -547,7 +547,7 @@ Hermes Agent (Python)
 Bun.serve :8789 /mcp          ← MCP Streamable HTTP transport
     │ in-process
     ▼
-hermes-launcher routes        ← POST /sessions, DELETE /sessions/:id, ...
+control-plane-launcher routes        ← POST /sessions, DELETE /sessions/:id, ...
     │
     ▼ HTTP → Cloudflare Worker
 SessionDurableObject          ← state, event log, runner WS
@@ -574,7 +574,7 @@ schema duplication — the canonical schema lives in the MCP server
 
 ### 12.3 SKILL.md companion
 
-`skills/hermes-control-plane-coding/SKILL.md` is the prose layer telling
+`skills/hermes-control-plane/SKILL.md` is the prose layer telling
 Hermes:
 
 - **When to use** the tools (concrete code change against a GitHub repo,
@@ -592,7 +592,7 @@ The skill is hardline-validated against Hermes' own validator:
 
 ```bash
 # in this repo
-python3 scripts/validate-skill.py skills/hermes-control-plane-coding/SKILL.md
+python3 scripts/validate-skill.py skills/hermes-control-plane/SKILL.md
 ```
 
 (see §12.5).

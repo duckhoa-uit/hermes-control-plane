@@ -9,12 +9,12 @@ import { HEARTBEAT_INTERVAL_MS, OPENCODE_PORT } from "../core/constants";
 
 // ---- Config from env ----
 
-const SESSION_ID = process.env.HERMES_SESSION_ID!;
-const RUNNER_TOKEN = process.env.HERMES_RUNNER_TOKEN!;
+const SESSION_ID = process.env.HERMES_CP_SESSION_ID!;
+const RUNNER_TOKEN = process.env.HERMES_CP_RUNNER_TOKEN!;
 const CONTROL_WS_URL = process.env.HERMES_CONTROL_WS_URL!;
 
 if (!SESSION_ID || !RUNNER_TOKEN || !CONTROL_WS_URL) {
-  console.error("Missing required env vars: HERMES_SESSION_ID, HERMES_RUNNER_TOKEN, HERMES_CONTROL_WS_URL");
+  console.error("Missing required env vars: HERMES_CP_SESSION_ID, HERMES_CP_RUNNER_TOKEN, HERMES_CONTROL_WS_URL");
   process.exit(1);
 }
 

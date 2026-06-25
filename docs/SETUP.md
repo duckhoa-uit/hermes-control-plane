@@ -109,16 +109,16 @@ other than the author" work correctly.
 
 The runner inside the sandbox dials your Worker over WebSocket, and
 the launcher calls the same Worker over HTTPS. Locally that needs one
-public URL — `HERMES_BASE_URL`.
+public URL — `HERMES_CP_BASE_URL`.
 
 ```bash
 ngrok http 8787
 # copy the https URL, e.g. https://abcd-1234.ngrok-free.app
-export HERMES_BASE_URL=https://abcd-1234.ngrok-free.app
+export HERMES_CP_BASE_URL=https://abcd-1234.ngrok-free.app
 ```
 
 Free-tier ngrok is fine; the browser interstitial doesn't affect WS
-upgrades. In production point `HERMES_BASE_URL` at the deployed Worker
+upgrades. In production point `HERMES_CP_BASE_URL` at the deployed Worker
 URL — no tunnel needed.
 
 ## 7. `.dev.vars` example
@@ -159,11 +159,11 @@ ngrok http 8787
 export E2B_API_KEY=… ZAI_API_KEY=…
 export GITHUB_USER_TOKEN=… GITHUB_USER_LOGIN=…
 # Use the ngrok URL for both launcher→Worker and runner→Worker.
-export HERMES_BASE_URL=https://abcd-1234.ngrok-free.app
+export HERMES_CP_BASE_URL=https://abcd-1234.ngrok-free.app
 export E2B_TEMPLATE=hermes-runner
 bun run launcher
 # [launcher] startup sweep: scanned=0 killed=0 kept=0
-# [launcher] hermes-launcher listening on http://localhost:8789
+# [launcher] control-plane-launcher listening on http://localhost:8789
 ```
 
 Trigger a session:
@@ -192,14 +192,14 @@ real GitHub PR, the sandbox is auto-killed.
 
 `scripts/launch-session.ts` is a thin client. Two modes:
 
-- **Sidecar mode** (preferred): set `HERMES_LAUNCHER_URL=http://localhost:8789`
+- **Sidecar mode** (preferred): set `HERMES_CP_LAUNCHER_URL=http://localhost:8789`
   and just call:
   ```bash
-  HERMES_LAUNCHER_URL=http://localhost:8789 \
+  HERMES_CP_LAUNCHER_URL=http://localhost:8789 \
   bun run launch https://github.com/you/repo "your task"
   ```
 - **Direct mode** (no sidecar running): same vars as the launcher, no
-  `HERMES_LAUNCHER_URL`. The CLI provisions the sandbox in-process and reaps
+  `HERMES_CP_LAUNCHER_URL`. The CLI provisions the sandbox in-process and reaps
   it on exit.
 
 ## 10. Deployment (single-user, production)
@@ -219,7 +219,7 @@ wrangler login
 # Secrets (use `wrangler secret put` — do NOT commit them to wrangler.toml)
 wrangler secret put E2B_API_KEY              # required; Worker refuses to provision otherwise
 wrangler secret put PUBLIC_BASE_URL          # https://hermes.<your-domain>.workers.dev
-wrangler secret put HERMES_LAUNCHER_URL      # https://<your-launcher-host>:8789 (Cloudflare Tunnel URL of the launcher VPS)
+wrangler secret put HERMES_CP_LAUNCHER_URL      # https://<your-launcher-host>:8789 (Cloudflare Tunnel URL of the launcher VPS)
 
 bun run deploy
 ```
@@ -249,12 +249,12 @@ export GITHUB_USER_EMAIL=you@example.com
 
 # Wire to the deployed Worker (one URL serves both launcher→Worker calls
 # and the runner-inside-sandbox WS dial-back)
-export HERMES_BASE_URL=https://hermes.<your-domain>.workers.dev
+export HERMES_CP_BASE_URL=https://hermes.<your-domain>.workers.dev
 
 # Optional
-export HERMES_LAUNCHER_PORT=8789
+export HERMES_CP_LAUNCHER_PORT=8789
 export MAX_CONCURRENT_SESSIONS=10
-export HERMES_AUTO_PR=1
+export HERMES_CP_AUTO_PR=1
 
 bun run launcher
 ```

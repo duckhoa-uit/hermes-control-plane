@@ -88,7 +88,7 @@ See `README.md` for the canonical diagram. Snapshot of the relevant pieces:
   (`src/launcher/provision.ts`); the pre-baked `hermes-runner` template
   (`infra/e2b/build-template.ts`) bakes Node + bun + `opencode` + supervisor
   + runner into the snapshot. Per-session runtime cost is `git clone` +
-  drop `/opt/hermes/start.json`; supervisor execs the runner. (Post-§10.5
+  drop `/opt/control-plane/start.json`; supervisor execs the runner. (Post-§10.5
   the worker no longer drives E2B; legacy `src/providers/e2b.ts` was deleted.)
 - **Runner:** TypeScript driver (`src/runner/sandbox-runner.ts`) bundled
   into the template; talks to a local `opencode serve` via the OpenCode
@@ -272,7 +272,7 @@ Sources: `e2b.mintlify.app/docs` (`template/how-it-works`, `template/build`,
 2. **`setStartCmd` runs at template build time, not on `Sandbox.create()`.**
    Env vars passed to `Sandbox.create({ envs })` are **not visible** to the
    start command — it already ran. Our runner needs per-session
-   `HERMES_SESSION_ID`, `HERMES_RUNNER_TOKEN`, `HERMES_CONTROL_WS`
+   `HERMES_CP_SESSION_ID`, `HERMES_CP_RUNNER_TOKEN`, `HERMES_CP_CONTROL_WS`
    (`src/runner/sandbox-runner.ts`), so we cannot just put the runner in
    `setStartCmd` directly.
    - **Design:** `setStartCmd` launches a *supervisor* that waits for
@@ -319,7 +319,7 @@ Three items only. Each is small enough for one PR.
 - [x] **M1 — Pre-baked single E2B template.** Shipped — see §9.1. One
   template (`hermes-runner`) bundling Node + bun + `opencode` CLI +
   supervisor + runner; supervisor in `setStartCmd` reads
-  `/opt/hermes/start.json` (written by the launcher post-`Sandbox.create()`)
+  `/opt/control-plane/start.json` (written by the launcher post-`Sandbox.create()`)
   and execs the runner. Verified ~700–1500 ms cold-load with no runtime
   install steps in the event log.
 - [x] **M2 — Auto-pause on idle.** Shipped (M1 era) — `Sandbox.create()`
@@ -482,7 +482,7 @@ Revisit deferred items when **any** of these is true:
 
 | Item | Status | Notes |
 |---|---|---|
-| M1 — pre-baked E2B template | ✅ done | Template `hermes-runner` (id `ihf90c8bik7w8rwrk1u7`); bundles node, opencode CLI, supervisor, runner; supervisor runs in the snapshot via `setStartCmd` and execs the runner on `/opt/hermes/start.json` arrival. |
+| M1 — pre-baked E2B template | ✅ done | Template `hermes-runner` (id `ihf90c8bik7w8rwrk1u7`); bundles node, opencode CLI, supervisor, runner; supervisor runs in the snapshot via `setStartCmd` and execs the runner on `/opt/control-plane/start.json` arrival. |
 | M2 — auto-pause + autoResume | ✅ done | `Sandbox.create()` passes `lifecycle: { onTimeout: 'pause', autoResume: true }`, `timeoutMs: 15min`. Verified the option is wired; long-idle resume not stress-tested. |
 | M3 — Hobby concurrency guard | ✅ done | Enforced host-side in `scripts/launch-session.ts` via `checkConcurrencyCap()` (E2B REST `GET /v2/sandboxes`). Static cap is `MAX_CONCURRENT_SESSIONS = 10` in `wrangler.toml`, overridable via env. Exits with code 2 and a clear message when at cap. Verified live: with cap=3 and 3 paused sandboxes, the launcher refuses to launch. |
 | Real PR creation flow | ✅ done | Launcher mints a short-lived, repo-scoped GitHub App installation token; runner does `git push` and opens the PR via REST. Bot identity `hermes-bot`. Verified by opening PR #2 against duckhoa-uit/hermes-control-plane adding `it's worked!` to README.md. |
@@ -517,14 +517,14 @@ Discovered while wiring M1: calling `e2b` SDK methods (`Sandbox.create`, `Sandbo
 Consequence for the architecture:
 
 - **The Worker is not a sandbox driver.** It is the orchestrator: holds DO state, routes WebSockets, persists artifacts, runs the state machine.
-- **Provisioning happens host-side.** `scripts/launch-session.ts` (Bun) creates the sandbox, drops `/opt/hermes/start.json`, then polls the Worker for events. The runner inside the sandbox dials the Worker over WS using a public URL (ngrok locally; deployed Worker URL in prod).
+- **Provisioning happens host-side.** `scripts/launch-session.ts` (Bun) creates the sandbox, drops `/opt/control-plane/start.json`, then polls the Worker for events. The runner inside the sandbox dials the Worker over WS using a public URL (ngrok locally; deployed Worker URL in prod).
 - **`E2BProvider` is no longer used by the Worker.** _At time of writing_ it still existed in `src/providers/e2b.ts` with 3 unit tests; it was subsequently deleted in §10.5 (replaced by `src/launcher/provision.ts` + `tests/provision.test.ts`). The Worker DO still falls back to `MockSandboxProvider` for tests and treats real sessions as "external runner mode".
 
 This is a permanent constraint, not a temporary workaround. Updates to ROADMAP P0.2 (cron rebuild), P0.3 (warm pool), and P0.4 (snapshot/resume) must all run **host-side** (or, eventually, on a small Bun sidecar service the Worker calls over HTTPS), not from inside the Worker.
 
 ### 9.3 Other things noticed in passing
 
-- `setStartCmd` runs at template-build time, so env vars passed to `Sandbox.create()` are not visible to the supervisor. We bridge them through `/opt/hermes/start.json`. Confirmed working.
+- `setStartCmd` runs at template-build time, so env vars passed to `Sandbox.create()` are not visible to the supervisor. We bridge them through `/opt/control-plane/start.json`. Confirmed working.
 - E2B's `commands.run` throws on non-zero exit by default. The launcher's git clone now captures `$?` via `__exit=N` shell suffix to detect failures without the SDK throwing.
 - The template's start command captured a minimal PATH at build time (missing `/usr/local/bin` after env scrubbing). The supervisor now prepends `/usr/local/bin:/usr/bin:/bin` to `PATH` before spawning the runner; otherwise `opencode` is `ENOENT`.
 - `.dev.vars` had a PKCS#1 (`BEGIN RSA PRIVATE KEY`) GitHub App key but the broker expects PKCS#8 (`BEGIN PRIVATE KEY`). Converted with `openssl pkcs8 -topk8 -in pkcs1.pem -nocrypt -out pkcs8.pem`.
@@ -534,7 +534,7 @@ This is a permanent constraint, not a temporary workaround. Updates to ROADMAP P
 
 - [x] M3 concurrency check moved into the launcher (`checkConcurrencyCap()` calls E2B REST and exits 2 at cap).
 - [ ] Make ngrok URL discovery automatic in the launcher (`fetch http://127.0.0.1:4040/api/tunnels` fallback).
-- [ ] Consider a small "hermes-launcher" Bun sidecar so a future web/Slack client can trigger sessions without each user installing E2B locally. This is the P0.2/P0.3/P0.4 host for the cron/pool/snapshot logic.
+- [ ] Consider a small "control-plane-launcher" Bun sidecar so a future web/Slack client can trigger sessions without each user installing E2B locally. This is the P0.2/P0.3/P0.4 host for the cron/pool/snapshot logic.
 - [ ] The runner currently uses `GITHUB_TOKEN` for `git push` and PR REST; on token expiry mid-session (>1h) push will fail. Mint per-action tokens if a session runs that long, or refresh via the launcher.
 
 ---
@@ -551,10 +551,10 @@ needs E2B locally.
 | File | Purpose |
 |---|---|
 | `src/launcher/github-token.ts` | Mint short-lived, repo-scoped GH App installation tokens |
-| `src/launcher/provision.ts` | Create the E2B sandbox, clone the repo, drop `/opt/hermes/start.json`; returns an idempotent `kill()` |
+| `src/launcher/provision.ts` | Create the E2B sandbox, clone the repo, drop `/opt/control-plane/start.json`; returns an idempotent `kill()` |
 | `src/launcher/sweeper.ts` | Orphan sweeper: kills E2B sandboxes whose `metadata.hermes_session_id` is terminal/unknown on the Worker |
 | `src/launcher/server.ts` | Bun HTTP server: `POST /sessions`, `GET /sessions/:id`, `DELETE /sessions/:id`, `GET /health`. Watches each session and reaps the sandbox on terminal status; triggers `/create-pr` on `review_ready` |
-| `scripts/launch-session.ts` | CLI that calls the sidecar when `HERMES_LAUNCHER_URL` is set; falls back to direct in-process provisioning otherwise |
+| `scripts/launch-session.ts` | CLI that calls the sidecar when `HERMES_CP_LAUNCHER_URL` is set; falls back to direct in-process provisioning otherwise |
 
 ### 10.2 Sandbox lifecycle rules (implemented)
 
@@ -1047,7 +1047,7 @@ green when M2.3 ships.
 ### 11.13 Follow-up prompt e2e — criterion 2 verified live (2026-06-25)
 
 Two-turn run against the same hermes session, real Worker + ngrok +
-launcher (`HERMES_AUTO_PR=0` to keep the runner alive past the first
+launcher (`HERMES_CP_AUTO_PR=0` to keep the runner alive past the first
 turn), real Z.AI + real GitHub App. PR opened with the cumulative diff
 from both turns: <https://github.com/duckhoa-uit/hermes-control-plane/pull/7>.
 
@@ -1057,7 +1057,7 @@ from both turns: <https://github.com/duckhoa-uit/hermes-control-plane/pull/7>.
 |---|---|
 | `src/core/state-machine.ts` | Allow `review_ready → running` so a follow-up prompt doesn't break the DO state machine. |
 | `src/worker/session-do.ts` | `POST /sessions/:id/prompt` transitions `review_ready → running` before sending `agent.prompt` (so the second `runner.complete` can transition back to `review_ready` cleanly). |
-| `src/launcher/server.ts` | New env toggle `HERMES_AUTO_PR=0` to skip the sidecar's auto-PR trigger on `review_ready`. Default `1` (production behaviour); set to `0` for follow-up e2e + future M2.3 prompt-queue work. |
+| `src/launcher/server.ts` | New env toggle `HERMES_CP_AUTO_PR=0` to skip the sidecar's auto-PR trigger on `review_ready`. Default `1` (production behaviour); set to `0` for follow-up e2e + future M2.3 prompt-queue work. |
 | `tests/state-machine.test.ts` | Added test case for `review_ready → running` transition. |
 
 #### Live evidence
@@ -1334,7 +1334,7 @@ hermes session-scoped tokens today.
   forcing re-validation on next WS upgrade.
 - On `idle_paused → running` (launcher `/resume`): launcher mints a
   new short-lived runner token, writes the new token to
-  `/opt/hermes/start.json` (the supervisor will pick it up on the
+  `/opt/control-plane/start.json` (the supervisor will pick it up on the
   next runner spawn — or, if the runner is being thawed in-place,
   we need to re-deliver it some other way; see addendum 2).
 - Add `/sessions/:id/rotate-runner-token` route on the DO; launcher
