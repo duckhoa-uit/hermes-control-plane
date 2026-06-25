@@ -1415,3 +1415,139 @@ keeps the client contract honest.
 
 Shipped together with §12.12. M5 (§12) will add `recoverable: true` +
 the actual `/resume` route + retry-aware client UX.
+
+---
+
+### 12.14 §12 rewrite — what the docs + probe changed (2026-06-25)
+
+Researched E2B docs + ran a live TCP-across-pause probe. The original
+§12 design (§12.1–§12.10) was based on three wrong assumptions. Updated
+canonical M5 design follows.
+
+#### What the docs say (verified at `e2b.dev/docs/faq/paused-sandboxes-concurrency` and `e2b.dev/docs/sandbox/persistence`)
+
+| Question | Old §12 assumption | Reality |
+|---|---|---|
+| Paused-sandbox quota | "may have cap, check before raising MAX_IDLE_PAUSED_MS" (§12.6) | **No limit.** Paused sandboxes are excluded from concurrency entirely. |
+| Paused-sandbox billing | (not specified) | **Free.** Only running time is billed. |
+| Paused-sandbox TTL | "E2B's internal pause TTL — could be 24h or 7 days, unknown" (§12.6) | **None.** "Kept indefinitely, no automatic deletion, never killed by E2B." |
+| 1-hour continuous runtime cap | (treated as hard) | **Resets on resume.** A pause/resume cycle gives you a fresh 1h running budget. |
+| Pause/resume timing | "resume in ~500 ms" (§11.8.B verified live) | Docs say 4s/GiB pause, 1s resume. Matches our prior observation. |
+| `Sandbox.connect()` default timeout | (not specified) | 5 min, configurable. |
+
+#### What the live TCP probe showed (`/tmp/m5-tcp-probe.ts`)
+
+Setup: sandbox A hosts a WS echo server; sandbox B opens an outbound
+WS to A and heartbeats every 2s. Pause B for 30s, then resume.
+
+| Event | Observation |
+|---|---|
+| Pre-pause | WS open, heartbeats flowing, A acks each |
+| During 30s pause | A's view: last message = `hb-4` (the one immediately before pause). No close. A does not see B drop. |
+| Immediately after resume | B fires one `heartbeat sent` (sync app-layer success) followed by `close` event with code **1006** (abnormal closure, no normal handshake) ~2 ms later. No `error` event. |
+| 2 s after resume | `readyState=3` (CLOSED). Subsequent heartbeats skip. |
+| Server side after B resume | A receives **no** post-resume message; A's connection state is also dead. |
+
+**Conclusions from the probe:**
+
+1. WS does **not** survive pause/resume. Connection breaks the moment
+   B thaws (likely because the kernel detects half-close after the
+   socket's underlying network state was restored).
+2. The break is signaled by `close` event with code 1006, **not**
+   `error`. Runner reconnect loop must listen on `close`.
+3. There's a ~ms-scale window after resume where one `ws.send()` will
+   "succeed" synchronously before the close fires — buffered, but
+   lost. Reconnect logic must not trust the first post-thaw send.
+4. The server side also needs to handle a fresh connection from the
+   same session id — A in the test treated it as a brand new client,
+   but the real DO needs to accept the reconnect and rebind it to
+   the existing `SessionDurableObject`.
+
+#### Revised M5 design
+
+Old §12 said: add `idle_paused` state, runner re-dials on resume.
+New design is **simpler than that** because of three insights:
+
+**Insight A: Paused is free + indefinite → no idle-cap policy needed.**
+
+Drop `MAX_IDLE_PAUSED_MS`. There is no cost or operational reason to
+ever kill a paused sandbox proactively. Replace with a much longer
+`MAX_TOTAL_AGE_DAYS = 30` retention policy (paired with D1/R2 cron),
+purely for storage hygiene, not E2B quota management.
+
+**Insight B: 1h cap resets on resume → "long sessions" are pause-cycle, not single-run.**
+
+The Hobby 1-hour continuous runtime cap is not a session lifetime cap.
+A multi-hour or multi-day session = sequence of `running ↔ paused`
+cycles, each running burst staying under 1h. M5's job is to make
+that cycle invisible to the user.
+
+**Insight C: WS dies on resume; runner must reconnect; server must accept rebind.**
+
+§12.10.2's reconnect loop is mandatory, not optional. Concrete:
+
+- Runner: on `close` (any code, not just 1006), exp-backoff reconnect
+  (500ms, 1s, 2s, 4s, 8s, cap 15s, total budget 60s). Re-read
+  `start.json` for the (possibly rotated) runner token. Re-send the
+  initial frame so DO can rebind.
+- DO: accept WS upgrades from `/sessions/:id/runner?token=…` even
+  when the session has been runner-disconnected; rebind `runnerConn`
+  to the new socket. (Existing code already does this — see
+  `src/worker/session-do.ts:259-291`.) Flush any buffered prompts
+  from the §12.10 single-slot queue.
+- Launcher: `POST /sessions/:id/resume` does `Sandbox.connect(id)`
+  (1s wall) and returns immediately. The runner inside the sandbox
+  thaws and follows the reconnect loop.
+
+**Quick fix §12.12 is counter-productive given these insights.**
+
+Specifically:
+- `Sandbox.setTimeout(55min)` keeps the sandbox running, **burning
+  toward the 1h hard cap**. Should be removed: let E2B pause sooner
+  (free) so the cap resets on the next resume.
+- Launcher hard deadline 60min should also be removed. Sandboxes can
+  live for days if user wants, all paused-free between turns.
+- Heartbeat skip at `review_ready` (good) can stay, but the 15-min
+  `HEARTBEAT_TIMEOUT_MS` value should be revisited once M5 ships —
+  with proper resume the watchdog becomes the only stall detector
+  and 15 min is borderline.
+
+#### Revised M5 scope (replaces §12.3)
+
+| Layer | Change | LoC |
+|---|---|---|
+| `src/core/state-machine.ts` | Keep current states. **No new `idle_paused`.** The session conceptually stays in `review_ready` (or `running` mid-turn) across the pause; only the sandbox-side state changes. | 0 |
+| `src/worker/session-do.ts` | (a) DO heartbeat watchdog skips when `runnerConnected === false` AND last known state is non-failed — assume paused, don't transition to `failed`. (b) `POST /prompt` while `!runnerConn`: queue the prompt in DO storage (single slot), call launcher `/sessions/:id/resume`, return 202 Accepted with `recoverable: true`. (c) On runner re-dial: drain queued prompt as `agent.prompt`. | ~80 |
+| `src/launcher/server.ts` | (a) New route `POST /sessions/:id/resume` → `Sandbox.connect(sandboxId)`. (b) Drop the `Sandbox.setTimeout(55min)` extension from §12.12. (c) Drop the 60-min launcher deadline (sessions can live for days). Keep terminal-state kill behavior. | ~30 |
+| `src/launcher/provision.ts` | Mint short-lived runner token; rotate on resume. | ~15 |
+| `src/runner/sandbox-runner.ts` | Reconnect loop on `close`: 500ms, 1s, 2s, 4s, 8s, cap 15s, total budget 60s. Re-read `start.json` on each retry (catches rotated token). | ~40 |
+| `src/runner/supervisor.ts` | On runner exit during a "resume in progress" window (signalled by a marker file the launcher drops), restart runner instead of killing serve + exiting. | ~20 |
+| `tests/` | Reconnect unit test (mock WS), DO queue flush test, fail-fast 410 test for stale sandbox-id post-`Sandbox.connect()` 404. | ~120 |
+| Retention cron | `MAX_TOTAL_AGE_DAYS = 30`. Cloudflare Workers Cron Triggers, deletes D1 rows + R2 objects for sessions whose `updatedAt` is > 30 days old. | ~50 |
+| Docs | README flow diagram updated; §12.13 fail-fast contract gets `recoverable: true` flipped for the 409 case. | docs |
+
+**Total: ~355 LoC + docs.** Smaller than the original §12.3 estimate
+because we drop `idle_paused` state plumbing and `MAX_IDLE_PAUSED_MS`
+enforcement.
+
+#### Revised success criteria (replaces §12.5)
+
+1. **Follow-up after 1 hour idle works.** `Sandbox.list({state:'paused'})`
+   shows the sandbox paused; `POST /prompt` returns 202 with
+   `recoverable: true`; ≤ 5 s later the second turn starts; cumulative
+   diff contains both turns.
+2. **Follow-up after 24 hours idle works.** Same as #1, but verify the
+   sandbox is still paused (not killed by E2B — docs guarantee this
+   but worth a manual check the first time).
+3. **Multi-cycle session.** Three pause/resume cycles within a single
+   session; each `running` burst stays under the Hobby 1h cap; total
+   wall ~5 hours.
+4. **Reconnect loop budget.** Kill the WS server (DO) for 30 s while
+   runner is connected; runner retries 5-6 times then succeeds when
+   DO returns. No spurious `failed` transition.
+5. **Retention cron** (unchanged from §12.5 item 4).
+
+#### Status
+
+**Updated proposal. Not started.** The original §12.1–§12.10 stays as
+history; M5 implementation should follow this §12.14 design instead.
