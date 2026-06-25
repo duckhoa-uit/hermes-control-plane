@@ -46,7 +46,8 @@ terse — it is reference, not aspiration.
 See `README.md` for the canonical diagram. Snapshot of the relevant pieces:
 
 - **Control plane:** Cloudflare Worker + `SessionDurableObject`
-  (`src/worker/session-do.ts`), D1 mirror (`schema.sql`), R2 artifacts.
+  (`src/worker/session-do.ts`). DO Storage is the sole truth (D1/R2
+  removed in §12.16).
 - **Sandbox:** E2B, created on demand in `src/providers/e2b.ts`. Each session
   performs at runtime: `git clone` → optional setup script → `curl bun.sh` →
   `bun add ws` → write runner via base64 → `nohup bun run hermes-runner.ts`.
@@ -70,7 +71,7 @@ See `README.md` for the canonical diagram. Snapshot of the relevant pieces:
 | 6 | OpenCode plugin policy | `tool.execute.before` enforces policy in-sandbox | Approval policy lives only in worker state machine | 🟡 | Med | |
 | 7 | Sub-session tool | Agent can spawn sessions | No | ❌ | Low | |
 | 8 | Prompt queue / mid-run stop | Queued, stoppable | Only `abort` exists; no queued follow-ups (`src/worker/session-do.ts`) | 🟡 | Med | |
-| 9 | DO + SQLite per session | Yes | Yes | ✅ | — | Aligned |
+| 9 | DO + SQLite per session | Yes | DO Storage only (D1/R2 declared but unused — deleted §12.16) | 🟡 | Low | Split-store deferred per §8.5 |
 | 10 | WebSocket hibernation | Cloudflare Agents SDK | Plain WS in DO | 🟡 | Low (cost) | |
 | 11 | Multiplayer / author attribution | Yes, per-prompt author | Single implicit owner; no `author_user_id` on events | ❌ | Med | |
 | 12 | PR auth | User GitHub OAuth token | GitHub **App** installation token (`src/providers/github.ts`) | ⚠ | **High (governance)** | Users can self-approve their own PRs |
@@ -84,7 +85,7 @@ See `README.md` for the canonical diagram. Snapshot of the relevant pieces:
 | 20 | Metrics: merge-rate | % sessions → merged PRs, live users | None | ❌ | Med | |
 | 21 | Repo classifier | Fast LLM, channel-aware | Project id required | 🟡 | Low | Acceptable until Slack exists |
 | 22 | Long-pause resume | autoResume + warm session over hours | M2 `autoResume:true` set but `Sandbox.connect()` never called; heartbeat marks paused sandbox as `failed` after 60 s | 🟡 | Med (kills follow-up UX) | Tracked under §12 M5 |
-| 23 | D1 / R2 retention | retention policy + cron GC | None — sessions accumulate forever | ❌ | Low (single user) | Tracked under §12 M5 |
+| 23 | D1 / R2 retention | retention policy + cron GC | N/A — D1/R2 removed §12.16; DO storage retention deferred per §8.5 | ⏸ | Low (single user) | §12.16 |
 
 ---
 
@@ -1701,3 +1702,93 @@ multi-turn flow, multi-cycle implicit via the queue mechanism, reconnect
 loop tested). Criterion 2 (24-hour-idle) and criterion 5 (retention
 cron) deferred; the platform guarantees behind #2 (paused indefinite
 + free) make it low-risk; #5 is its own cron PR.
+
+### 12.16 Storage cleanup — delete dead D1/R2 + de-duplicate `git.diff.ready` (2026-06-25)
+
+After M5 shipped, em audited the storage layer across all three
+sources of truth and benchmarked against `sst/opencode` and
+`All-Hands-AI/OpenHands`. Findings drove this PR.
+
+#### Audit findings
+
+| Layer | Status today | Evidence |
+|---|---|---|
+| D1 (`schema.sql`, 4 tables, 64 LoC) | **Completely dead** | `grep "env\.DB\|INSERT INTO" src/` → 0 matches |
+| R2 (`ARTIFACTS` bucket) | **Completely dead** | `grep "ARTIFACTS\.\(put\|get\|delete\)" src/` → 0 matches |
+| DO Storage (4 keys/session) | Source of truth, bloated | `events` blob ~57 KB after 1 turn (full diff stored 2× via §12.16.1) |
+
+D1/R2 were declared in M0 as forward-looking infra; six milestones
+later they remain zero-use. Per `sst/opencode`'s own
+`specs/storage/remove-opencode-db.md` (which removes their unused
+legacy DB wrapper), dead bindings are tech debt that should be deleted,
+not retained "just in case".
+
+#### Prior art — how others handle session storage
+
+| Aspect | opencode (sst) | OpenHands | Hermes today |
+|---|---|---|---|
+| Primary store | SQLite + JSON files keyed by `string[]` | 1 JSON file per event, pluggable (FS/S3/GCS) | DO Storage KV (4 keys/session) |
+| Event log | Append-only SQLite + projectors | `events/{conv_id}/{seq}.json` | Single `events` blob (full rewrite each append) |
+| Artifacts | Separate `summary/diff` key | Path reference in event payload | Inline in DO + duplicated in events |
+
+OpenHands' per-event-file pattern (avoids blob rewrite) and
+opencode's separate-artifact-key pattern (avoids diff duplication in
+events) both inform this PR. Em does NOT adopt the per-event split
+yet — see deferred work below.
+
+#### Scope of this PR
+
+**1. Delete D1 (zero-use, no migration needed)**
+
+- `schema.sql` — entire file (64 LoC)
+- `wrangler.toml` — `[[d1_databases]]` block
+- `src/worker/env.d.ts` — `DB: D1Database` binding
+
+**2. Delete R2 (zero-use, no migration needed)**
+
+- `wrangler.toml` — `[[r2_buckets]]` block
+- `src/worker/env.d.ts` — `ARTIFACTS: R2Bucket` binding
+
+**3. De-duplicate `git.diff.ready`**
+
+The runner already emits `git.diff.ready` at
+`src/runner/sandbox-runner.ts:287`. The DO then re-emits the same
+event in `onComplete` at `src/worker/session-do.ts:445`, doubling the
+diff payload in the event log. Across a 4-turn session this stored
+the cumulative diff 4×.
+
+Fix: remove the DO-side re-emit. Runner is the canonical source.
+Full diff still lives in `session.artifacts.diff` (DO storage,
+single copy), accessible via the existing artifacts API path.
+
+#### What we do NOT change (deferred per §8.5 exit criteria)
+
+- **Per-event DO Storage keys** (OpenHands pattern). Only worth doing
+  when single key approaches the 128 KB DO Storage value cap. Current
+  worst case: ~57 KB / key after pruning duplicates → ample headroom.
+- **Slim `git.diff.ready` payload from `{diff}` → `{size, fileCount}`**.
+  Considered for this PR but deferred: SSE consumers currently expect
+  `diff` inline; trimming it changes the public event contract. Defer
+  until §11.9 event mapping is rev'd.
+- **Schema decode validation** (Effect Schema / Pydantic patterns).
+  Defer until first multi-version migration is needed.
+- **Move `profile` out of DO storage** (always `DEFAULT_PROFILE`).
+  Micro-optimization, ~449 B/session. Defer.
+
+#### Success criteria
+
+1. `bun test` — 87/87 green (no test depends on D1/R2/double-emit)
+2. `bun run typecheck` (tsc --noEmit) clean
+3. `wrangler deploy --dry-run` clean (proves removed bindings don't break manifest)
+4. Live E2E on E2B: 2-turn session emits `git.diff.ready` **once** per
+   turn (not twice). DO Storage `events` blob shrinks by exactly the
+   diff size × 1 copy.
+
+#### Risks
+
+- **Low**: D1/R2 bindings being deleted have zero callers. If a future
+  feature needs them, re-add the binding (one-line wrangler.toml edit).
+- **Low**: SSE clients that rely on receiving `git.diff.ready` after
+  the `session.completed` transition will now see it slightly earlier
+  (runner-side, before review_ready). Documented contract is "emitted
+  when diff is ready" — earlier emission still satisfies that.

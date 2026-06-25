@@ -250,13 +250,8 @@ real GitHub PR, the sandbox is auto-killed.
 ## 10. Cloudflare deployment (when you're ready)
 
 ```bash
-# Create D1 + R2
-wrangler d1 create hermes-db
-# paste the database_id into wrangler.toml
-wrangler r2 bucket create hermes-artifacts
-wrangler d1 execute hermes-db --file=schema.sql
-
-# Set Worker secrets (only those the Worker needs)
+# DO Storage is the only persistent store (D1/R2 removed in §12.16).
+# Just set Worker secrets and deploy.
 wrangler secret put MAX_CONCURRENT_SESSIONS  # optional override
 
 # Deploy

@@ -11,15 +11,6 @@ class_name = "SessionDurableObject"
 tag = "v1"
 new_classes = ["SessionDurableObject"]
 
-[[d1_databases]]
-binding = "DB"
-database_name = "hermes-db"
-database_id = "local"
-
-[[r2_buckets]]
-binding = "ARTIFACTS"
-bucket_name = "hermes-artifacts"
-
 [vars]
 E2B_TEMPLATE = "hermes-runner"
 MAX_SESSION_RUNTIME_MS = 2700000

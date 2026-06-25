@@ -441,10 +441,8 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
       testResult: payload?.testResult as SessionArtifacts["testResult"],
     };
 
-    if (this.artifacts.diff) {
-      this.appendEvent("git.diff.ready", "runner", { diff: this.artifacts.diff });
-    }
-
+    // Note: runner already emitted git.diff.ready via WS (sandbox-runner.ts).
+    // Don't re-emit here — that doubled the diff payload in the event log.
     this.transition("review_ready");
   }
 
