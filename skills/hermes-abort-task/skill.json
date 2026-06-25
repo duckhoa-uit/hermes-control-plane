@@ -4,9 +4,16 @@
   "version": "1.0.0",
   "description": "Cancel an in-flight Hermes coding session and tear down its sandbox.",
   "trigger": {
-    "intents": ["abort_task", "cancel_session"],
-    "ui": ["abort_button_click"],
-    "requires": ["session_id"]
+    "intents": [
+      "abort_task",
+      "cancel_session"
+    ],
+    "ui": [
+      "abort_button_click"
+    ],
+    "requires": [
+      "session_id"
+    ]
   },
   "transport": {
     "kind": "http",
@@ -16,16 +23,28 @@
   },
   "input": {
     "type": "object",
-    "required": ["sessionId", "actor"],
+    "required": [
+      "sessionId"
+    ],
     "properties": {
-      "sessionId": { "type": "string" },
+      "sessionId": {
+        "type": "string"
+      },
       "actor": {
         "type": "object",
-        "required": ["hermes_user_id", "github_user_id"],
+        "required": [
+          "hermes_user_id",
+          "github_user_id"
+        ],
         "properties": {
-          "hermes_user_id": { "type": "string" },
-          "github_user_id": { "type": "string" }
-        }
+          "hermes_user_id": {
+            "type": "string"
+          },
+          "github_user_id": {
+            "type": "string"
+          }
+        },
+        "description": "Multi-user \u00a714 only. Optional in the single-user release."
       }
     }
   },

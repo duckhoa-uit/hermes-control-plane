@@ -4,8 +4,17 @@
   "version": "1.0.0",
   "description": "Run a background coding task in a sandbox and open a real GitHub PR authored by the requesting user.",
   "trigger": {
-    "intents": ["code_task", "fix_bug", "add_feature", "refactor", "write_test"],
-    "requires": ["repo_url", "task_description"]
+    "intents": [
+      "code_task",
+      "fix_bug",
+      "add_feature",
+      "refactor",
+      "write_test"
+    ],
+    "requires": [
+      "repo_url",
+      "task_description"
+    ]
   },
   "transport": {
     "kind": "http",
@@ -19,50 +28,106 @@
   },
   "input": {
     "type": "object",
-    "required": ["taskDescription", "repoUrl", "actor"],
+    "required": [
+      "taskDescription",
+      "repoUrl"
+    ],
     "properties": {
-      "taskDescription": { "type": "string", "minLength": 5 },
-      "repoUrl": { "type": "string", "format": "uri", "pattern": "^https://github\\.com/" },
-      "baseBranch": { "type": "string", "default": "main" },
-      "projectId": { "type": "string" },
+      "taskDescription": {
+        "type": "string",
+        "minLength": 5
+      },
+      "repoUrl": {
+        "type": "string",
+        "format": "uri",
+        "pattern": "^https://github\\.com/"
+      },
+      "baseBranch": {
+        "type": "string",
+        "default": "main"
+      },
+      "projectId": {
+        "type": "string"
+      },
       "actor": {
         "type": "object",
-        "required": ["hermes_user_id", "github_user_id"],
+        "required": [
+          "hermes_user_id",
+          "github_user_id"
+        ],
         "properties": {
-          "hermes_user_id": { "type": "string" },
-          "github_user_id": { "type": "string", "description": "GitHub login; must match a token in the users-DO" },
+          "hermes_user_id": {
+            "type": "string"
+          },
+          "github_user_id": {
+            "type": "string",
+            "description": "GitHub login; must match a token in the users-DO"
+          },
           "slack": {
             "type": "object",
-            "required": ["channel", "thread_ts", "user_id"],
+            "required": [
+              "channel",
+              "thread_ts",
+              "user_id"
+            ],
             "properties": {
-              "channel": { "type": "string" },
-              "thread_ts": { "type": "string" },
-              "user_id": { "type": "string" }
+              "channel": {
+                "type": "string"
+              },
+              "thread_ts": {
+                "type": "string"
+              },
+              "user_id": {
+                "type": "string"
+              }
             }
           }
-        }
+        },
+        "description": "Multi-user \u00a714 only. The single-user release ignores this field; the real PR author is set host-side from launcher env (GITHUB_USER_TOKEN/LOGIN). Hermes may still send it for forward compatibility."
       }
     }
   },
   "output": {
     "type": "object",
-    "required": ["sessionId", "sandboxId", "streamUrl", "stateUrl"],
+    "required": [
+      "sessionId",
+      "sandboxId",
+      "streamUrl",
+      "stateUrl"
+    ],
     "properties": {
-      "sessionId": { "type": "string" },
-      "sandboxId": { "type": "string" },
-      "streamUrl": { "type": "string", "format": "uri" },
-      "stateUrl": { "type": "string", "format": "uri" }
+      "sessionId": {
+        "type": "string"
+      },
+      "sandboxId": {
+        "type": "string"
+      },
+      "streamUrl": {
+        "type": "string",
+        "format": "uri"
+      },
+      "stateUrl": {
+        "type": "string",
+        "format": "uri"
+      }
     }
   },
   "error_contract": {
     "412": {
       "meaning": "User has not authenticated GitHub OAuth yet.",
-      "response_shape": { "error": "string", "auth_url": "string" },
+      "response_shape": {
+        "error": "string",
+        "auth_url": "string"
+      },
       "handler_directive": "respond_with_auth_link"
     },
     "429": {
       "meaning": "Concurrency cap hit on the launcher.",
-      "response_shape": { "error": "string", "active": "number", "limit": "number" },
+      "response_shape": {
+        "error": "string",
+        "active": "number",
+        "limit": "number"
+      },
       "handler_directive": "apologise_retry_later"
     }
   },
@@ -76,16 +141,54 @@
   "event_handling": {
     "stream_url_field": "streamUrl",
     "render_rules": [
-      { "event_type": "session.created", "action": "post_started_card" },
-      { "event_type": "session.ready", "action": "edit_card", "field": "status" },
-      { "event_type": "agent.message.delta", "action": "debounced_edit", "debounce_ms": 1000 },
-      { "event_type": "tool.started", "action": "append_inline", "format": "ran `{tool}`" },
-      { "event_type": "tool.completed", "action": "noop" },
-      { "event_type": "file.changed", "action": "accumulate" },
-      { "event_type": "approval.requested", "action": "post_approve_deny_buttons" },
-      { "event_type": "pr.created", "action": "post_pr_card", "fields": ["url", "files_changed", "tokens"] },
-      { "event_type": "session.failed", "action": "post_error_with_retry_button" },
-      { "event_type": "session.aborted", "action": "post_aborted_with_retry_button" }
+      {
+        "event_type": "session.created",
+        "action": "post_started_card"
+      },
+      {
+        "event_type": "session.ready",
+        "action": "edit_card",
+        "field": "status"
+      },
+      {
+        "event_type": "agent.message.delta",
+        "action": "debounced_edit",
+        "debounce_ms": 1000
+      },
+      {
+        "event_type": "tool.started",
+        "action": "append_inline",
+        "format": "ran `{tool}`"
+      },
+      {
+        "event_type": "tool.completed",
+        "action": "noop"
+      },
+      {
+        "event_type": "file.changed",
+        "action": "accumulate"
+      },
+      {
+        "event_type": "approval.requested",
+        "action": "post_approve_deny_buttons"
+      },
+      {
+        "event_type": "pr.created",
+        "action": "post_pr_card",
+        "fields": [
+          "url",
+          "files_changed",
+          "tokens"
+        ]
+      },
+      {
+        "event_type": "session.failed",
+        "action": "post_error_with_retry_button"
+      },
+      {
+        "event_type": "session.aborted",
+        "action": "post_aborted_with_retry_button"
+      }
     ]
   }
 }

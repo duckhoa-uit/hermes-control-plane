@@ -4,7 +4,7 @@ Three files in this directory:
 
 | File | Purpose |
 |---|---|
-| `install.sh` | One-shot bootstrap for a fresh Debian/Ubuntu VM. Creates the `hermes` user, installs bun, lays out `/opt/hermes` and `/etc/hermes`, drops the systemd unit. |
+| `setup.sh` | One-shot bootstrap for a fresh Debian/Ubuntu VPS. Creates the `hermes` user, installs bun + cloudflared, clones this repo, builds `launcher.js`, drops the systemd unit, copies `env.example` to `/etc/hermes/launcher.env`. Idempotent — re-run to update the bundle from the latest `main`. |
 | `hermes-launcher.service` | systemd unit. Loads `/etc/hermes/launcher.env`, runs `bun /opt/hermes/launcher.js` as the `hermes` user, restarts on crash. |
 | `env.example` | Template for `/etc/hermes/launcher.env`. Copy + fill in real values. |
 
@@ -13,30 +13,33 @@ See `docs/SETUP.md` §10.2 for the env block this file documents, and
 
 ## Quick install (on the VM, as root)
 
+One command (skip cloning by hand — `setup.sh` does it):
+
 ```bash
-git clone https://github.com/duckhoa-uit/hermes-control-plane.git /tmp/hcp
-cd /tmp/hcp
-sudo bash infra/launcher/install.sh
-
-# Drop secrets
-sudo cp infra/launcher/env.example /etc/hermes/launcher.env
-sudo chmod 600 /etc/hermes/launcher.env
-sudo chown hermes:hermes /etc/hermes/launcher.env
-sudo $EDITOR /etc/hermes/launcher.env       # paste real values
-
-# Paste your GitHub App PEM
-sudo install -o hermes -g hermes -m 0600 /path/to/app.pkcs8.pem /etc/hermes/app.pkcs8.pem
-
-# Ship the bundle (built on a dev machine)
-#   dev:  bun build src/launcher/server.ts --target=bun --outfile dist/launcher.js
-#   dev:  scp dist/launcher.js root@vm:/opt/hermes/launcher.js
-sudo chown hermes:hermes /opt/hermes/launcher.js
-
-# Light it up
-sudo systemctl daemon-reload
-sudo systemctl enable --now hermes-launcher
-sudo journalctl -u hermes-launcher -f
+curl -fsSL https://raw.githubusercontent.com/duckhoa-uit/hermes-control-plane/main/infra/launcher/setup.sh \
+  | sudo bash
 ```
+
+Or pin a tag (recommended for repeatable installs):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/duckhoa-uit/hermes-control-plane/main/infra/launcher/setup.sh \
+  | sudo HERMES_REPO_REF=v0.4.0 bash
+```
+
+`setup.sh` is idempotent: re-run to refresh `launcher.js` from the latest
+`main`. The `env.example` file is only copied on first run — your filled-in
+`/etc/hermes/launcher.env` is preserved on re-runs.
+
+After it finishes, the script prints the 7 remaining manual steps:
+
+1. Edit `/etc/hermes/launcher.env` with real secrets.
+2. Drop GitHub App PEM at `/etc/hermes/app.pkcs8.pem`.
+3. `sudo systemctl enable --now hermes-launcher`.
+4. Smoke-test: `curl http://localhost:8789/health`.
+5. Set up Cloudflare Tunnel for `launcher.<your-domain>` → `localhost:8789`.
+6. From your dev machine: `wrangler secret put HERMES_LAUNCHER_URL`, then `bun run deploy`.
+7. Add `HERMES_LAUNCHER_URL=http://localhost:8789` and `HERMES_SKILLS_DIR=/opt/hermes/src/skills` to Hermes' own env so the agent loads the three skills.
 
 You should see:
 

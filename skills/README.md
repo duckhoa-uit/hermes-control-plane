@@ -33,6 +33,18 @@ $EDITOR skills/<name>/{skill.json,prompt.md,examples.md}
 If the skill calls a new HTTP route, add the route to `docs/openapi.yaml`
 in the same PR; `skill.json#input_schema` must `$ref` it.
 
+## Single-user vs multi-user state
+
+The schemas mark `actor` as **optional**. The single-user release ignores
+the field — PR `author` is set host-side from the launcher's
+`GITHUB_USER_TOKEN`/`GITHUB_USER_LOGIN` env. When multi-user OAuth ships
+(ROADMAP §14), the launcher will read `actor.github_user_id` and resolve
+the per-user OAuth token from the users DO; Hermes should already be
+sending the field, so no skill-schema change is needed at that point.
+
+`hermes-code-task`'s `prompt.md` lists `actor` as a "send if you have it"
+field rather than a hard requirement. See `examples.md` for both shapes.
+
 ## Versioning
 
 Each `skill.json#version` is independent of the repo version. Bump major
