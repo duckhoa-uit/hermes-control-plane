@@ -1302,3 +1302,52 @@ in the right shape (one new value is all M5 adds).
 The §12 scope is correct. The four addenda above are minor — total
 incremental work ~50 lines beyond what §12.3 already lists. Land
 them together in the M5 PR.
+
+---
+
+### 12.12 Quick fix shipped — follow-up window 60 s → ~50 min (2026-06-25)
+
+Closing the most-painful symptom of the §12 gap without doing full M5.
+Three knobs tuned + one new launcher action:
+
+| Change | Rationale |
+|---|---|
+| `HEARTBEAT_TIMEOUT_MS: 60s → 15 min` (`src/core/constants.ts`, `wrangler.toml`) | Codex picks 10 min, OpenHands picks none; 15 min splits the middle and matches E2B's 15-min auto-pause window. Real runner crashes still detected within 15 min — well under the 60-min launcher hard cap. |
+| Skip heartbeat watchdog at `review_ready` (`src/worker/session-do.ts:checkHeartbeat`) | E2B may pause the sandbox after 15 min idle in `review_ready`; that silences heartbeats but is not a real failure. Watchdog runs in `running` only (where stalls do mean trouble). |
+| Launcher extends sandbox timeout on first `review_ready` (`src/launcher/server.ts:watchSession`) | `Sandbox.setTimeout(sandboxId, 55*60_000)` extends the E2B-side onTimeout from 15 min to 55 min — safely under Hobby's 60-min hard cap. Without this the sandbox would pause + heartbeat would resume firing in 60-90 s. |
+| Launcher hard deadline `35 min → 60 min` (`src/launcher/server.ts`) | Matches E2B Hobby's per-sandbox cap. Anything past 60 min is illegal at E2B's level anyway. |
+
+#### Effective follow-up window after the fix
+
+| Status | Window |
+|---|---|
+| `running` (turn in progress) | 15 min runner silence → fail (Codex-ish) |
+| `review_ready` (waiting for follow-up) | **up to 55 min** before E2B pauses; launcher then kills at 60-min absolute |
+| Real runner crash mid-turn | detected within 15 min via heartbeat |
+| Sandbox boot stuck | 2-min provisioning timeout (unchanged) |
+
+#### What's still not solved (and why we're OK with that)
+
+- **Resume from a paused sandbox.** Still impossible — once E2B pauses
+  the sandbox at the 55-min mark, the runner WS is half-dead and we
+  have no `Sandbox.connect()` codepath. The launcher kills it at 60
+  min. Window is bounded.
+- **Sub-15-min real runner stalls.** A runner that genuinely freezes
+  inside `running` is detected in up to 15 min, vs the prior 60 s.
+  Worst-case quota cost: ~$0.03 per false-positive vs $0.0001 before.
+  Acceptable for one user.
+- **Long-pause-then-resume after hours/days.** This is the real M5
+  scope (§12). Not shipped. The fix above just stops the 60-second
+  cliff from being the bottleneck.
+
+#### Comparable numbers in similar projects (researched 2026-06-25)
+
+| Project | Idle / heartbeat timeout | Reconnect model |
+|---|---|---|
+| Hermes (before this fix) | 60 s | none |
+| **Hermes (after this fix)** | **15 min / 55 min** | none (still kills) |
+| Codex remote-control transport | 10 min, 30 s sweep | explicit `resume` frame |
+| OpenHands | none — pure LRU eviction | `resume_sandbox(id)` route |
+| opencode (agent only) | n/a — session in SQLite forever | n/a |
+
+Hermes after the fix sits between Codex (10 min) and OpenHands (∞).

@@ -522,6 +522,12 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     // Once a PR is being created the runner intentionally goes quiet (it
     // exits after pushing). Don't flag that as a stall.
     if (this.session.status === "creating_pr") return;
+    // At review_ready the runner has finished its turn and is idle waiting
+    // for the next prompt. E2B may pause the sandbox after 15 min idle (M2
+    // auto-pause), which silences heartbeats — but the session is fine and
+    // a follow-up prompt should still work. Don't flag this as failed; the
+    // launcher's 35-min hard deadline is still the absolute cap.
+    if (this.session.status === "review_ready") return;
 
     const now = Date.now();
     const lastBeat = this.session.lastHeartbeat ?? 0;
