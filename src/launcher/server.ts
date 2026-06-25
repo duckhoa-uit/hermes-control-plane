@@ -25,6 +25,10 @@ const E2B_API_KEY = process.env.E2B_API_KEY;
 const E2B_TEMPLATE = process.env.E2B_TEMPLATE ?? "hermes-runner";
 const ZAI_API_KEY = process.env.ZAI_API_KEY ?? "";
 const MAX_CONCURRENT_SESSIONS = Number(process.env.MAX_CONCURRENT_SESSIONS ?? 10);
+// When false, the sidecar will NOT auto-trigger /create-pr on review_ready.
+// Useful for e2e tests that need to send follow-up prompts before the
+// runner exits. Default true (production behaviour).
+const AUTO_PR = (process.env.HERMES_AUTO_PR ?? "1") !== "0";
 
 if (!E2B_API_KEY) {
   console.error("[launcher] E2B_API_KEY required");
@@ -75,7 +79,7 @@ function watchSession(sessionId: string): void {
       if (r.ok) {
         const data = (await r.json()) as { session?: { status: string } };
         const status = data.session?.status ?? "";
-        if (status === "review_ready" && !prTriggered) {
+        if (status === "review_ready" && !prTriggered && AUTO_PR) {
           prTriggered = true;
           log(`session ${sessionId.slice(0, 8)} review_ready -> trigger create-pr`);
           try {
@@ -295,6 +299,7 @@ async function main(): Promise<void> {
   log(`  worker = ${HERMES_BASE_URL}`);
   log(`  public = ${HERMES_PUBLIC_URL}`);
   log(`  cap    = ${MAX_CONCURRENT_SESSIONS}`);
+  log(`  autoPR = ${AUTO_PR}`);
 }
 
 main().catch((err) => {

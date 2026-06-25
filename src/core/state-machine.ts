@@ -11,7 +11,8 @@ const VALID_TRANSITIONS: Record<SessionStatus, SessionStatus[]> = {
   ready: ["running", "failed", "aborted"],
   running: ["needs_approval", "review_ready", "stalled", "failed", "completed", "aborted"],
   needs_approval: ["running", "aborted", "failed"],
-  review_ready: ["creating_pr", "completed", "aborted"],
+  // running: follow-up prompt while still connected (M4 follow-up flow)
+  review_ready: ["creating_pr", "completed", "aborted", "running"],
   creating_pr: ["completed", "failed"],
   completed: ["archived"],
   failed: ["archived"],

@@ -31,6 +31,10 @@ describe("state-machine", () => {
       expect(canTransition("review_ready", "creating_pr")).toBe(true);
     });
 
+    it("allows review_ready -> running for follow-up prompts (M4)", () => {
+      expect(canTransition("review_ready", "running")).toBe(true);
+    });
+
     it("allows creating_pr -> completed", () => {
       expect(canTransition("creating_pr", "completed")).toBe(true);
     });

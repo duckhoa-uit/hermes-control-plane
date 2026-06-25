@@ -651,6 +651,12 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
         );
       }
       const { text } = await request.json<{ text: string }>();
+      // If the session is sitting at review_ready (first turn done, no
+      // PR yet), transition back to running so the second turn doesn't
+      // throw on the runner.complete -> review_ready re-transition.
+      if (this.session?.status === "review_ready") {
+        this.transition("running");
+      }
       this.appendEvent("agent.started", "user", { taskDescription: text });
       this.sendRunnerCommand("agent.prompt", {
         taskDescription: text,
