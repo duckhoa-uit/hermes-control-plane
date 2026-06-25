@@ -723,4 +723,86 @@ describe("E2E: Worker + SessionDurableObject", () => {
     const state2 = await env.SESSION_DO.get(env.SESSION_DO.idFromString(id)).getState();
     expect(state2.session.status).toBe("running");
   });
+  // ---- GitHub webhook route ----
+
+  it("POST /webhooks/github: rejects missing secret with 503", async () => {
+    const env = makeEnv() as any;
+    delete env.GITHUB_WEBHOOK_SECRET;
+    const resp = await worker.fetch(
+      new Request("https://x/webhooks/github", {
+        method: "POST",
+        headers: { "x-github-event": "ping", "x-github-delivery": "d1" },
+        body: "{}",
+      }),
+      env,
+    );
+    expect(resp.status).toBe(503);
+  });
+
+  it("POST /webhooks/github: rejects bad HMAC with 401", async () => {
+    const env = makeEnv() as any;
+    env.GITHUB_WEBHOOK_SECRET = "supersecret";
+    const resp = await worker.fetch(
+      new Request("https://x/webhooks/github", {
+        method: "POST",
+        headers: {
+          "x-github-event": "pull_request",
+          "x-github-delivery": "d2",
+          "x-hub-signature-256": "sha256=" + "0".repeat(64),
+        },
+        body: '{"foo":"bar"}',
+      }),
+      env,
+    );
+    expect(resp.status).toBe(401);
+  });
+
+  it("POST /webhooks/github: accepts a valid pull_request.closed delivery and acks 200", async () => {
+    const env = makeEnv() as any;
+    env.GITHUB_WEBHOOK_SECRET = "supersecret";
+    const payload = {
+      action: "closed",
+      number: 7,
+      pull_request: {
+        number: 7,
+        html_url: "https://github.com/o/r/pull/7",
+        state: "closed",
+        merged: true,
+        merged_at: "2026-06-26T00:00:00Z",
+        base: { ref: "main" },
+        head: { ref: "hermes/x" },
+        user: { login: "alice" },
+      },
+      repository: { full_name: "o/r" },
+      sender: { login: "alice" },
+    };
+    const body = JSON.stringify(payload);
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      "raw",
+      enc.encode("supersecret"),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const buf = await crypto.subtle.sign("HMAC", key, enc.encode(body));
+    const hex = Array.from(new Uint8Array(buf))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    const resp = await worker.fetch(
+      new Request("https://x/webhooks/github", {
+        method: "POST",
+        headers: {
+          "x-github-event": "pull_request",
+          "x-github-delivery": "d3",
+          "x-hub-signature-256": "sha256=" + hex,
+        },
+        body,
+      }),
+      env,
+    );
+    expect(resp.status).toBe(200);
+    const json = await resp.json();
+    expect(json).toMatchObject({ ok: true, kind: "pull_request" });
+  });
 });

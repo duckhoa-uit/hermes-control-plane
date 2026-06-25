@@ -5,6 +5,7 @@
 
 import { SessionDurableObject } from "./session-do";
 import { PrIndexDurableObject } from "./pr-index-do";
+import { verifyGithubHmac, parseGithubWebhook } from "./github-webhook";
 import type { PromptResult } from "./session-do";
 import type {
   ProjectProfile,
@@ -96,6 +97,61 @@ export default {
         return new Response(
           JSON.stringify({ status: "ok", service: "hermes-control-plane" }),
           { headers: CORS_HEADERS },
+        );
+      }
+
+      // ---- GitHub webhook (HMAC-verified) ----
+      // POST /webhooks/github
+      // Headers: X-Hub-Signature-256, X-GitHub-Event, X-GitHub-Delivery
+      // Body: raw JSON payload (we must hash the bytes GitHub signed).
+      //
+      // Scope is intentionally narrow: we only act on `pull_request`
+      // events (merged/closed -> archive the parent session). Follow-up
+      // prompts are gateway-driven; we do not consume mentions or
+      // comments from here.
+      if (path === "/webhooks/github" && request.method === "POST") {
+        const rawBody = await request.text();
+        const verified = await verifyGithubHmac({
+          rawBody,
+          signatureHeader: request.headers.get("x-hub-signature-256"),
+          secret: env.GITHUB_WEBHOOK_SECRET ?? "",
+        });
+        if (!env.GITHUB_WEBHOOK_SECRET) {
+          // Mis-configured deployments must fail closed.
+          return new Response(
+            JSON.stringify({ error: "webhook secret not configured" }),
+            { status: 503, headers: CORS_HEADERS },
+          );
+        }
+        if (!verified) {
+          return new Response(
+            JSON.stringify({ error: "invalid signature" }),
+            { status: 401, headers: CORS_HEADERS },
+          );
+        }
+        const parsed = parseGithubWebhook(
+          request.headers.get("x-github-event"),
+          request.headers.get("x-github-delivery"),
+          rawBody,
+        );
+        if (!parsed) {
+          return new Response(
+            JSON.stringify({ error: "unparseable webhook payload" }),
+            { status: 400, headers: CORS_HEADERS },
+          );
+        }
+        console.log(
+          `[webhook] event=${request.headers.get("x-github-event")} ` +
+          `delivery=${parsed.deliveryId.slice(0, 8)} kind=${parsed.kind}` +
+          (parsed.kind === "pull_request"
+            ? ` pr=${parsed.prKey} action=${parsed.action} merged=${parsed.merged}`
+            : ` reason=${parsed.reason}`),
+        );
+        // Action (state transitions / dedup) lands in the next commit.
+        // For now we acknowledge so GitHub doesn't retry.
+        return new Response(
+          JSON.stringify({ ok: true, kind: parsed.kind }),
+          { status: 200, headers: CORS_HEADERS },
         );
       }
 
