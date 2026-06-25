@@ -99,6 +99,8 @@ export type HermesEventType =
   | "git.diff.ready"
   | "git.branch.pushed"
   | "pr.created"
+  | "pr.merged"
+  | "pr.closed"
   | "system.stalled"
   | "system.retrying"
   | "agent.usage";

@@ -6,6 +6,7 @@
 import { SessionDurableObject } from "./session-do";
 import { PrIndexDurableObject } from "./pr-index-do";
 import { verifyGithubHmac, parseGithubWebhook } from "./github-webhook";
+import { getPrIndexStub } from "./pr-index-do";
 import type { PromptResult } from "./session-do";
 import type {
   ProjectProfile,
@@ -33,12 +34,36 @@ interface SessionDORpc {
   abortSession(): Promise<{ ok: true }>;
   createPR(): Promise<{ ok: true }>;
   sendPrompt(text: string): Promise<PromptResult>;
+  ingestPrLifecycleEvent(input: {
+    merged: boolean;
+    prUrl: string;
+    deliveryId: string;
+    senderLogin: string;
+  }): Promise<{ ok: true; archived: boolean }>;
 }
 
 // Cast helper: the DO stub really does implement these methods at runtime,
 // but workers-types' Rpc.Provider<T> resolves to `never` here because our
 // payloads use `Record<string, unknown>`. Use a single cast so the rest of
 // this file stays type-safe.
+interface PrIndexDORpc {
+  lookup(prKey: string): Promise<{
+    sessionId: string;
+    ownerLogin: string;
+    status: "open" | "merged" | "closed";
+    autofixCount: number;
+  } | null>;
+  recordDelivery(prKey: string, deliveryId: string): Promise<boolean>;
+  markStatus(prKey: string, status: "open" | "merged" | "closed"): Promise<unknown>;
+  register(prKey: string, sessionId: string, ownerLogin: string): Promise<unknown>;
+  incrementAutofix(prKey: string): Promise<number | null>;
+  unregister(prKey: string): Promise<boolean>;
+}
+
+function asPrIndex(stub: unknown): PrIndexDORpc {
+  return stub as PrIndexDORpc;
+}
+
 function asRpc(stub: unknown): SessionDORpc {
   return stub as SessionDORpc;
 }
@@ -111,18 +136,18 @@ export default {
       // comments from here.
       if (path === "/webhooks/github" && request.method === "POST") {
         const rawBody = await request.text();
-        const verified = await verifyGithubHmac({
-          rawBody,
-          signatureHeader: request.headers.get("x-hub-signature-256"),
-          secret: env.GITHUB_WEBHOOK_SECRET ?? "",
-        });
         if (!env.GITHUB_WEBHOOK_SECRET) {
-          // Mis-configured deployments must fail closed.
+          // Fail closed on misconfig.
           return new Response(
             JSON.stringify({ error: "webhook secret not configured" }),
             { status: 503, headers: CORS_HEADERS },
           );
         }
+        const verified = await verifyGithubHmac({
+          rawBody,
+          signatureHeader: request.headers.get("x-hub-signature-256"),
+          secret: env.GITHUB_WEBHOOK_SECRET,
+        });
         if (!verified) {
           return new Response(
             JSON.stringify({ error: "invalid signature" }),
@@ -140,17 +165,92 @@ export default {
             { status: 400, headers: CORS_HEADERS },
           );
         }
+        if (parsed.kind === "ignored") {
+          // ping or any event we don't act on. Always 200 so GitHub
+          // marks the delivery successful and doesn't retry.
+          console.log(
+            `[webhook] ignored event=${request.headers.get("x-github-event")} ` +
+            `delivery=${parsed.deliveryId.slice(0, 8)} reason=${parsed.reason}`,
+          );
+          return new Response(
+            JSON.stringify({ ok: true, kind: "ignored", reason: parsed.reason }),
+            { status: 200, headers: CORS_HEADERS },
+          );
+        }
+
+        // pull_request branch. Look up the PR in the index DO.
+        const prIndex = asPrIndex(getPrIndexStub(env));
+        const row = await prIndex.lookup(parsed.prKey);
+        if (!row) {
+          // Webhook arrived for a PR Hermes did not open (or whose row
+          // was unregistered). Ack so GitHub doesn't retry.
+          console.log(
+            `[webhook] pull_request pr=${parsed.prKey} unknown to index ` +
+            `(not a Hermes PR or already unregistered); acking`,
+          );
+          return new Response(
+            JSON.stringify({ ok: true, kind: "unknown_pr" }),
+            { status: 200, headers: CORS_HEADERS },
+          );
+        }
+        const novel = await prIndex.recordDelivery(parsed.prKey, parsed.deliveryId);
+        if (!novel) {
+          console.log(
+            `[webhook] duplicate delivery=${parsed.deliveryId.slice(0, 8)} pr=${parsed.prKey}; ack`,
+          );
+          return new Response(
+            JSON.stringify({ ok: true, kind: "duplicate" }),
+            { status: 200, headers: CORS_HEADERS },
+          );
+        }
+
+        // Update the index row's lifecycle status. We only flip on the
+        // 'closed' action; opened/reopened/edited/synchronize stay open.
+        const isClose = parsed.action === "closed";
+        if (isClose) {
+          await prIndex.markStatus(parsed.prKey, parsed.merged ? "merged" : "closed");
+        }
+
+        // Dispatch to the SessionDurableObject for state-machine work
+        // (emit event, archive on merged).
+        let archived = false;
+        try {
+          const sessId = env.SESSION_DO.idFromString(row.sessionId);
+          const stub = env.SESSION_DO.get(sessId);
+          const res = await asRpc(stub).ingestPrLifecycleEvent({
+            merged: parsed.merged,
+            prUrl: parsed.prUrl,
+            deliveryId: parsed.deliveryId,
+            senderLogin: parsed.senderLogin,
+          });
+          archived = res.archived;
+        } catch (err) {
+          console.error(
+            `[webhook] SESSION_DO.ingestPrLifecycleEvent failed for ${row.sessionId}: ` +
+            `${(err as Error).message}`,
+          );
+          // Don't 5xx — we already updated the index row and dedup'd the
+          // delivery. GitHub retrying won't fix a missing/corrupt DO.
+        }
+
+        // Drop the row once the PR is merged so the index doesn't grow
+        // unbounded. Closed-unmerged stays so future re-open events
+        // still land on the right session.
+        if (parsed.merged) {
+          await prIndex.unregister(parsed.prKey);
+        }
+
         console.log(
-          `[webhook] event=${request.headers.get("x-github-event")} ` +
-          `delivery=${parsed.deliveryId.slice(0, 8)} kind=${parsed.kind}` +
-          (parsed.kind === "pull_request"
-            ? ` pr=${parsed.prKey} action=${parsed.action} merged=${parsed.merged}`
-            : ` reason=${parsed.reason}`),
+          `[webhook] pull_request pr=${parsed.prKey} action=${parsed.action} ` +
+          `merged=${parsed.merged} session=${row.sessionId.slice(0, 8)} archived=${archived}`,
         );
-        // Action (state transitions / dedup) lands in the next commit.
-        // For now we acknowledge so GitHub doesn't retry.
         return new Response(
-          JSON.stringify({ ok: true, kind: parsed.kind }),
+          JSON.stringify({
+            ok: true,
+            kind: "pull_request",
+            archived,
+            sessionId: row.sessionId,
+          }),
           { status: 200, headers: CORS_HEADERS },
         );
       }

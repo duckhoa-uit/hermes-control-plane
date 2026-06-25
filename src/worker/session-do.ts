@@ -698,6 +698,45 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     return { ok: true };
   }
 
+  // Called by the webhook handler when a verified pull_request event
+  // for THIS session's PR arrives. Idempotent — callers must dedup by
+  // X-GitHub-Delivery against the PR index BEFORE this runs.
+  //
+  // Transitions (only the completed branch is reachable today; we keep
+  // the guards explicit so failing/aborted sessions still get the event
+  // logged without throwing):
+  //   completed + pr.merged   -> emit pr.merged, transition to archived
+  //   completed + pr.closed   -> emit pr.closed, stay completed
+  //   other     + pr.merged   -> emit only (no transition)
+  //   other     + pr.closed   -> emit only
+  async ingestPrLifecycleEvent(input: {
+    merged: boolean;
+    prUrl: string;
+    deliveryId: string;
+    senderLogin: string;
+  }): Promise<{ ok: true; archived: boolean }> {
+    await this.ensureRestored();
+    if (!this.session) return { ok: true, archived: false };
+
+    const type = input.merged ? "pr.merged" : "pr.closed";
+    this.appendEvent(type, "system", {
+      prUrl: input.prUrl,
+      deliveryId: input.deliveryId,
+      senderLogin: input.senderLogin,
+    });
+
+    let archived = false;
+    if (
+      input.merged &&
+      this.session.status === "completed" &&
+      canTransition("completed", "archived")
+    ) {
+      this.transition("archived");
+      archived = true;
+    }
+    return { ok: true, archived };
+  }
+
   async sendPrompt(text: string): Promise<PromptResult> {
     await this.ensureRestored();
     const status = this.session?.status;
