@@ -522,10 +522,11 @@ custody started with present-you.
 
 ## 12. Hermes Agent integration (MCP server + companion skill)
 
-Released as **Path A** today: the operator adds two blocks to their
-`~/.hermes/config.yaml` and restarts Hermes. **Path B** (`hermes mcp
-install hermes-control-plane`) ships once we PR the catalog entry into
-`NousResearch/hermes-agent/optional-mcps/`.
+Hermes operators install this by adding two blocks to their
+`~/.hermes/config.yaml` and restarting Hermes — there is no command in
+the official `hermes mcp install` catalog flow because we are not going
+through Hermes' catalog review for this server. The MCP server config is
+just a `mcp_servers:` block like any user-side MCP integration.
 
 The integration uses two of Hermes' four extension surfaces, picked off
 the "Footprint Ladder" in [`hermes-agent/AGENTS.md`](https://github.com/NousResearch/hermes-agent/blob/main/AGENTS.md):
@@ -603,7 +604,7 @@ python3 scripts/validate-skill.py skills/hermes-control-plane-coding/SKILL.md
 
 (see §12.5).
 
-### 12.4 Install (Path A — user-side)
+### 12.4 Install
 
 Three edits, no Hermes PR:
 
@@ -626,23 +627,7 @@ for the gateway). The four tools and the skill appear automatically.
 
 Full runbook: [`infra/mcp/README.md`](../infra/mcp/README.md).
 
-### 12.5 Install (Path B — Hermes MCP catalog) — future
-
-We submit a PR adding our `infra/mcp/manifest.yaml` to
-`NousResearch/hermes-agent/optional-mcps/devops/hermes-control-plane/manifest.yaml`.
-Once merged, the install becomes:
-
-```bash
-hermes mcp install hermes-control-plane
-hermes skills install official/devops/hermes-control-plane-coding
-```
-
-Catalog admission requires the server to be stable + documented + with a
-working post-install verification step. We block this on (a) Cloudflare
-Tunnel reachability tested in production, (b) at least one external user
-running the Path A install successfully.
-
-### 12.6 What we DON'T put in the skill
+### 12.5 What we DON'T put in the skill
 
 Per Hermes' "What goes in skills vs. what stays in Hermes":
 
@@ -657,7 +642,7 @@ Per Hermes' "What goes in skills vs. what stays in Hermes":
 Rule of thumb: **anything the control plane mandates → SKILL.md or MCP
 schema. Anything Hermes chooses → Hermes config / adapter.**
 
-### 12.7 Versioning
+### 12.6 Versioning
 
 The MCP server and the SKILL.md are versioned independently:
 
@@ -665,8 +650,6 @@ The MCP server and the SKILL.md are versioned independently:
   add/remove/rename).
 - SKILL.md `version:` field (bumped on prose changes that change agent
   behavior).
-- `infra/mcp/manifest.yaml` `manifest_version: 1` (bumped only on schema
-  breaks — never on content changes).
 
 A breaking MCP tool change (rename / required-arg add) requires
 bumping the server major and updating the skill in the same PR.

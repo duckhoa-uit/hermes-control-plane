@@ -5,7 +5,7 @@
 // /mcp endpoint (same port as the launcher's HTTP API), so a single
 // Cloudflare Tunnel covers both surfaces.
 //
-// Hermes Agent integration (Path A — user-side install):
+// Hermes Agent integration (user-side ~/.hermes/config.yaml):
 //   ~/.hermes/config.yaml
 //     mcp_servers:
 //       hermes-control-plane:

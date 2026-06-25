@@ -356,8 +356,8 @@ async function main(): Promise<void> {
     log(`startup sweep failed: ${(err as Error).message}`);
   }
 
-  // MCP server bundled into the launcher (Path A integration with Hermes
-  // Agent — see docs/DEPLOYMENT.md §12, infra/mcp/README.md).
+  // MCP server bundled into the launcher (the Hermes Agent — see
+  // docs/DEPLOYMENT.md §12 and infra/mcp/README.md.
   const mcpHandler = buildMcpHandler({
     workerBaseUrl: HERMES_BASE_URL,
     launcherBaseUrl: `http://localhost:${PORT}`,

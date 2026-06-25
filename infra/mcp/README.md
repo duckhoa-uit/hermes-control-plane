@@ -10,11 +10,10 @@ not a core tool, not a Python plugin).
 |---|---|---|
 | MCP server | Four tools wrapping the launcher + Worker HTTP API. Streamable HTTP transport. Bundled in the launcher (same Bun process, same port 8789). | `src/mcp/server.ts` |
 | Companion skill | `SKILL.md` teaching Hermes when/how to use the four tools. Validated against Hermes' `_validate_frontmatter` + the "Skill authoring HARDLINE" rules. | `skills/hermes-control-plane-coding/SKILL.md` |
-| Catalog manifest | `optional-mcps/<name>/manifest.yaml` shape. Ships in this repo today; submitted to the Hermes catalog (Path B) once the server stabilizes. | `infra/mcp/manifest.yaml` |
 
-## Install (Path A — user-side, no Hermes PR needed)
+## Install
 
-This works today. Two edits to your Hermes setup:
+Two edits to your Hermes setup:
 
 ### 1. Register the MCP server
 
@@ -76,18 +75,6 @@ to README.md.
 
 Hermes should call `start_coding_task` and post the resulting PR URL back
 into the chat.
-
-## Install (Path B — Hermes MCP catalog)
-
-Not shipped yet. When the server stabilizes:
-
-```bash
-hermes mcp install hermes-control-plane
-```
-
-This will read `infra/mcp/manifest.yaml` (after we submit it to
-`NousResearch/hermes-agent/optional-mcps/devops/hermes-control-plane/`)
-and walk the user through any required config.
 
 ## Smoke test the MCP server directly (no Hermes needed)
 
