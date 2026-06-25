@@ -380,12 +380,15 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
         if (msg.payload) {
           const eventType = msg.payload.eventType as HermesEventType;
           const eventPayload = (msg.payload.eventPayload as Record<string, unknown>) ?? {};
-          // pr.created carries the real GitHub URL — route to the PR-completion
-          // handler instead of appending a duplicate untracked event.
-          if (eventType === "pr.created") {
+          // pr.created / pr.updated both carry the real GitHub URL — route
+          // to the PR-completion handler so transitions + PR-index register
+          // happen once. pr.updated is emitted by the runner in amend mode
+          // (existing PR, push only).
+          if (eventType === "pr.created" || eventType === "pr.updated") {
             this.onPRCreated(
               (eventPayload.url as string) ?? "",
               (eventPayload.ownerLogin as string) ?? "",
+              eventType,
             );
           } else {
             this.appendEvent(eventType, "opencode", eventPayload);
@@ -413,6 +416,10 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     // PR creation case: payload has prUrl. Route to onPRCreated; this is
     // idempotent if pr.created already advanced us to completed.
     if (payload?.prUrl) {
+      // runner.complete carries the PR URL after either flow (create or
+      // amend); the discrete pr.created/pr.updated event has already been
+      // emitted on the WS, so we don't re-emit it here — onPRCreated
+      // dedups on artifacts.prUrl.
       this.onPRCreated(
         payload.prUrl as string,
         (payload.ownerLogin as string) ?? "",
@@ -583,7 +590,11 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
 
   // ---- PR created callback ----
 
-  onPRCreated(prUrl: string, ownerLogin: string = ""): void {
+  onPRCreated(
+    prUrl: string,
+    ownerLogin: string = "",
+    eventKind: "pr.created" | "pr.updated" = "pr.created",
+  ): void {
     if (!this.artifacts) {
       this.artifacts = { sessionId: this.session?.id ?? "", changedFiles: [] };
     }
@@ -594,7 +605,7 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     }
     this.artifacts.prUrl = prUrl;
 
-    this.appendEvent("pr.created", "runner", { url: prUrl, ownerLogin });
+    this.appendEvent(eventKind, "runner", { url: prUrl, ownerLogin });
 
     // Register the PR in the global index so webhook deliveries and
     // follow-up MCP calls can map this PR back to our session id.
