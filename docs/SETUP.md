@@ -1,261 +1,282 @@
-# Hermes Control Plane - Setup Guide
+# Hermes Control Plane — Setup Guide
+
+This walks through everything needed for a real end-to-end session: agent
+runs inside an E2B sandbox, opens a GitHub PR against your repo, sandbox is
+torn down on completion.
+
+The high-level architecture is in [`README.md`](../README.md). The roadmap
+for what's next is in [`ROADMAP.md`](ROADMAP.md).
 
 ## 1. Prerequisites
 
-- Node.js 22+
-- Bun 1.3+
-- Wrangler (Cloudflare CLI): `npm i -g wrangler`
-- Cloudflare account (free)
+- bun 1.3+
+- Node 22+ (only for `wrangler dev`'s nodejs_compat target)
+- wrangler CLI: `npm i -g wrangler`
+- ngrok (free tier is fine) — only for local dev so the runner inside the
+  sandbox can dial back to your Worker
+- accounts: Cloudflare (free), E2B (Hobby), Z.AI (GLM Coding Plan), GitHub
 
-## 2. Local Development (No External Keys Needed)
+## 2. Install
 
 ```bash
 bun install
-bun run test
-bun run dev
+bun run test         # 57 tests should pass, no external creds needed
+bun run typecheck    # tsc --noEmit clean
+bun run db:init      # local D1 schema
 ```
 
-### Test the API locally
+`bun run dev` will boot the Cloudflare Worker on `localhost:8788`. Without
+the launcher (next sections) you can hit `/health` and unit-test the API
+surface, but you cannot run a real session.
+
+## 3. E2B (Hobby tier, free)
+
+1. Sign up at https://e2b.dev/dashboard (Hobby is $0/mo, $100 one-time
+   credits, no card).
+2. Create an API key, copy it.
+3. Add to `.dev.vars` **and** export it for the launcher process:
+   ```
+   E2B_API_KEY=e2b_xxxxxxxxxxxxxxxxxxxx
+   ```
+
+### Build the sandbox template
+
+Hermes uses one pre-baked E2B template, `hermes-runner`, that bakes node, bun,
+`opencode`, the supervisor and the runner into the snapshot. This is what
+gives us ~700–1500 ms cold starts.
 
 ```bash
-# Terminal 1: Start worker
-bun run dev
-
-# Terminal 2: Health check
-bun run src/testing/api-client.ts http://localhost:8787 health
-
-# Terminal 3: Create session
-bun run src/testing/api-client.ts http://localhost:8787 create "Fix failing tests" "https://github.com/test/repo" "my-project"
-
-# Terminal 4: Connect fake runner
-bun run src/testing/fake-runner.ts ws://localhost:8787 <session-id> <runner-token>
-
-# Terminal 5: Watch events
-bun run src/testing/api-client.ts http://localhost:8787 events <session-id>
-
-# Terminal 6: Approve PR
-bun run src/testing/api-client.ts http://localhost:8787 create-pr <session-id>
+E2B_API_KEY=… bun run template:build
 ```
 
-## 3. E2B Setup (Free)
+The build runs in E2B's CI and takes a few minutes the first time, ~30 s on
+subsequent rebuilds (layer cache). On success the template id is written to
+`infra/e2b/dist/template-id.txt`. The default alias is `hermes-runner` — no
+config change needed unless you rename it.
 
-1. Go to https://e2b.dev/dashboard
-2. Sign up (Hobby: $0/mo, $100 credits, no credit card)
-3. Copy API key
-4. Add to `.dev.vars`: `E2B_API_KEY=your-key`
+Rebuild whenever you change `src/runner/supervisor.ts`,
+`src/runner/sandbox-runner.ts`, or want to bump `opencode-ai`.
 
-## 4. Zai (z.ai) LLM Provider
+Limits on Hobby (see [`ROADMAP.md §8.2`](ROADMAP.md)): 20 concurrent
+sandboxes, 1 sandbox/sec creation, 1 h continuous runtime, 10 GB disk. The
+launcher's `MAX_CONCURRENT_SESSIONS` (default 10) keeps headroom.
 
-OpenCode supports Z.AI natively via the [`zai-coding-plan` provider](https://opencode.ai/docs/providers/#zai)
-(endpoint `https://api.z.ai/api/coding/paas/v4`). No custom `opencode.json` or
-`OPENAI_*` overrides are needed — just the API key and a `provider/model` id.
+## 4. Z.AI LLM (OpenCode provider)
 
-### Get Zai API Key
+OpenCode talks to Z.AI's GLM Coding Plan via its native `zai-coding-plan`
+provider (no custom `opencode.json` needed).
 
-1. Go to https://z.ai (or https://open.bigmodel.cn for international)
-2. Sign up / log in to a GLM Coding Plan
-3. Create an API key and copy it
-
-### Configure
-
-Add to `.dev.vars`:
-```
-ZAI_API_KEY=your-zai-api-key
-ZAI_MODEL=glm-5.2
-```
-
-When a session is created, the Worker injects:
-- `ZHIPU_API_KEY` = `ZAI_API_KEY` (the env var OpenCode's native `zai-coding-plan` provider reads)
-- `OPENCODE_MODEL` = `zai-coding-plan/<model>` (e.g. `zai-coding-plan/glm-5.2`)
-
-Then the sandbox runner spawns `opencode run --model "$OPENCODE_MODEL" ...`,
-and OpenCode resolves the provider from [models.dev](https://models.dev).
-
-### Available Zai Coding Plan Models
-
-| Model | Notes |
-|-------|-------|
-| `glm-5.2` | Latest, 1M context |
-| `glm-5.1` | 200K context |
-| `glm-4.7` | 200K context |
-| `glm-4.5-air` | Fast, lightweight |
-
-## 5. GitHub App Setup (For PR Creation)
-
-### Step-by-step: Create GitHub App
-
-1. Go to **GitHub Settings**:
-   - Personal account: https://github.com/settings/apps/new
-   - Organization: `https://github.com/organizations/<org>/settings/apps/new`
-
-2. Fill in **GitHub App name**:
+1. Sign up at https://z.ai (international: https://open.bigmodel.cn) for the
+   GLM Coding Plan.
+2. Create an API key, copy it.
+3. Add to `.dev.vars`:
    ```
-   Hermes Control Plane
+   ZAI_API_KEY=…
+   ZAI_MODEL=glm-5.2
    ```
 
-3. Fill in **Homepage URL**:
-   ```
-   http://localhost:8787
-   ```
-   (Use your deployed URL when in production)
+The launcher injects two env vars into the sandbox per session:
+- `ZHIPU_API_KEY` = `ZAI_API_KEY` (what OpenCode's provider reads)
+- `OPENCODE_MODEL` = `zai-coding-plan/glm-5.2` (or whatever `ZAI_MODEL` is)
 
-4. **Webhook** section:
-   - Uncheck **Active** (not needed for MVP)
-   - Webhook URL: leave empty
-   - Webhook secret: leave empty
+Available models: `glm-5.2` (1M ctx, default), `glm-5.1` (200K), `glm-4.7`
+(200K), `glm-4.5-air` (fast/cheap).
 
-5. **Repository permissions** (expand and set each one):
+## 5. GitHub App (for PR creation)
+
+PRs are pushed and opened by a GitHub App, using short-lived (≤ 1 h),
+repo-scoped installation tokens minted per session.
+
+### Create the App
+
+1. Go to:
+   - personal: https://github.com/settings/apps/new
+   - org: `https://github.com/organizations/<org>/settings/apps/new`
+2. Fill in:
+   - Name: `Hermes Control Plane` (must be globally unique)
+   - Homepage URL: `http://localhost:8788`
+3. **Webhook**: uncheck "Active". Leave URL/secret blank.
+4. **Repository permissions**:
 
    | Permission | Value | Why |
-   |------------|-------|-----|
-   | **Administration** | Read-only | List repos |
-   | **Contents** | Read and write | Clone repo, push branch, read files |
-   | **Metadata** | Read-only | Auto-required, always enabled |
-   | **Pull requests** | Read and write | Create PR after task completion |
-   | **Commit statuses** | Read-only | Check CI status |
-   | **Actions** | Read-only | Check workflow runs (optional) |
+   |---|---|---|
+   | Administration | Read-only | list repos |
+   | Contents | Read & write | clone, push branch |
+   | Metadata | Read-only | auto-required |
+   | Pull requests | Read & write | open the PR |
+   | Commit statuses | Read-only | read CI status |
+   | Actions | Read-only | read workflow runs (optional) |
 
-   Leave all other permissions as default (No access).
+   Leave everything else as **No access**.
+5. **Where can this App be installed?** "Only on this account" for personal
+   use.
+6. Click **Create GitHub App**.
+7. On the App settings page note **App ID** (numeric).
+8. Scroll to **Private keys** → **Generate a private key**. A `.pem`
+   downloads. Keep it safe — GitHub only gives it to you once.
+9. Left sidebar → **Install App** → select the repos Hermes is allowed to
+   touch → Install.
 
-6. **Organization permissions**: leave all as default (No access)
+### Convert the key to PKCS#8
 
-7. **Where can this GitHub App be installed?**
-   - Select **Only on this account** (for MVP / personal use)
-   - Or select **Any account** if you want others to use it later
-
-8. Click **Create GitHub App**
-
-### After Creating the App
-
-9. **Note the App ID**:
-   - On the app's General settings page, find **App ID** (a number like `123456`)
-   - Copy this number
-
-10. **Generate a Private Key**:
-    - Scroll down to **Private keys** section
-    - Click **Generate a private key**
-    - A `.pem` file downloads (e.g., `hermes-control-plane.private-key.pem`)
-    - Keep this file safe, you can only download it once
-
-11. **Install the App**:
-    - On the app settings page, click **Install App** in the left sidebar
-    - Select the repositories you want Hermes to access
-    - Click **Install**
-
-### Configure in `.dev.vars`
+GitHub gives you a PKCS#1 key (`-----BEGIN RSA PRIVATE KEY-----`). The token
+broker expects PKCS#8 (`-----BEGIN PRIVATE KEY-----`). Convert once:
 
 ```bash
+openssl pkcs8 -topk8 -nocrypt \
+  -in  hermes-control-plane.private-key.pem \
+  -out hermes-control-plane.pkcs8.pem
+```
+
+Keep both files outside the repo.
+
+### Configure the launcher
+
+Two options. Either reference the file (recommended):
+
+```bash
+export GITHUB_APP_ID=123456
+export GITHUB_PRIVATE_KEY_FILE=/abs/path/hermes-control-plane.pkcs8.pem
+```
+
+…or paste the PEM into `.dev.vars` (note: multi-line in `.dev.vars` works,
+each subsequent line is treated as the continuation of the value):
+
+```
 GITHUB_APP_ID=123456
-
-# For the private key, you need the full PEM content including headers:
-GITHUB_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----
-MIIEpAIBAAKCAQEA...
-...your full key here...
------END RSA PRIVATE KEY-----"
+GITHUB_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----
+MIIEv…
+…
+-----END PRIVATE KEY-----
 ```
 
-Or load from file:
+## 6. Public URL for the runner (ngrok in dev)
+
+The runner inside the sandbox dials your Worker over WebSocket. Locally that
+needs a public URL.
+
 ```bash
-GITHUB_PRIVATE_KEY=$(cat /path/to/hermes-control-plane.private-key.pem)
+ngrok http 8788
+# copy the https URL, e.g. https://abcd-1234.ngrok-free.app
+export HERMES_PUBLIC_URL=https://abcd-1234.ngrok-free.app
 ```
 
-### Verify GitHub App Works
+Free-tier ngrok is fine; the browser interstitial doesn't affect WS
+upgrades.
 
-```bash
-# Test that the app can access a repo
-curl -s -H "Authorization: token <installation-token>" \
-  https://api.github.com/repos/<owner>/<repo>/contents
+## 7. `.dev.vars` example
+
+For the Worker (read by `wrangler dev` automatically):
+
 ```
-
-## 6. OpenCode (Inside Sandbox)
-
-OpenCode runs inside the E2B sandbox. The `opencode` template is pre-installed.
-
-The runner bridge (`src/runner/bridge.ts`) starts `opencode run` inside the sandbox.
-
-For OpenCode to work, it needs a model API key. With Zai, this is injected automatically by the Worker:
-- `ZHIPU_API_KEY` = your Zai API key (env var read by OpenCode's native `zai-coding-plan` provider)
-- `OPENCODE_MODEL` = `zai-coding-plan/<model>` (e.g. `zai-coding-plan/glm-5.2`)
-
-You can override per-session via the `profile.env` field:
-
-```bash
-curl -X POST http://localhost:8787/sessions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "projectId": "my-project",
-    "taskDescription": "Fix tests",
-    "repoUrl": "https://github.com/me/repo",
-    "profile": {
-      "model": "glm-5.2",
-      "env": {
-        "ZHIPU_API_KEY": "your-custom-key",
-        "OPENCODE_MODEL": "zai-coding-plan/glm-5.2"
-      }
-    }
-  }'
-```
-
-## 7. `.dev.vars` Complete Example
-
-```bash
-# ---- E2B Sandbox ----
+# E2B (only used by the launcher; Worker doesn't call E2B directly)
 E2B_API_KEY=e2b_xxxxxxxxxxxxxxxxxxxx
 
-# ---- Zai LLM (uses OpenCode native `zai-coding-plan` provider) ----
-ZAI_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxx
+# Z.AI (forwarded into the sandbox by the launcher)
+ZAI_API_KEY=…
 ZAI_MODEL=glm-5.2
 
-# ---- GitHub App ----
+# GitHub App (broker is in src/launcher/github-token.ts, host-side only)
 GITHUB_APP_ID=123456
-GITHUB_PRIVATE_KEY=-----BEGIN RSA PRIVATE KEY-----
-MIIEpAIBAAKCAQEA...
------END RSA PRIVATE KEY-----
+GITHUB_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----
+…
+-----END PRIVATE KEY-----
 ```
 
-## 8. Cloudflare Deployment
+The launcher reads its own env from the shell that starts it, not from
+`.dev.vars`. Easiest: put the same vars in a `.envrc` for direnv, or paste
+them inline when launching.
 
-### Create D1 Database
+## 8. Run end-to-end (three terminals)
 
 ```bash
+# Terminal 1 — Cloudflare Worker
+bun run dev
+# Ready on http://localhost:8788
+
+# Terminal 2 — public URL for the runner to dial
+ngrok http 8788
+# https://abcd-1234.ngrok-free.app
+```
+
+```bash
+# Terminal 3 — launcher (sidecar)
+export E2B_API_KEY=… ZAI_API_KEY=… ZAI_MODEL=glm-5.2
+export GITHUB_APP_ID=… GITHUB_PRIVATE_KEY_FILE=/abs/path/...pkcs8.pem
+export HERMES_BASE_URL=http://localhost:8788
+export HERMES_PUBLIC_URL=https://abcd-1234.ngrok-free.app
+export E2B_TEMPLATE=hermes-runner
+bun run launcher
+# [launcher] startup sweep: scanned=0 killed=0 kept=0
+# [launcher] hermes-launcher listening on http://localhost:8789
+```
+
+Trigger a session:
+
+```bash
+curl -X POST http://localhost:8789/sessions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "taskDescription": "Add a top-of-file comment to README.md describing this repo",
+    "repoUrl": "https://github.com/you/your-repo"
+  }'
+# { "sessionId": "…", "sandboxId": "…", "streamUrl": "…", "stateUrl": "…" }
+```
+
+Watch the events (in another shell):
+
+```bash
+SID=<sessionId>
+watch -n 2 "curl -s http://localhost:8788/sessions/$SID | jq '{status: .session.status, prUrl: .artifacts.prUrl, events: (.events|length)}'"
+```
+
+On success: status reaches `completed` in ~30–60 s, `artifacts.prUrl` is a
+real GitHub PR, the sandbox is auto-killed.
+
+## 9. CLI (optional convenience)
+
+`scripts/launch-session.ts` is a thin client. Two modes:
+
+- **Sidecar mode** (preferred): set `HERMES_LAUNCHER_URL=http://localhost:8789`
+  and just call:
+  ```bash
+  HERMES_LAUNCHER_URL=http://localhost:8789 \
+  bun run launch https://github.com/you/repo "your task"
+  ```
+- **Direct mode** (no sidecar running): same vars as the launcher, no
+  `HERMES_LAUNCHER_URL`. The CLI provisions the sandbox in-process and reaps
+  it on exit.
+
+## 10. Cloudflare deployment (when you're ready)
+
+```bash
+# Create D1 + R2
 wrangler d1 create hermes-db
-# Copy database_id from output into wrangler.toml
-```
-
-### Create R2 Bucket
-
-```bash
+# paste the database_id into wrangler.toml
 wrangler r2 bucket create hermes-artifacts
-```
-
-### Run Schema
-
-```bash
 wrangler d1 execute hermes-db --file=schema.sql
-```
 
-### Set Secrets for Production
+# Set Worker secrets (only those the Worker needs)
+wrangler secret put MAX_CONCURRENT_SESSIONS  # optional override
 
-```bash
-wrangler secret put E2B_API_KEY
-wrangler secret put ZAI_API_KEY
-wrangler secret put GITHUB_APP_ID
-wrangler secret put GITHUB_PRIVATE_KEY
-```
-
-### Deploy
-
-```bash
+# Deploy
 bun run deploy
 ```
 
-## 9. Testing Checklist
+Note: the deployed Worker URL replaces the ngrok tunnel. Point the
+launcher's `HERMES_BASE_URL` and `HERMES_PUBLIC_URL` at it. The launcher
+itself still has to run somewhere with internet egress and the E2B+GH App
+credentials (see [`ROADMAP.md §10`](ROADMAP.md) for the deploy
+follow-up).
 
-| Test | Command | Needs Keys? |
-|------|---------|:-----------:|
-| Unit + integration tests | `bun run test` | No |
-| Local Worker + fake runner | `bun run dev` | No |
-| Real E2B sandbox | API with E2B provider | E2B key |
-| Real Zai LLM (agent runs) | session with env | Zai key |
-| Real GitHub PR | approve PR | GitHub App |
-| Full end-to-end | all above | All keys |
+## 11. Verification checklist
+
+| Step | Command | Pass criterion |
+|---|---|---|
+| Unit + integration tests | `bun run test` | 57/57 |
+| Typecheck | `bun run typecheck` | no output |
+| Worker boots | `bun run dev` then `curl http://localhost:8788/health` | `{"status":"ok",...}` |
+| Template build | `bun run template:build` | `template id written to …` |
+| Launcher boots | `bun run launcher` then `curl http://localhost:8789/health` | `{"status":"ok",...,"activeSessions":0}` |
+| Orphan sweeper | restart launcher; existing tagged sandboxes whose sessions are terminal die | sweep log `scanned=N killed=N kept=0` |
+| Full e2e | `POST /sessions` on launcher | session reaches `completed`; real PR opened; E2B list empty after |

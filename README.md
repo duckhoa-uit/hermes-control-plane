@@ -1,143 +1,233 @@
 # Hermes Control Plane
 
-Control plane for AI coding agents. Orchestrates sandboxed OpenCode sessions via Cloudflare Durable Objects, with E2B as the sandbox provider.
+Background coding agent control plane. A user posts a task; the system spins up
+a sandboxed [OpenCode](https://opencode.ai) session, the agent makes the
+changes, opens a real GitHub PR, then tears the sandbox down.
+
+See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the gap analysis against a
+production-grade background agent ([Ramp Inspect](https://builders.ramp.com/post/why-we-built-our-background-agent))
+and the prioritized improvement plan. See [`docs/SETUP.md`](docs/SETUP.md)
+for local-development setup.
 
 ## Architecture
 
+Three processes:
+
 ```
-User / API
-    |
-    v
-Cloudflare Worker API
-    |
-    v
-SessionDurableObject (1 per session)
-  - state machine
-  - event log (append-only, replayable)
-  - WebSocket hub (UI + runner)
-  - approval gates
-  - heartbeat / stall detection
-    |
-    | WebSocket
-    v
-E2B Sandbox
-    |
-    v
-Bun Runner / Bridge
-  - connects to SessionDO
-  - starts opencode serve
-  - streams OpenCode events
-  - receives commands
-    |
-    v
-OpenCode Server (localhost)
-  - agent runtime
-  - file edits, shell, tools
+┌─────────────────┐       ┌────────────────────────┐       ┌──────────────────┐
+│ Client          │       │ hermes-launcher        │       │ Cloudflare       │
+│ (web / Slack /  │ HTTPS │ (Bun, src/launcher)    │ HTTPS │ Worker + DO      │
+│  CLI / curl)    │──────▶│  - holds E2B + GH App  │──────▶│  - session state │
+│                 │       │    credentials         │       │  - event log     │
+│                 │       │  - per-session reaper  │       │  - WS hub        │
+│                 │       │  - orphan sweeper      │       │  - approval gate │
+└─────────────────┘       └────────────────────────┘       └──────────────────┘
+                                     │                              ▲
+                                     │ E2B SDK                      │ WSS (runner dials back
+                                     ▼                              │  through PUBLIC_BASE_URL
+                          ┌────────────────────────┐                │  — ngrok in dev)
+                          │ E2B sandbox            │                │
+                          │  /opt/hermes/          │                │
+                          │   supervisor.js  ───┐  │                │
+                          │   runner.js      ◀──┘  │────────────────┘
+                          │  opencode CLI          │
+                          │  /home/user/repo       │
+                          └────────────────────────┘
 ```
+
+Why the launcher exists: the Cloudflare Workers runtime cannot safely drive
+the E2B SDK (silent `workerd` crashes during long `waitUntil` work). So we
+split responsibilities: the Worker is the small stateful orchestrator; the
+launcher is a single Bun process that owns sandbox lifecycle and the
+credentials. Details in [`docs/ROADMAP.md §9.2`](docs/ROADMAP.md).
 
 ## Flow
 
-1. User creates task with project profile
-2. SessionDO provisions E2B sandbox
-3. Sandbox clones repo, runs setup
-4. Bun runner starts OpenCode, connects to SessionDO
-5. Agent works, events stream live to UI
-6. Sensitive actions require approval
-7. On completion: diff, test results, summary
-8. User approves PR creation
-9. Sandbox destroyed, artifacts retained
+1. Client `POST /sessions { repoUrl, taskDescription }` on the launcher.
+2. Launcher checks the concurrency cap, then asks the Worker to create a
+   `SessionDurableObject`. Worker returns `{ sessionId, runnerToken }`.
+3. Launcher calls `Sandbox.create()` from a pre-baked E2B template
+   (`hermes-runner`) — Node, bun, `opencode`, supervisor, runner all in the
+   snapshot. Cold start ≈ 700–1500 ms.
+4. Launcher mints a short-lived, repo-scoped GitHub App installation token,
+   `git clone`s the repo inside the sandbox, then drops
+   `/opt/hermes/start.json` with per-session env (runner token, control WS URL,
+   GH token, model).
+5. The supervisor (already running in the snapshot, courtesy `setStartCmd`)
+   sees the file appear and `exec`s the runner. The runner dials the Worker
+   over WS using the public URL, registers itself, and is sent the first
+   `agent.prompt`.
+6. `opencode` does the work. Events stream to the Worker DO and through to
+   subscribed clients. On completion the runner emits `git.diff.ready`.
+7. Launcher sees `review_ready` on the Worker, triggers `/create-pr`. Runner
+   creates the branch, pushes via the GH App token, opens the PR via REST,
+   emits `pr.created`. DO transitions to `completed`.
+8. Launcher's watcher sees `completed`, kills the sandbox. Concurrency slot
+   freed.
 
-## Session States
+If anything goes wrong (bad repo, bad template, runner stall, sidecar crash),
+the launcher still ensures the sandbox is reaped — see
+[`docs/ROADMAP.md §10.2`](docs/ROADMAP.md).
+
+## Session states
 
 ```
-created -> provisioning -> runner_connecting -> ready -> running
-running -> needs_approval -> running
-running -> review_ready -> creating_pr -> completed
-running -> stalled -> failed
-running -> failed / aborted
-completed/failed/aborted -> archived
+created → provisioning → runner_connecting → ready → running
+running → needs_approval → running
+running → review_ready → creating_pr → completed     ← terminal (PR opened)
+running → stalled → failed                            ← terminal
+running → failed | aborted                            ← terminal
 ```
 
-## Project Layout
+Transitions are enforced by `src/core/state-machine.ts`.
+
+## Project layout
 
 ```
 src/
-  core/
-    types.ts          - all TypeScript interfaces and types
-    state-machine.ts  - session state machine with transition validation
-    event-log.ts      - append-only event log with seq cursor
-    id.ts             - ID and token generators
-    constants.ts      - heartbeat intervals, timeouts, ports
-  worker/
-    index.ts          - Cloudflare Worker API routes
-    session-do.ts     - SessionDurableObject (control plane core)
-    env.d.ts          - CloudflareEnv type bindings
+  core/                       pure logic, no I/O
+    types.ts                  shared TS interfaces
+    state-machine.ts          allowed transitions
+    event-log.ts              append-only, replayable
+    id.ts                     ids and tokens
+    constants.ts              heartbeat / timeout
+  worker/                     Cloudflare Worker (the control plane)
+    index.ts                  HTTP routes + WS upgrade
+    session-do.ts             SessionDurableObject (state machine, event log, WS hub)
+    env.d.ts                  CloudflareEnv bindings
+  launcher/                   Bun sidecar (sandbox lifecycle)
+    server.ts                 HTTP API: POST/GET/DELETE /sessions, /health
+    provision.ts              Sandbox.create + clone + drop start.json
+    github-token.ts           short-lived, repo-scoped GH App installation token
+    sweeper.ts                orphan reaper (kills sandboxes tied to terminal/unknown sessions)
+  runner/                     runs inside the sandbox
+    supervisor.ts             baked into the template; waits for start.json, execs runner
+    sandbox-runner.ts         opencode driver, WS bridge, PR creation
   providers/
-    e2b.ts            - E2B sandbox provider
-    github.ts         - GitHub App token broker (short-lived, repo-scoped)
-  runner/
-    bridge.ts         - Bun runner/bridge (runs inside sandbox)
-tests/
-    state-machine.test.ts
-    event-log.test.ts
-    id.test.ts
-schema.sql            - D1 database schema
+    github.ts                 (legacy broker; launcher uses github-token.ts directly)
+    mock.ts                   in-memory sandbox provider for unit tests
+infra/e2b/
+  build-template.ts           builds the `hermes-runner` E2B template
+scripts/
+  launch-session.ts           CLI: calls the sidecar by default, direct-mode fallback
+tests/                        vitest suites (state machine, event log, sweeper, provision, etc.)
+docs/
+  SETUP.md                    local-dev setup
+  ROADMAP.md                  gap analysis + sidecar architecture + verified results
 ```
 
-## Getting Started
+## Running it locally
+
+You need: bun 1.3+, wrangler, ngrok (free is fine), and an E2B Hobby account.
+Full step-by-step in [`docs/SETUP.md`](docs/SETUP.md). The short version:
 
 ```bash
-# Install
 bun install
+bun run db:init                              # local D1 schema
 
-# Run tests
-bun run test
+# Build the E2B template once (or whenever runner/supervisor change)
+E2B_API_KEY=… bun run template:build
 
-# Local dev
-cp .dev.vars.example .dev.vars  # fill in secrets
-bun run dev
+# Three terminals:
+bun run dev                                  # 1. Cloudflare Worker on :8788
+ngrok http 8788                              # 2. public URL for the runner to dial
+HERMES_PUBLIC_URL=https://<ngrok> \
+E2B_API_KEY=… ZAI_API_KEY=… \
+GITHUB_APP_ID=… GITHUB_PRIVATE_KEY_FILE=… \
+bun run launcher                             # 3. sidecar on :8789
 
-# Initialize D1
-wrangler d1 execute hermes-db --local --file=schema.sql
+# Trigger a session:
+curl -X POST http://localhost:8789/sessions \
+  -H 'Content-Type: application/json' \
+  -d '{"taskDescription":"…","repoUrl":"https://github.com/you/repo"}'
 ```
 
-## API Endpoints
+## HTTP API
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/health` | Health check |
-| POST | `/sessions` | Create session `{ projectId, taskDescription, repoUrl, profile? }` |
-| GET | `/sessions/:id` | Get session state + events + artifacts |
-| WS | `/sessions/:id/stream` | Live event stream |
-| POST | `/sessions/:id/approve` | Approve action `{ requestId }` |
-| POST | `/sessions/:id/abort` | Abort session |
-| POST | `/sessions/:id/create-pr` | Create PR (requires review_ready state) |
+### Launcher (`http://localhost:8789` by default)
 
-## Environment Variables
+| Method | Path | Body / notes |
+|--------|------|---|
+| `GET` | `/health` | sidecar status + active sessions + cap |
+| `POST` | `/sessions` | `{ taskDescription, repoUrl, projectId?, baseBranch? }`. Returns `{ sessionId, sandboxId, streamUrl, stateUrl }` |
+| `GET` | `/sessions/:id` | passthrough to Worker state |
+| `DELETE` | `/sessions/:id` | kill sandbox + abort DO session (works even if sidecar forgot the session) |
 
-Set in `.dev.vars` or via `wrangler secret put`:
+### Worker (`http://localhost:8788` by default)
 
-- `E2B_API_KEY` - E2B API key (free tier available)
-- `GITHUB_APP_ID` - GitHub App ID for token brokering
-- `GITHUB_PRIVATE_KEY` - GitHub App private key (PEM)
+| Method | Path | Notes |
+|--------|------|---|
+| `GET` | `/health` | |
+| `POST` | `/sessions` | Lower-level: creates the DO without provisioning. Clients should prefer the launcher. |
+| `GET` | `/sessions/:id` | Session + full event log + artifacts. **404** for unknown ids. |
+| `WS` | `/sessions/:id/stream` | live event stream for clients |
+| `WS` | `/sessions/:id/runner?token=…` | the runner inside the sandbox dials this |
+| `POST` | `/sessions/:id/approve` | resolve a pending approval |
+| `POST` | `/sessions/:id/abort` | force-abort |
+| `POST` | `/sessions/:id/prompt` | follow-up prompt (runner must still be connected) |
+| `POST` | `/sessions/:id/create-pr` | triggered automatically by the launcher on `review_ready` |
 
-## Tech Stack
+## Environment variables
 
-- **Control Plane**: Cloudflare Workers + Durable Objects
-- **Storage**: D1 (metadata), R2 (artifacts)
-- **Sandbox**: E2B (free Hobby tier)
-- **Runner**: Bun + TypeScript
-- **Agent Runtime**: OpenCode (`opencode serve`)
-- **Repo Access**: GitHub App short-lived tokens
+The Worker (`.dev.vars` or `wrangler secret put`):
 
-## Security Model
+| Var | Purpose |
+|-----|---------|
+| `MAX_SESSION_RUNTIME_MS` | cap for a single session (default 45 min) |
+| `HEARTBEAT_TIMEOUT_MS` | runner stall threshold (default 60 s) |
+| `MAX_CONCURRENT_SESSIONS` | Hobby-tier headroom (default 10; E2B Hobby cap is 20) |
+| `PUBLIC_BASE_URL` | optional; if unset, the Worker uses the request origin |
 
-- Runner gets only a session-scoped token, never broad credentials
-- GitHub tokens are short-lived and repo-scoped via App installation
-- PR creation requires explicit user approval
-- Sandbox egress should be logged and restricted
-- Task content is treated as untrusted context, not instructions
-- Full event audit log stored in Durable Object storage
+The launcher (process env):
+
+| Var | Purpose |
+|-----|---------|
+| `E2B_API_KEY` | required |
+| `E2B_TEMPLATE` | template alias, default `hermes-runner` |
+| `HERMES_BASE_URL` | where to reach the Worker, default `http://localhost:8788` |
+| `HERMES_PUBLIC_URL` | URL the runner inside the sandbox dials over WS (ngrok in dev) |
+| `HERMES_LAUNCHER_PORT` | default `8789` |
+| `ZAI_API_KEY`, `ZAI_MODEL` | OpenCode model config |
+| `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY` *or* `GITHUB_PRIVATE_KEY_FILE` | PKCS#8 PEM; used to mint short-lived, repo-scoped installation tokens |
+
+## Sandbox lifecycle
+
+Owned by the launcher, not the Worker. The rules:
+
+| Trigger | Action |
+|---|---|
+| Session reaches `completed` / `failed` / `aborted` | sandbox killed by the per-session watcher |
+| Session reaches `review_ready` | launcher auto-triggers `/create-pr` |
+| Launcher starts | orphan sweep: for each E2B sandbox tagged `metadata.hermes_session_id`, query Worker; kill if terminal or 404 |
+| `DELETE /sessions/:id` | kill tracked sandbox, plus scan E2B for matching `hermes_session_id` metadata (covers post-restart cleanup) |
+| Watcher hits 35-min deadline | force-kill (safety net above E2B's 15-min idle cap) |
+| Provision fails (bad repo, bad template, E2B down) | sandbox killed; DO aborted |
+
+Every sandbox carries `metadata: { hermes_session_id, hermes_repo }` so the
+sweeper can map strays back to sessions. Untagged sandboxes are never touched.
+
+## Security model
+
+- Runner gets a session-scoped WS token, never broad credentials.
+- GitHub access is via short-lived (≤ 1 hour), single-repo installation tokens
+  minted per session. PR authorship is the App identity (`hermes-bot`); see
+  [`docs/ROADMAP.md §8.3`](docs/ROADMAP.md) for the per-user OAuth plan.
+- The sandbox is throwaway — any `rm -rf`, `git push --force`, or runaway loop
+  dies with the sandbox.
+- Task descriptions are treated as untrusted context, not as instructions to
+  the launcher/Worker.
+- Full event audit log is kept in Durable Object storage, replayable to any
+  reconnecting client via `seq` cursor.
+- All E2B and GitHub App credentials live in **one** process (the launcher).
+  Clients (web, Slack, CLI) never see them.
+
+## Tech stack
+
+- **Control plane**: Cloudflare Workers + Durable Objects + D1 + R2
+- **Sandbox lifecycle**: Bun sidecar, E2B Sandboxes (Hobby tier)
+- **Sandbox interior**: Node 22 + bun + OpenCode CLI + custom supervisor/runner
+- **Agent runtime**: OpenCode driving Z.AI (`zai-coding-plan/glm-5.2` default)
+- **Repo access**: GitHub App, short-lived installation tokens
 
 ## License
 
