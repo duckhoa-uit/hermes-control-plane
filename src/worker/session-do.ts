@@ -179,8 +179,13 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     if (errorMsg) this.session.errorMessage = errorMsg;
 
     this.appendEvent("session.status_changed", "system", { from, to, error: errorMsg });
-
-    // Auto-teardown sandbox on any terminal state.
+    // Persist the session row so a hibernated/restored DO sees the new
+    // status. Without this, `restore()` reads the stale `created` row even
+    // though the event log shows we are completed/archived — the MCP
+    // follow-up flow then mis-classifies the session as live. Fire-and-
+    // forget via waitUntil so transition() stays sync for the existing
+    // callers.
+    this.ctx.waitUntil(this.persist());
   }
 
   // ---- Event log ----
@@ -642,16 +647,19 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     await this.ctx.storage.put("session", this.session);
     if (this.profile) await this.ctx.storage.put("profile", this.profile);
     if (this.runnerToken) await this.ctx.storage.put("runnerToken", this.runnerToken);
+    if (this.artifacts) await this.ctx.storage.put("artifacts", this.artifacts);
   }
 
   async restore(): Promise<void> {
     const session = await this.ctx.storage.get<Session>("session");
     const profile = await this.ctx.storage.get<ProjectProfile>("profile");
     const token = await this.ctx.storage.get<string>("runnerToken");
+    const artifacts = await this.ctx.storage.get<SessionArtifacts>("artifacts");
 
     if (session) this.session = session;
     if (profile) this.profile = profile;
     if (token) this.runnerToken = token;
+    if (artifacts) this.artifacts = artifacts;
 
     // Restore the event log from per-key entries. list() returns keys in
     // lexicographic order — eventKey() zero-pads to keep that == seq order.
