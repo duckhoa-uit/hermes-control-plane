@@ -101,6 +101,22 @@ install -m 0644 \
 systemctl daemon-reload
 log "installed /etc/systemd/system/control-plane-launcher.service"
 
+
+# -------- 8b. quick-tunnel unit + helper (opt-in) --------
+# Set CONTROL_PLANE_QUICK_TUNNEL=1 to also start a TryCloudflare quick tunnel
+# (no CF account, no domain). URL is ephemeral — re-fetch after every restart
+# with /opt/hermes-control-plane/quick-tunnel-url.sh. For production replace
+# with a named tunnel + Cloudflare Access (docs/DEPLOYMENT.md §14).
+QUICK_TUNNEL="${CONTROL_PLANE_QUICK_TUNNEL:-0}"
+install -m 0755 -o root -g root \
+  "$SRC_DIR/infra/launcher/quick-tunnel-url.sh" \
+  /opt/hermes-control-plane/quick-tunnel-url.sh
+install -m 0644 \
+  "$SRC_DIR/infra/launcher/control-plane-quick-tunnel.service" \
+  /etc/systemd/system/control-plane-quick-tunnel.service
+systemctl daemon-reload
+log "installed /etc/systemd/system/control-plane-quick-tunnel.service"
+
 # -------- 9. env file --------
 # Idempotent:
 #   - If $ENV_FILE already exists with all required values filled in
@@ -189,8 +205,61 @@ ENVEOF
   log "wrote $ENV_FILE"
 fi
 
-# -------- 10. final report --------
-cat <<MSG
+# -------- 10. start services + final report --------
+if [[ "$QUICK_TUNNEL" == "1" ]]; then
+  log "starting control-plane-launcher + control-plane-quick-tunnel"
+  systemctl enable --now control-plane-launcher
+  systemctl enable --now control-plane-quick-tunnel
+
+  log "waiting up to 30s for TryCloudflare URL..."
+  TUNNEL_URL="$(/opt/hermes-control-plane/quick-tunnel-url.sh --wait 30 || true)"
+
+  cat <<MSG
+
+────────────────────────────────────────────────────────────────────
+✅  control-plane-launcher install done (quick-tunnel mode).
+
+   Launcher:     systemctl status control-plane-launcher
+   Quick tunnel: systemctl status control-plane-quick-tunnel
+   Tunnel URL:   ${TUNNEL_URL:-<not ready yet — run /opt/hermes-control-plane/quick-tunnel-url.sh --wait 60>}
+
+⚠️  TryCloudflare URLs are EPHEMERAL. Every cloudflared restart gives a
+   new URL. Re-fetch with:
+      sudo /opt/hermes-control-plane/quick-tunnel-url.sh
+   And re-run step 2 + step 3 below after each change.
+
+Remaining steps (one-off unless URL changes):
+
+1.  Smoke-test launcher locally:
+      curl http://localhost:8789/health
+    And via the tunnel:
+      curl ${TUNNEL_URL:-https://<random>.trycloudflare.com}/health
+
+2.  From your dev machine, wire the Worker → launcher:
+      echo "${TUNNEL_URL:-https://<random>.trycloudflare.com}" \
+        | bun x wrangler secret put CONTROL_PLANE_LAUNCHER_URL
+      bun run deploy
+
+3.  Wire Hermes Agent. Edit ~/.hermes/config.yaml:
+      mcp_servers:
+        hermes-control-plane:
+          url: "http://localhost:8789/mcp"      # same host as Hermes
+          timeout: 300
+      skills:
+        external_dirs:
+          - $SRC_DIR/skills
+    Then restart Hermes. Full runbook: infra/mcp/README.md.
+
+Upgrade path (when you outgrow quick tunnels):
+   1. Get a domain in Cloudflare (or use *.cfargotunnel.com).
+   2. Replace control-plane-quick-tunnel.service with a named tunnel
+      (cloudflared tunnel create + route dns + Access policy).
+   3. See docs/DEPLOYMENT.md §14 for the locked-down topology.
+
+────────────────────────────────────────────────────────────────────
+MSG
+else
+  cat <<MSG
 
 ────────────────────────────────────────────────────────────────────
 ✅  control-plane-launcher install done.
@@ -210,7 +279,13 @@ Next steps (Cloudflare cannot be automated):
 3.  Smoke-test from the same VPS (Hermes will use this URL):
       curl http://localhost:8789/health
 
-4.  Expose port 8789 to the Worker via Cloudflare Tunnel:
+4a. Quickest path (no domain, ephemeral URL — bootstrap only):
+      sudo systemctl enable --now control-plane-quick-tunnel
+      sudo /opt/hermes-control-plane/quick-tunnel-url.sh --wait 30
+    Or rerun this installer with CONTROL_PLANE_QUICK_TUNNEL=1 to do
+    it automatically.
+
+4b. Production path (named tunnel, requires CF account + domain):
       cloudflared tunnel login
       cloudflared tunnel create control-plane-launcher
       cloudflared tunnel route dns control-plane-launcher launcher.<your-domain>
@@ -218,7 +293,7 @@ Next steps (Cloudflare cannot be automated):
       sudo cloudflared service install <tunnel-token>
 
 5.  Set the Worker secret (from your dev machine):
-      echo "https://launcher.<your-domain>" | bun x wrangler secret put CONTROL_PLANE_LAUNCHER_URL
+      echo "<tunnel-url>" | bun x wrangler secret put CONTROL_PLANE_LAUNCHER_URL
       bun run deploy
 
 6.  Wire Hermes Agent to the MCP server + skill. Edit ~/.hermes/config.yaml:
@@ -235,3 +310,4 @@ Next steps (Cloudflare cannot be automated):
 
 ────────────────────────────────────────────────────────────────────
 MSG
+fi

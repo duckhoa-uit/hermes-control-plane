@@ -73,6 +73,43 @@ You should see:
 [launcher]   public = https://hermes-control-plane.<your-sub>.workers.dev
 ```
 
+## Quick tunnel (no domain, no CF account)
+
+Need a public URL for `CONTROL_PLANE_LAUNCHER_URL` before you own a domain?
+Pass `CONTROL_PLANE_QUICK_TUNNEL=1` to `install.sh` — it installs and
+starts a TryCloudflare quick tunnel as a second systemd unit:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/duckhoa-uit/hermes-control-plane/main/infra/launcher/install.sh \
+  | sudo CONTROL_PLANE_QUICK_TUNNEL=1 \
+         E2B_API_KEY=... ZAI_API_KEY=... GITHUB_USER_TOKEN=... \
+         GITHUB_USER_LOGIN=... CONTROL_PLANE_BASE_URL=https://...workers.dev \
+         bash
+```
+
+The installer waits up to 30 s for cloudflared to emit the URL and prints
+it. To re-fetch later:
+
+```bash
+sudo /opt/hermes-control-plane/quick-tunnel-url.sh           # current URL
+sudo /opt/hermes-control-plane/quick-tunnel-url.sh --wait 60 # block 60s
+```
+
+**Caveats** — TryCloudflare is for bootstrapping only:
+
+- URL is random and **changes every cloudflared restart**. After a restart
+  you must re-run `wrangler secret put CONTROL_PLANE_LAUNCHER_URL` + `bun
+  run deploy` for the Worker DO's resume path to keep working.
+- No Cloudflare Access wall — anyone who guesses the URL can `POST
+  /sessions` against your launcher. Treat the URL as a (weak) secret.
+- Cloudflare documents `trycloudflare.com` as "for testing only, not
+  production". Upgrade to a named tunnel + Access (`docs/DEPLOYMENT.md §14`)
+  once you own a domain.
+
+The unit is installed even without `CONTROL_PLANE_QUICK_TUNNEL=1` (so you
+can start it later with `sudo systemctl enable --now
+control-plane-quick-tunnel`); it just isn't auto-started.
+
 ## Reachability from the Worker
 
 The Worker DO posts to the launcher when resuming a paused sandbox. The
