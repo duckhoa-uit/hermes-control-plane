@@ -14,7 +14,7 @@ import { provisionSession, killSandbox } from "../src/launcher/provision";
 const CONTROL_PLANE_BASE_URL = process.env.CONTROL_PLANE_BASE_URL ?? "http://localhost:8788";
 const CONTROL_PLANE_LAUNCHER_URL = process.env.CONTROL_PLANE_LAUNCHER_URL;
 const E2B_API_KEY = process.env.E2B_API_KEY;
-const E2B_TEMPLATE = process.env.E2B_TEMPLATE ?? "hermes-runner";
+const E2B_TEMPLATE = process.env.E2B_TEMPLATE ?? "control-plane-runner";
 const ZAI_API_KEY = process.env.ZAI_API_KEY ?? "";
 const ZAI_MODEL_RAW = process.env.ZAI_MODEL ?? "glm-5.2";
 const ZAI_MODEL = ZAI_MODEL_RAW.includes("/") ? ZAI_MODEL_RAW : `zai-coding-plan/${ZAI_MODEL_RAW}`;

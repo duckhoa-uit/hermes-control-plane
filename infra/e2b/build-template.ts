@@ -30,7 +30,7 @@ const OUT_DIR = resolve(ROOT, "infra/e2b/dist");
 const SUPERVISOR_OUT = resolve(OUT_DIR, "supervisor.js");
 const RUNNER_OUT = resolve(OUT_DIR, "runner.js");
 
-const TEMPLATE_NAME = process.env.HERMES_TEMPLATE_NAME ?? "hermes-runner";
+const TEMPLATE_NAME = process.env.CONTROL_PLANE_TEMPLATE_NAME ?? "control-plane-runner";
 
 if (!process.env.E2B_API_KEY) {
   console.error("E2B_API_KEY is required");

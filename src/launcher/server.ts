@@ -28,7 +28,7 @@ import { buildMcpHandler } from "../mcp/server";
 const PORT = Number(process.env.CONTROL_PLANE_LAUNCHER_PORT ?? 8789);
 const CONTROL_PLANE_BASE_URL = process.env.CONTROL_PLANE_BASE_URL;
 const E2B_API_KEY = process.env.E2B_API_KEY;
-const E2B_TEMPLATE = process.env.E2B_TEMPLATE ?? "hermes-runner";
+const E2B_TEMPLATE = process.env.E2B_TEMPLATE ?? "control-plane-runner";
 const ZAI_API_KEY = process.env.ZAI_API_KEY;
 const GITHUB_USER_TOKEN = process.env.GITHUB_USER_TOKEN;
 const GITHUB_USER_LOGIN = process.env.GITHUB_USER_LOGIN;

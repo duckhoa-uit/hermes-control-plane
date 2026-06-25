@@ -47,7 +47,7 @@ shipped or in-flight, not new asks of this plan):
 
 What we explicitly do **not** copy from Inspect at this stage:
 
-- Per-repo image registry. We ship one `hermes-runner` template. Per-repo
+- Per-repo image registry. We ship one `control-plane-runner` template. Per-repo
   templates revisit only when build/test setup actually varies enough to
   matter (`ROADMAP.md §8.5` exit criteria).
 - Warm sandbox pool. E2B's ~700–1500 ms cold start is acceptable for a
@@ -119,9 +119,9 @@ Three environments, identical shapes, different secrets:
 
 | Env | Worker | Launcher | E2B template | Slack workspace |
 |---|---|---|---|---|
-| `dev` | `wrangler dev` + ngrok | local `bun run launcher` | `hermes-runner` Hobby | dev workspace, channel `#hermes-dev` |
-| `staging` | `hermes-staging.workers.dev` | small VM | `hermes-runner-staging` Hobby | dev workspace, channel `#hermes-staging` |
-| `prod` | `hermes.workers.dev` (or custom domain) | dedicated VM | `hermes-runner-prod` Hobby (Pro after §6.4) | prod workspace, channel chosen by team |
+| `dev` | `wrangler dev` + ngrok | local `bun run launcher` | `control-plane-runner` Hobby | dev workspace, channel `#hermes-dev` |
+| `staging` | `hermes-staging.workers.dev` | small VM | `control-plane-runner-staging` Hobby | dev workspace, channel `#hermes-staging` |
+| `prod` | `hermes.workers.dev` (or custom domain) | dedicated VM | `control-plane-runner-prod` Hobby (Pro after §6.4) | prod workspace, channel chosen by team |
 
 Promotion rule: a release tag must have run clean in `staging` against a
 real PR for ≥ 24 h before being deployed to `prod`. No exceptions for
@@ -146,7 +146,7 @@ the same git tag.
 
 We use a single monorepo version (`package.json#version` →
 `HERMES_RELEASE` env var on both Worker and launcher). The template
-inherits the tag in its alias: `hermes-runner-prod-v0.3.1`. This makes
+inherits the tag in its alias: `control-plane-runner-prod-v0.3.1`. This makes
 every running sandbox traceable to a git tag from the E2B dashboard.
 
 ### 4.2 Tag → ship
@@ -178,7 +178,7 @@ mergeable=true`, deletes the branch. Failure aborts the promote step.
 - **Launcher**: keep the previous binary on the VM as `launcher.js.prev`,
   `systemctl restart control-plane-launcher` with the env pointing at it.
 - **E2B template**: aliases are immutable per-version. To roll back, set
-  `E2B_TEMPLATE=hermes-runner-prod-v<prev>` in the launcher env. No
+  `E2B_TEMPLATE=control-plane-runner-prod-v<prev>` in the launcher env. No
   rebuild needed.
 
 The rollback target is **always the previous green release tag**, not

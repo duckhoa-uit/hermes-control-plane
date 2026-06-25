@@ -85,7 +85,7 @@ See `README.md` for the canonical diagram. Snapshot of the relevant pieces:
   (`src/worker/session-do.ts`). DO Storage is the sole truth (D1/R2
   removed in §12.16).
 - **Sandbox:** E2B, provisioned by the launcher sidecar
-  (`src/launcher/provision.ts`); the pre-baked `hermes-runner` template
+  (`src/launcher/provision.ts`); the pre-baked `control-plane-runner` template
   (`infra/e2b/build-template.ts`) bakes Node + bun + `opencode` + supervisor
   + runner into the snapshot. Per-session runtime cost is `git clone` +
   drop `/opt/control-plane/start.json`; supervisor execs the runner. (Post-§10.5
@@ -110,7 +110,7 @@ row in the **Notes / PR** column._
 
 | # | Area | Reference (Ramp) | Hermes today | Status | Risk | Notes / PR |
 |---|---|---|---|---|---|---|
-| 1 | Sandbox cold start | Pre-baked image per repo, snapshots | Pre-baked single template `hermes-runner` (`infra/e2b/build-template.ts`); supervisor in snapshot via `setStartCmd`; runtime cost ≈ clone + `start.json`. | ✅ | n/a | M1 shipped §9.1 (~700–1500 ms warm) |
+| 1 | Sandbox cold start | Pre-baked image per repo, snapshots | Pre-baked single template `control-plane-runner` (`infra/e2b/build-template.ts`); supervisor in snapshot via `setStartCmd`; runtime cost ≈ clone + `start.json`. | ✅ | n/a | M1 shipped §9.1 (~700–1500 ms warm) |
 | 2 | Image freshness | 30-min rebuild loop | None | ❌ | Med | |
 | 3 | Warm pool | Pool per hot repo, warm-on-keystroke | None | ❌ | Med | |
 | 4 | Snapshot/resume | Snapshot on end, restore on follow-up | E2B pause + `Sandbox.connect()` resume shipped end-to-end across hours-long idle (single-cycle and multi-cycle). Snapshot-based session forking (branch a turn) still ❌. | 🟡 | Low | M5 shipped §12.15 (pause/resume); fork-snapshot deferred §8.5 |
@@ -145,7 +145,7 @@ without re-asking. Keep items small enough to ship in one PR.
 ### P0 — Close the cold-start gap
 
 - [x] **P0.1 Pre-baked E2B template (single template, not per-project).**
-  Shipped as M1 (`infra/e2b/build-template.ts` → `hermes-runner` template).
+  Shipped as M1 (`infra/e2b/build-template.ts` → `control-plane-runner` template).
   Per-project templates intentionally deferred per §8.3 (one developer, no
   per-repo dep variance worth the complexity). Verified §9.1: cold-load
   ~700–1500 ms; event log has no runtime install steps.
@@ -317,7 +317,7 @@ deferral costs us so we can revisit deliberately.
 Three items only. Each is small enough for one PR.
 
 - [x] **M1 — Pre-baked single E2B template.** Shipped — see §9.1. One
-  template (`hermes-runner`) bundling Node + bun + `opencode` CLI +
+  template (`control-plane-runner`) bundling Node + bun + `opencode` CLI +
   supervisor + runner; supervisor in `setStartCmd` reads
   `/opt/control-plane/start.json` (written by the launcher post-`Sandbox.create()`)
   and execs the runner. Verified ~700–1500 ms cold-load with no runtime
@@ -482,7 +482,7 @@ Revisit deferred items when **any** of these is true:
 
 | Item | Status | Notes |
 |---|---|---|
-| M1 — pre-baked E2B template | ✅ done | Template `hermes-runner` (id `ihf90c8bik7w8rwrk1u7`); bundles node, opencode CLI, supervisor, runner; supervisor runs in the snapshot via `setStartCmd` and execs the runner on `/opt/control-plane/start.json` arrival. |
+| M1 — pre-baked E2B template | ✅ done | Template `control-plane-runner` (id `ihf90c8bik7w8rwrk1u7`); bundles node, opencode CLI, supervisor, runner; supervisor runs in the snapshot via `setStartCmd` and execs the runner on `/opt/control-plane/start.json` arrival. |
 | M2 — auto-pause + autoResume | ✅ done | `Sandbox.create()` passes `lifecycle: { onTimeout: 'pause', autoResume: true }`, `timeoutMs: 15min`. Verified the option is wired; long-idle resume not stress-tested. |
 | M3 — Hobby concurrency guard | ✅ done | Enforced host-side in `scripts/launch-session.ts` via `checkConcurrencyCap()` (E2B REST `GET /v2/sandboxes`). Static cap is `MAX_CONCURRENT_SESSIONS = 10` in `wrangler.toml`, overridable via env. Exits with code 2 and a clear message when at cap. Verified live: with cap=3 and 3 paused sandboxes, the launcher refuses to launch. |
 | Real PR creation flow | ✅ done | Launcher mints a short-lived, repo-scoped GitHub App installation token; runner does `git push` and opens the PR via REST. Bot identity `hermes-bot`. Verified by opening PR #2 against duckhoa-uit/hermes-control-plane adding `it's worked!` to README.md. |
@@ -721,7 +721,7 @@ lands as one cohesive PR.
 ### 11.8 Pre-implementation verification (2026-06-25)
 
 Two unknowns from §11.5 were verified live in a real E2B sandbox (created
-from the existing `hermes-runner` template) before committing to the M4
+from the existing `control-plane-runner` template) before committing to the M4
 design. Both ✅ PASS. Transcript: `/tmp/m4-smoke.out` during the dev
 session.
 
@@ -970,7 +970,7 @@ Locked-in for M4 implementation:
 
 ### 11.12 M4 e2e verification (live run, 2026-06-25)
 
-End-to-end run against the freshly-rebuilt `hermes-runner` template, real
+End-to-end run against the freshly-rebuilt `control-plane-runner` template, real
 Worker + ngrok + launcher sidecar + real Z.AI Coding Plan + real GitHub
 App. Wall: ~12 s from `POST /sessions` to `status=completed`. PR opened:
 <https://github.com/duckhoa-uit/hermes-control-plane/pull/6>.

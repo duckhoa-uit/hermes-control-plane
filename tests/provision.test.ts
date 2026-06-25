@@ -44,7 +44,7 @@ describe("provisionSession", () => {
       controlWsUrl: "wss://x",
       repoUrl: "https://github.com/test/repo",
       e2bApiKey: "key",
-      e2bTemplate: "hermes-runner",
+      e2bTemplate: "control-plane-runner",
     });
     expect(p.sandboxId).toBe("sbx_provision_1");
     const [, opts] = createMock.mock.calls[0] as [string, Record<string, unknown>];
@@ -62,7 +62,7 @@ describe("provisionSession", () => {
       controlWsUrl: "wss://y",
       repoUrl: "https://github.com/test/repo",
       e2bApiKey: "key",
-      e2bTemplate: "hermes-runner",
+      e2bTemplate: "control-plane-runner",
     });
     expect(filesWrite).toHaveBeenCalledTimes(1);
     const [path, content] = filesWrite.mock.calls[0];
@@ -80,7 +80,7 @@ describe("provisionSession", () => {
       controlWsUrl: "wss://x",
       repoUrl: "https://github.com/test/repo",
       e2bApiKey: "key",
-      e2bTemplate: "hermes-runner",
+      e2bTemplate: "control-plane-runner",
     });
     await p.kill();
     await p.kill();
@@ -100,7 +100,7 @@ describe("provisionSession", () => {
         controlWsUrl: "wss://x",
         repoUrl: "https://github.com/test/nope",
         e2bApiKey: "key",
-        e2bTemplate: "hermes-runner",
+        e2bTemplate: "control-plane-runner",
       }),
     ).rejects.toThrow(/git clone failed \(exit 128\)/);
     expect(killMock).toHaveBeenCalledTimes(1);

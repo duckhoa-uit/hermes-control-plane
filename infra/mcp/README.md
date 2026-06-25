@@ -82,7 +82,7 @@ into the chat.
 # Start launcher locally (dummy E2B creds are fine — we only test MCP)
 E2B_API_KEY=dummy ZAI_API_KEY=dummy ZAI_MODEL=glm-5.2 \
 CONTROL_PLANE_BASE_URL=http://localhost:8787 \
-E2B_TEMPLATE=hermes-runner bun run launcher &
+E2B_TEMPLATE=control-plane-runner bun run launcher &
 
 # initialize
 curl -sX POST http://localhost:8789/mcp \

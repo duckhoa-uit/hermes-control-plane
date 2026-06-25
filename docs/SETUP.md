@@ -40,7 +40,7 @@ surface, but you cannot run a real session.
 
 ### Build the sandbox template
 
-Hermes uses one pre-baked E2B template, `hermes-runner`, that bakes node, bun,
+Hermes uses one pre-baked E2B template, `control-plane-runner`, that bakes node, bun,
 `opencode`, the supervisor and the runner into the snapshot. This is what
 gives us ~700–1500 ms cold starts.
 
@@ -50,7 +50,7 @@ E2B_API_KEY=… bun run template:build
 
 The build runs in E2B's CI and takes a few minutes the first time, ~30 s on
 subsequent rebuilds (layer cache). On success the template id is written to
-`infra/e2b/dist/template-id.txt`. The default alias is `hermes-runner` — no
+`infra/e2b/dist/template-id.txt`. The default alias is `control-plane-runner` — no
 config change needed unless you rename it.
 
 Rebuild whenever you change `src/runner/supervisor.ts`,
@@ -160,7 +160,7 @@ export E2B_API_KEY=… ZAI_API_KEY=…
 export GITHUB_USER_TOKEN=… GITHUB_USER_LOGIN=…
 # Use the ngrok URL for both launcher→Worker and runner→Worker.
 export CONTROL_PLANE_BASE_URL=https://abcd-1234.ngrok-free.app
-export E2B_TEMPLATE=hermes-runner
+export E2B_TEMPLATE=control-plane-runner
 bun run launcher
 # [launcher] startup sweep: scanned=0 killed=0 kept=0
 # [launcher] control-plane-launcher listening on http://localhost:8789
@@ -237,7 +237,7 @@ process env:
 ```bash
 # E2B
 export E2B_API_KEY=e2b_...
-export E2B_TEMPLATE=hermes-runner
+export E2B_TEMPLATE=control-plane-runner
 
 # Model (Z.AI / OpenCode provider)
 export ZAI_API_KEY=...

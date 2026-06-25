@@ -166,7 +166,7 @@ else
 
 # ---- E2B ----
 E2B_API_KEY=$E2B_API_KEY
-E2B_TEMPLATE=hermes-runner
+E2B_TEMPLATE=control-plane-runner
 
 # ---- Z.AI (OpenCode LLM provider) ----
 ZAI_API_KEY=$ZAI_API_KEY
