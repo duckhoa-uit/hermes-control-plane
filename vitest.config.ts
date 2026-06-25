@@ -9,6 +9,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": new URL("./src", import.meta.url).pathname,
+      "cloudflare:workers": new URL("./tests/_shims/cloudflare-workers.ts", import.meta.url).pathname,
     },
   },
 });

@@ -12,7 +12,9 @@
     "fake-runner": "bun run src/testing/fake-runner.ts",
     "template:build": "bun run infra/e2b/build-template.ts",
     "launch": "bun run scripts/launch-session.ts",
-    "launcher": "bun run src/launcher/server.ts"
+    "launcher": "bun run src/launcher/server.ts",
+    "e2e:real": "bun run scripts/e2e-real.ts",
+    "e2e:full": "bun run scripts/e2e-full.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250620.0",

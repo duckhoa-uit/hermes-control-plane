@@ -1,0 +1,698 @@
+// ============================================================
+// Real E2E: drives SessionDurableObject end-to-end against an
+// in-process shim of DurableObjectState / WebSocket / Worker fetch.
+//
+// This is NOT a unit test — it exercises:
+//   - RPC methods (initSession / getState / sendPrompt / approveRequest /
+//     abortSession / createPR)
+//   - WS upgrade via fetch() returning { webSocket }
+//   - Hibernation accessors: ctx.acceptWebSocket / ctx.getWebSockets
+//   - serializeAttachment / deserializeAttachment per-conn lastSeq
+//   - storage.put per-event key (evt:000…) + restore via storage.list
+//   - alarm-based heartbeat watchdog (storage.setAlarm + alarm())
+//   - blockConcurrencyWhile race protection in init()
+//   - Worker top-level fetch routes mapping RPC results to HTTP
+// ============================================================
+
+import { describe, it, expect, beforeEach } from "vitest";
+import { SessionDurableObject } from "../src/worker/session-do";
+import worker from "../src/worker/index";
+import type { ProjectProfile } from "../src/core/types";
+
+// ---------- WebSocket pair shim ----------
+
+type Listener<T = any> = (ev: T) => void;
+
+class FakeWebSocket {
+  readyState = 1;
+  private _attachment: unknown = null;
+  private peer: FakeWebSocket | null = null;
+  private listeners: Record<string, Listener[]> = {};
+  // Buffer for inbound messages received before any `message` listener was
+  // attached. Tests routinely attach the listener AFTER worker.fetch returns,
+  // by which point handleRunnerWS has already pushed the initial agent.prompt.
+  private pendingInbound: any[] = [];
+  // Same for close events that race the listener.
+  private pendingClose: { code: number; reason: string } | null = null;
+  accepted = false;
+  closed = false;
+  closeCode: number | null = null;
+  closeReason: string = "";
+
+  serverHandler: {
+    onMessage?: (ws: WebSocket, data: string | ArrayBuffer) => void | Promise<void>;
+    onClose?: (ws: WebSocket, code: number, reason: string, wasClean: boolean) => void | Promise<void>;
+  } = {};
+
+  bind(other: FakeWebSocket) {
+    this.peer = other;
+    other.peer = this;
+  }
+
+  accept() { this.accepted = true; }
+
+  send(data: string | ArrayBuffer) {
+    if (!this.peer) return;
+    if (this.peer.serverHandler.onMessage) {
+      void this.peer.serverHandler.onMessage(this.peer as unknown as WebSocket, data);
+    } else {
+      const ls = this.peer.listeners["message"] ?? [];
+      if (ls.length === 0) {
+        this.peer.pendingInbound.push({ data });
+      } else {
+        for (const l of ls) l({ data });
+      }
+    }
+  }
+
+  close(code = 1000, reason = "") {
+    if (this.closed) return;
+    this.closed = true;
+    this.closeCode = code;
+    this.closeReason = reason;
+    if (this.peer && !this.peer.closed) {
+      if (this.peer.serverHandler.onClose) {
+        void this.peer.serverHandler.onClose(this.peer as unknown as WebSocket, code, reason, true);
+      }
+      const ls = this.peer.listeners["close"] ?? [];
+      if (ls.length === 0) {
+        this.peer.pendingClose = { code, reason };
+      } else {
+        for (const l of ls) l({ code, reason });
+      }
+      this.peer.closed = true;
+      this.peer.closeCode = code;
+      this.peer.closeReason = reason;
+    }
+  }
+
+  addEventListener(type: string, l: Listener) {
+    (this.listeners[type] ??= []).push(l);
+    // Flush any messages that arrived before this listener.
+    if (type === "message" && this.pendingInbound.length > 0) {
+      const buf = this.pendingInbound;
+      this.pendingInbound = [];
+      for (const ev of buf) l(ev);
+    }
+    if (type === "close" && this.pendingClose) {
+      const c = this.pendingClose;
+      this.pendingClose = null;
+      l(c);
+    }
+  }
+  removeEventListener(type: string, l: Listener) {
+    this.listeners[type] = (this.listeners[type] ?? []).filter(x => x !== l);
+  }
+
+  serializeAttachment(v: unknown) { this._attachment = v; }
+  deserializeAttachment() { return this._attachment; }
+
+  // Test helper: the side returned to the caller (`client` half) doesn't
+  // own the attachment — the DO writes it on the `server` half. Tests that
+  // want to inspect attachments should ask the FakeDOState for the server
+  // WS via ctx.getWebSockets(). This getter exposes the peer's attachment
+  // for ergonomic test assertions.
+  peerAttachment() { return this.peer?._attachment ?? null; }
+}
+
+(globalThis as any).WebSocketPair = class {
+  0: FakeWebSocket;
+  1: FakeWebSocket;
+  constructor() {
+    const a = new FakeWebSocket();
+    const b = new FakeWebSocket();
+    a.bind(b);
+    this[0] = a;
+    this[1] = b;
+  }
+};
+
+// Make Response support `webSocket` field + status 101 (workerd allows it,
+// Node's Response constructor doesn't). For WS upgrade we return a thin
+// non-Response object that quacks like one.
+const RealResponse = globalThis.Response;
+class WSResponse {
+  status: number;
+  headers: Headers;
+  webSocket: FakeWebSocket | null;
+  private _body: any;
+  constructor(body: any, init?: ResponseInit & { webSocket?: FakeWebSocket }) {
+    this._body = body;
+    this.status = init?.status ?? 200;
+    this.headers = new Headers(init?.headers ?? {});
+    this.webSocket = (init as any)?.webSocket ?? null;
+  }
+  async json() { return typeof this._body === "string" ? JSON.parse(this._body) : this._body; }
+  async text() { return typeof this._body === "string" ? this._body : JSON.stringify(this._body); }
+  get ok() { return this.status >= 200 && this.status < 300; }
+}
+(globalThis as any).Response = WSResponse;
+
+// ---------- Storage shim ----------
+
+class FakeStorage {
+  kv = new Map<string, unknown>();
+  alarmAt: number | null = null;
+
+  async put(key: string, value: unknown): Promise<void> { this.kv.set(key, value); }
+  async get<T>(key: string): Promise<T | undefined> { return this.kv.get(key) as T | undefined; }
+  async delete(key: string): Promise<boolean> { return this.kv.delete(key); }
+  async list<T>(opts?: { prefix?: string }): Promise<Map<string, T>> {
+    const out = new Map<string, T>();
+    const prefix = opts?.prefix ?? "";
+    const keys = [...this.kv.keys()].filter(k => k.startsWith(prefix)).sort();
+    for (const k of keys) out.set(k, this.kv.get(k) as T);
+    return out;
+  }
+  async setAlarm(when: number): Promise<void> { this.alarmAt = when; }
+  async deleteAlarm(): Promise<void> { this.alarmAt = null; }
+  async getAlarm(): Promise<number | null> { return this.alarmAt; }
+}
+
+// ---------- DurableObjectState shim ----------
+
+class FakeDOState {
+  id: { toString: () => string };
+  storage = new FakeStorage();
+  private sockets: { ws: FakeWebSocket; tags: string[] }[] = [];
+  // Background promises kicked off via waitUntil — tests can await pending.
+  pending: Promise<unknown>[] = [];
+
+  constructor(idStr: string) {
+    this.id = { toString: () => idStr };
+  }
+
+  waitUntil(p: Promise<unknown>): void { this.pending.push(p); }
+
+  async blockConcurrencyWhile<T>(fn: () => Promise<T>): Promise<T> { return await fn(); }
+
+  acceptWebSocket(ws: FakeWebSocket, tags: string[] = []) {
+    ws.accept();
+    this.sockets.push({ ws, tags });
+    // Wire server-side handlers — point them at the DO methods set by the DO.
+    ws.serverHandler.onMessage = (s, data) => this._onMessage?.(s, data);
+    ws.serverHandler.onClose = (s, code, reason, wasClean) => this._onClose?.(s, code, reason, wasClean);
+  }
+  getWebSockets(tag?: string): FakeWebSocket[] {
+    return this.sockets
+      .filter(s => !s.ws.closed && (tag === undefined || s.tags.includes(tag)))
+      .map(s => s.ws);
+  }
+
+  // Wired by the test harness once a DO instance exists, so that incoming
+  // ws messages are dispatched into the real DO's webSocketMessage / webSocketClose.
+  _onMessage?: (ws: WebSocket, data: string | ArrayBuffer) => void | Promise<void>;
+  _onClose?: (ws: WebSocket, code: number, reason: string, wasClean: boolean) => void | Promise<void>;
+}
+
+// ---------- Mock DurableObjectNamespace (env.SESSION_DO) ----------
+
+// Each unique id string → one DO instance.
+class FakeStub {
+  private fetchHandler: (req: Request) => Promise<Response>;
+  constructor(
+    private instance: SessionDurableObject,
+    fetchHandler: (req: Request) => Promise<Response>,
+  ) { this.fetchHandler = fetchHandler; }
+
+  async fetch(req: Request) { return this.fetchHandler(req); }
+  // Proxy RPC methods
+  initSession(...args: any[]) { return (this.instance as any).initSession(...args); }
+  getState() { return (this.instance as any).getState(); }
+  approveRequest(rid: string) { return (this.instance as any).approveRequest(rid); }
+  abortSession() { return (this.instance as any).abortSession(); }
+  createPR() { return (this.instance as any).createPR(); }
+  sendPrompt(text: string) { return (this.instance as any).sendPrompt(text); }
+}
+
+interface FakeEnv {
+  SESSION_DO: {
+    newUniqueId(): { toString(): string };
+    idFromString(s: string): { toString(): string };
+    get(id: { toString(): string }): FakeStub;
+  };
+  E2B_TEMPLATE: string;
+  E2B_API_KEY?: string;
+  CONTROL_PLANE_LAUNCHER_URL?: string;
+  PUBLIC_BASE_URL?: string;
+}
+
+let counter = 0;
+const instances = new Map<string, { instance: SessionDurableObject; ctx: FakeDOState }>();
+
+function makeEnv(): FakeEnv {
+  return {
+    SESSION_DO: {
+      newUniqueId() {
+        const id = `id_${++counter}_${Date.now()}`;
+        return { toString: () => id };
+      },
+      idFromString(s: string) { return { toString: () => s }; },
+      get(id: { toString(): string }) {
+        const key = id.toString();
+        let entry = instances.get(key);
+        if (!entry) {
+          const ctx = new FakeDOState(key);
+          const instance = new (SessionDurableObject as any)(ctx, makeEnv());
+          // Wire WS event delivery into the DO's hibernation handlers
+          ctx._onMessage = (ws, data) => (instance as any).webSocketMessage(ws, data);
+          ctx._onClose = (ws, code, reason, wasClean) => (instance as any).webSocketClose(ws, code, reason, wasClean);
+          entry = { instance, ctx };
+          instances.set(key, entry);
+        }
+        return new FakeStub(entry.instance, (req) => (entry!.instance as any).fetch(req));
+      },
+    },
+    E2B_TEMPLATE: "control-plane-runner",
+    E2B_API_KEY: "test-key", // present so provisionSandbox doesn't fail
+    CONTROL_PLANE_LAUNCHER_URL: "http://launcher.invalid",
+  };
+}
+
+const PROFILE: Partial<ProjectProfile> = {
+  name: "test",
+  defaultBranch: "main",
+  model: "test-model",
+  allowedTools: ["read", "edit"],
+};
+
+beforeEach(() => { instances.clear(); counter = 0; });
+
+// ---------- Tests ----------
+
+describe("E2E: Worker + SessionDurableObject", () => {
+  it("create session via Worker.fetch → returns 201 + runner token + initial event", async () => {
+    const env = makeEnv() as any;
+    const req = new Request("https://x/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: "p1",
+        taskDescription: "do thing",
+        // No repoUrl → provisionSandbox skips so we don't need a real E2B
+        profile: PROFILE,
+      }),
+    });
+    const resp = await worker.fetch(req, env);
+    expect(resp.status).toBe(201);
+    const body = await resp.json() as any;
+    expect(body.id).toBeTruthy();
+    expect(body.status).toBe("created");
+    expect(body.runnerToken).toMatch(/^.+$/);
+
+    // GET /sessions/:id → 200 with session + events array including session.created
+    const stateResp = await worker.fetch(
+      new Request(`https://x/sessions/${body.id}`),
+      env,
+    );
+    expect(stateResp.status).toBe(200);
+    const state = await stateResp.json() as any;
+    expect(state.session.status).toBe("created");
+    expect(state.events.length).toBeGreaterThan(0);
+    expect(state.events[0].type).toBe("session.created");
+  });
+
+  it("unknown session id returns 404", async () => {
+    const env = makeEnv() as any;
+    // GET unknown — DO auto-instantiates empty, then 404 because no session
+    const resp = await worker.fetch(new Request("https://x/sessions/does-not-exist"), env);
+    expect(resp.status).toBe(404);
+  });
+
+  it("runner WS handshake: invalid token → close(4001)", async () => {
+    const env = makeEnv() as any;
+    // Create session
+    const createResp = await worker.fetch(new Request("https://x/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+    }), env);
+    const { id } = await createResp.json() as any;
+
+    // Send WS upgrade with wrong token
+    const wsResp = await worker.fetch(new Request(
+      `https://x/sessions/${id}/runner?token=WRONG`,
+      { headers: { Upgrade: "websocket" } },
+    ), env);
+    expect(wsResp.status).toBe(101);
+    const ws = (wsResp as any).webSocket as FakeWebSocket;
+    expect(ws.closed).toBe(true);
+    expect(ws.closeCode).toBe(4001);
+  });
+
+  it("full happy path: client subscribes, runner connects, agent emits events, runner.complete → review_ready, create-pr → completed", async () => {
+    const env = makeEnv() as any;
+
+    // 1. Create session
+    const createResp = await worker.fetch(new Request("https://x/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId: "p1", taskDescription: "fix bug", profile: PROFILE }),
+    }), env);
+    const created = await createResp.json() as any;
+    const { id, runnerToken } = created;
+
+    // 2. Client WS subscribes
+    const clientResp = await worker.fetch(new Request(
+      `https://x/sessions/${id}/stream`,
+      { headers: { Upgrade: "websocket" } },
+    ), env);
+    expect(clientResp.status).toBe(101);
+    const clientWS = (clientResp as any).webSocket as FakeWebSocket;
+    const clientEvents: any[] = [];
+    clientWS.addEventListener("message", (e: any) => clientEvents.push(JSON.parse(e.data)));
+
+    // 3. Runner WS connects with valid token
+    const runnerResp = await worker.fetch(new Request(
+      `https://x/sessions/${id}/runner?token=${runnerToken}`,
+      { headers: { Upgrade: "websocket" } },
+    ), env);
+    expect(runnerResp.status).toBe(101);
+    const runnerWS = (runnerResp as any).webSocket as FakeWebSocket;
+    const runnerInbound: any[] = [];
+    runnerWS.addEventListener("message", (e: any) => runnerInbound.push(JSON.parse(e.data)));
+
+    // Give DO microtasks a chance to flush event broadcast
+    await Promise.resolve();
+    await new Promise(r => setTimeout(r, 10));
+
+    // 4. Runner should have received a `command` for the initial agent.prompt
+    const initialPrompt = runnerInbound.find(m => m.type === "command" && m.command?.type === "agent.prompt");
+    expect(initialPrompt).toBeDefined();
+    expect(initialPrompt.command.payload.taskDescription).toBe("fix bug");
+
+    // 5. Runner streams agent events
+    const sendRunner = (payload: any) => runnerWS.send(JSON.stringify(payload));
+    sendRunner({ type: "runner.event", sessionId: id, payload: { eventType: "agent.message.delta", eventPayload: { text: "hi" } } });
+    sendRunner({ type: "runner.heartbeat", sessionId: id });
+
+    // 6. Runner signals completion (artifacts)
+    sendRunner({
+      type: "runner.complete",
+      sessionId: id,
+      payload: { summary: "done", diff: "+x", changedFiles: ["a.ts"] },
+    });
+    await new Promise(r => setTimeout(r, 10));
+
+    // 7. Verify state is review_ready
+    const state1 = await env.SESSION_DO.get(env.SESSION_DO.idFromString(id)).getState();
+    expect(state1.session.status).toBe("review_ready");
+    expect(state1.artifacts).toBeDefined();
+    expect(state1.artifacts.summary).toBe("done");
+
+    // 8. Client should have received broadcast events for the runner events
+    const clientGotAgentMsg = clientEvents.find(m =>
+      m.type === "event" && m.event?.type === "agent.message.delta",
+    );
+    expect(clientGotAgentMsg).toBeDefined();
+
+    // 9. POST /sessions/:id/create-pr → transitions to creating_pr
+    const prResp = await worker.fetch(new Request(
+      `https://x/sessions/${id}/create-pr`, { method: "POST" }
+    ), env);
+    expect(prResp.status).toBe(200);
+
+    await new Promise(r => setTimeout(r, 10));
+
+    // Runner sees pr.create command
+    const prCmd = runnerInbound.find(m => m.type === "command" && m.command?.type === "pr.create");
+    expect(prCmd).toBeDefined();
+
+    // Runner reports pr.created
+    sendRunner({
+      type: "runner.event",
+      sessionId: id,
+      payload: { eventType: "pr.created", eventPayload: { url: "https://github.com/x/y/pull/1" } },
+    });
+    await new Promise(r => setTimeout(r, 10));
+
+    const state2 = await env.SESSION_DO.get(env.SESSION_DO.idFromString(id)).getState();
+    expect(state2.session.status).toBe("completed");
+    expect(state2.artifacts.prUrl).toBe("https://github.com/x/y/pull/1");
+  });
+
+  it("event log persists per-key (storage.list returns events in seq order)", async () => {
+    const env = makeEnv() as any;
+    const createResp = await worker.fetch(new Request("https://x/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+    }), env);
+    const { id } = await createResp.json() as any;
+
+    // Inspect storage directly
+    const entry = instances.get(id)!;
+    const evtKeys = [...entry.ctx.storage.kv.keys()].filter(k => k.startsWith("evt:"));
+    expect(evtKeys.length).toBeGreaterThanOrEqual(1);
+    // Zero-padded so lex sort == seq sort
+    for (const k of evtKeys) expect(k).toMatch(/^evt:\d{10}$/);
+
+    // Drop in-memory eventLog by simulating eviction → restore should rebuild it
+    const inst = entry.instance as any;
+    inst.session = null;
+    inst.eventLog.clear();
+    await inst.restore();
+    expect(inst.eventLog.count()).toBe(evtKeys.length);
+  });
+
+  it("alarm-based heartbeat: setAlarm scheduled on runner connect; alarm() detects stale heartbeat → failed", async () => {
+    const env = makeEnv() as any;
+    const createResp = await worker.fetch(new Request("https://x/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+    }), env);
+    const { id, runnerToken } = await createResp.json() as any;
+
+    // Runner connects → startHeartbeatCheck() called → alarm scheduled
+    await worker.fetch(new Request(
+      `https://x/sessions/${id}/runner?token=${runnerToken}`,
+      { headers: { Upgrade: "websocket" } },
+    ), env);
+    await new Promise(r => setTimeout(r, 5));
+
+    const entry = instances.get(id)!;
+    expect(entry.ctx.storage.alarmAt).not.toBeNull();
+    expect(entry.ctx.storage.alarmAt!).toBeGreaterThan(Date.now());
+
+    // Force a stale heartbeat: rewind lastHeartbeat by 16 minutes (> HEARTBEAT_TIMEOUT_MS)
+    const inst = entry.instance as any;
+    inst.session.lastHeartbeat = Date.now() - 16 * 60_000;
+
+    // Fire alarm() handler
+    await inst.alarm();
+
+    const state = await env.SESSION_DO.get(env.SESSION_DO.idFromString(id)).getState();
+    expect(state.session.status).toBe("failed");
+    expect(state.session.errorMessage).toContain("stalled");
+  });
+
+  it("blockConcurrencyWhile in init(): concurrent init calls → second throws 'already initialized'", async () => {
+    const env = makeEnv() as any;
+    const id = env.SESSION_DO.newUniqueId();
+    const stub1 = env.SESSION_DO.get(id);
+    const stub2 = env.SESSION_DO.get(id);
+
+    const r1 = stub1.initSession({ id: "p1", ...PROFILE, repoUrl: "" } as any, "a", "https://x");
+    const r2 = stub2.initSession({ id: "p1", ...PROFILE, repoUrl: "" } as any, "b", "https://x").catch((e: Error) => e);
+
+    const [first, second] = await Promise.all([r1, r2]);
+    expect(first.id).toBeTruthy();
+    expect(second).toBeInstanceOf(Error);
+    expect((second as Error).message).toMatch(/already initialized/);
+  });
+
+  it("sendPrompt with terminal session returns kind:'terminal' (410)", async () => {
+    const env = makeEnv() as any;
+    const createResp = await worker.fetch(new Request("https://x/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+    }), env);
+    const { id } = await createResp.json() as any;
+
+    // Force terminal state
+    const inst = instances.get(id)!.instance as any;
+    inst.transition("aborted", "test");
+
+    const resp = await worker.fetch(new Request(
+      `https://x/sessions/${id}/prompt`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "hi" }) },
+    ), env);
+    expect(resp.status).toBe(410);
+    const body = await resp.json() as any;
+    expect(body.recoverable).toBe(false);
+  });
+
+  it("sendPrompt with no connected runner + launcher URL → kind:'queued' (202) and stores pendingPrompt", async () => {
+    const env = makeEnv() as any;
+    const createResp = await worker.fetch(new Request("https://x/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+    }), env);
+    const { id } = await createResp.json() as any;
+
+    // No runner connected
+    const resp = await worker.fetch(new Request(
+      `https://x/sessions/${id}/prompt`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "follow up" }) },
+    ), env);
+    expect(resp.status).toBe(202);
+    const body = await resp.json() as any;
+    expect(body.queued).toBe(true);
+    expect(body.recoverable).toBe(true);
+
+    // pendingPrompt should be persisted
+    const entry = instances.get(id)!;
+    expect((entry.instance as any).session.pendingPrompt).toBe("follow up");
+    const stored = entry.ctx.storage.kv.get("session") as any;
+    expect(stored.pendingPrompt).toBe("follow up");
+  });
+
+  it("abort: runner gets session.shutdown command + state → aborted", async () => {
+    const env = makeEnv() as any;
+    const createResp = await worker.fetch(new Request("https://x/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+    }), env);
+    const { id, runnerToken } = await createResp.json() as any;
+
+    // Connect runner so it can receive the shutdown command
+    const runnerResp = await worker.fetch(new Request(
+      `https://x/sessions/${id}/runner?token=${runnerToken}`,
+      { headers: { Upgrade: "websocket" } },
+    ), env);
+    const runnerWS = (runnerResp as any).webSocket as FakeWebSocket;
+    const inbound: any[] = [];
+    runnerWS.addEventListener("message", (e: any) => inbound.push(JSON.parse(e.data)));
+    await new Promise(r => setTimeout(r, 5));
+
+    const abortResp = await worker.fetch(new Request(
+      `https://x/sessions/${id}/abort`, { method: "POST" }
+    ), env);
+    expect(abortResp.status).toBe(200);
+    await new Promise(r => setTimeout(r, 5));
+
+    const shutdownCmd = inbound.find(m => m.type === "command" && m.command?.type === "session.shutdown");
+    expect(shutdownCmd).toBeDefined();
+
+    const state = await env.SESSION_DO.get(env.SESSION_DO.idFromString(id)).getState();
+    expect(state.session.status).toBe("aborted");
+  });
+
+  it("event replay on client reconnect: late client gets full history via type:'replay'", async () => {
+    const env = makeEnv() as any;
+    const createResp = await worker.fetch(new Request("https://x/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+    }), env);
+    const { id } = await createResp.json() as any;
+
+    // Wait so a few events are appended
+    await new Promise(r => setTimeout(r, 5));
+
+    // Connect client AFTER events exist
+    const clientResp = await worker.fetch(new Request(
+      `https://x/sessions/${id}/stream`,
+      { headers: { Upgrade: "websocket" } },
+    ), env);
+    const ws = (clientResp as any).webSocket as FakeWebSocket;
+    const inbound: any[] = [];
+    ws.addEventListener("message", (e: any) => inbound.push(JSON.parse(e.data)));
+    await new Promise(r => setTimeout(r, 5));
+
+    const replay = inbound.find(m => m.type === "replay");
+    expect(replay).toBeDefined();
+    expect(replay.events.length).toBeGreaterThan(0);
+    const sessionState = inbound.find(m => m.type === "session_state");
+    expect(sessionState).toBeDefined();
+  });
+
+  it("WS attachment: lastSeq stored per-conn so re-broadcast doesn't double-send", async () => {
+    const env = makeEnv() as any;
+    const createResp = await worker.fetch(new Request("https://x/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+    }), env);
+    const { id, runnerToken } = await createResp.json() as any;
+
+    // Connect runner and client
+    const runnerResp = await worker.fetch(new Request(
+      `https://x/sessions/${id}/runner?token=${runnerToken}`,
+      { headers: { Upgrade: "websocket" } },
+    ), env);
+    const runnerWS = (runnerResp as any).webSocket as FakeWebSocket;
+
+    const clientResp = await worker.fetch(new Request(
+      `https://x/sessions/${id}/stream`,
+      { headers: { Upgrade: "websocket" } },
+    ), env);
+    const clientWS = (clientResp as any).webSocket as FakeWebSocket;
+
+    await new Promise(r => setTimeout(r, 5));
+
+    // Check attachments are populated
+    const entry = instances.get(id)!;
+    const allWS = entry.ctx.getWebSockets();
+    expect(allWS.length).toBe(2);
+    for (const ws of allWS) {
+      const att = (ws as any).deserializeAttachment();
+      expect(att).toBeDefined();
+      expect(["client", "runner"]).toContain(att.tag);
+      expect(typeof att.lastSeq).toBe("number");
+    }
+    // Attachments live on the server-side WS (the half DO holds via
+    // ctx.acceptWebSocket). The caller-facing client/runner halves don't
+    // carry them — use peerAttachment() to read the server half.
+    const runnerTag = (runnerWS as any).peerAttachment();
+    const clientTag = (clientWS as any).peerAttachment();
+    expect(runnerTag.tag).toBe("runner");
+    expect(clientTag.tag).toBe("client");
+  });
+
+  it("approve flow: runner emits approval.requested → POST /approve → runner gets approval.grant", async () => {
+    const env = makeEnv() as any;
+    const createResp = await worker.fetch(new Request("https://x/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+    }), env);
+    const { id, runnerToken } = await createResp.json() as any;
+
+    const runnerResp = await worker.fetch(new Request(
+      `https://x/sessions/${id}/runner?token=${runnerToken}`,
+      { headers: { Upgrade: "websocket" } },
+    ), env);
+    const runnerWS = (runnerResp as any).webSocket as FakeWebSocket;
+    const inbound: any[] = [];
+    runnerWS.addEventListener("message", (e: any) => inbound.push(JSON.parse(e.data)));
+    await new Promise(r => setTimeout(r, 5));
+
+    // Synthesize an approval request via DO API
+    const inst = instances.get(id)!.instance as any;
+    const requestId = inst.requestApproval("git.push", { what: "branch" });
+    expect(requestId).toBeTruthy();
+
+    const state1 = await env.SESSION_DO.get(env.SESSION_DO.idFromString(id)).getState();
+    expect(state1.session.status).toBe("needs_approval");
+
+    // Approve
+    const approveResp = await worker.fetch(new Request(
+      `https://x/sessions/${id}/approve`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requestId }) },
+    ), env);
+    expect(approveResp.status).toBe(200);
+    await new Promise(r => setTimeout(r, 5));
+
+    const grant = inbound.find(m => m.type === "command" && m.command?.type === "approval.grant");
+    expect(grant).toBeDefined();
+    expect(grant.command.payload.requestId).toBe(requestId);
+
+    const state2 = await env.SESSION_DO.get(env.SESSION_DO.idFromString(id)).getState();
+    expect(state2.session.status).toBe("running");
+  });
+});
