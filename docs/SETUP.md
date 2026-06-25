@@ -280,3 +280,5 @@ follow-up).
 | Launcher boots | `bun run launcher` then `curl http://localhost:8789/health` | `{"status":"ok",...,"activeSessions":0}` |
 | Orphan sweeper | restart launcher; existing tagged sandboxes whose sessions are terminal die | sweep log `scanned=N killed=N kept=0` |
 | Full e2e | `POST /sessions` on launcher | session reaches `completed`; real PR opened; E2B list empty after |
+
+M5-test-turn2

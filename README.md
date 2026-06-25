@@ -1,4 +1,5 @@
 # Hermes Control Plane
+M5-test-turn1
 
 Background coding agent control plane. A user posts a task; the system spins up
 a sandboxed [OpenCode](https://opencode.ai) session, the agent makes the
