@@ -21,6 +21,9 @@ binding = "ARTIFACTS"
 bucket_name = "hermes-artifacts"
 
 [vars]
-E2B_TEMPLATE = "opencode"
+E2B_TEMPLATE = "hermes-runner"
 MAX_SESSION_RUNTIME_MS = 2700000
 HEARTBEAT_TIMEOUT_MS = 60000
+# Hobby tier cap is 20 concurrent sandboxes. Leave headroom for retries and
+# template builds. See docs/ROADMAP.md section 8.
+MAX_CONCURRENT_SESSIONS = 10

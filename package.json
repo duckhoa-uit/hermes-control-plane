@@ -3,8 +3,8 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
-    "dev": "bun run scripts/bundle-runner.ts && wrangler dev",
-    "deploy": "bun run scripts/bundle-runner.ts && wrangler deploy",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
@@ -12,9 +12,9 @@
     "db:query": "wrangler d1 execute hermes-db --local --command",
     "api": "bun run src/testing/api-client.ts",
     "fake-runner": "bun run src/testing/fake-runner.ts",
-    "bundle-runner": "bun run scripts/bundle-runner.ts",
-    "prebuild": "bun run scripts/bundle-runner.ts",
-    "pretest": "bun run scripts/bundle-runner.ts"
+    "template:build": "bun run infra/e2b/build-template.ts",
+    "launch": "bun run scripts/launch-session.ts",
+    "launcher": "bun run src/launcher/server.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250620.0",

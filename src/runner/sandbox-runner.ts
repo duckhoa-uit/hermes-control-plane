@@ -45,6 +45,20 @@ function execCmd(cmd: string): Promise<string> {
   });
 }
 
+/** Like execCmd but rejects on non-zero exit; returns combined stdout+stderr. */
+function execStrict(cmd: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execCb(cmd, { cwd: "/home/user/repo" }, (err, stdout, stderr) => {
+      if (err) {
+        reject(new Error(`exec failed (${cmd}): ${stderr || stdout || err.message}`));
+      } else {
+        resolve((stdout || "") + (stderr ? `
+${stderr}` : ""));
+      }
+    });
+  });
+}
+
 ws.on("open", () => {
   console.log("[runner] Connected to control plane");
   heartbeat = setInterval(() => {
@@ -130,9 +144,64 @@ ws.on("message", async (data: Buffer) => {
   }
 
   if (cmd.type === "pr.create") {
-    sendEvent("git.branch.pushed", { branch: cmd.payload.branch });
-    sendEvent("pr.created", { url: "https://github.com/test/repo/pull/1" });
-    sendComplete({ prUrl: "https://github.com/test/repo/pull/1" });
+    const branch = (cmd.payload.branch as string) || `hermes/${Date.now()}`;
+    const title = (cmd.payload.title as string) || `Hermes: ${cmd.payload.taskDescription ?? "automated change"}`;
+    const body = (cmd.payload.body as string) || "Automated PR created by hermes-control-plane.";
+    const token = process.env.GITHUB_TOKEN || "";
+    const owner = process.env.GITHUB_OWNER || "";
+    const repo = process.env.GITHUB_REPO || "";
+    const baseBranch = process.env.GITHUB_BASE_BRANCH || "main";
+
+    if (!token || !owner || !repo) {
+      sendError(`Missing GitHub credentials: token=${!!token} owner=${owner} repo=${repo}`);
+      return;
+    }
+
+    try {
+      // Configure git identity (the App produces token-bound author info, but
+      // we use the bot identity for the commit author).
+      await execStrict(`git config user.email "hermes-bot@users.noreply.github.com"`);
+      await execStrict(`git config user.name "hermes-bot"`);
+      // Check out a new branch (idempotent).
+      await execStrict(`git checkout -B ${branch}`);
+      // Stage everything (the agent already wrote files).
+      await execStrict(`git add -A`);
+      // Commit; ignore "nothing to commit" by checking diff first.
+      const diff = await execCmd(`git diff --cached --name-only`);
+      if (!diff.trim()) {
+        sendError("No changes staged for PR");
+        return;
+      }
+      await execStrict(`git commit -m "${title.replace(/"/g, '\"')}"`);
+      // Set the remote URL with the token embedded so push authenticates.
+      const remoteUrl = `https://x-access-token:${token}@github.com/${owner}/${repo}.git`;
+      await execStrict(`git remote set-url origin ${remoteUrl}`);
+      // Push.
+      const pushOut = await execStrict(`git push --set-upstream origin ${branch} 2>&1`);
+      sendEvent("git.branch.pushed", { branch, pushOutput: pushOut.slice(-500) });
+
+      // Create the PR via REST.
+      const prResp = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github+json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ title, head: branch, base: baseBranch, body }),
+      });
+      if (!prResp.ok) {
+        const errBody = await prResp.text();
+        sendError(`GitHub PR API ${prResp.status}: ${errBody.slice(0, 300)}`);
+        return;
+      }
+      const prJson = (await prResp.json()) as { html_url: string; number: number };
+      sendEvent("pr.created", { url: prJson.html_url, number: prJson.number, branch });
+      sendComplete({ prUrl: prJson.html_url });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      sendError(`PR creation failed: ${msg}`);
+    }
   }
 
   if (cmd.type === "session.shutdown") {
