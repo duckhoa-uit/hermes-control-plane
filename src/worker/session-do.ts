@@ -23,7 +23,6 @@ import { EventLog } from "../core/event-log";
 import { canTransition, isTerminal } from "../core/state-machine";
 import { generateCommandId, generateRunnerToken, generateRequestId } from "../core/id";
 import { HEARTBEAT_INTERVAL_MS, HEARTBEAT_TIMEOUT_MS, WS_TAGS } from "../core/constants";
-import { E2BProvider } from "../providers/e2b";
 import { MockSandboxProvider } from "../providers/mock";
 
 interface WSConnection {
@@ -89,13 +88,13 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
 
   private getSandboxProvider(): SandboxProvider {
     if (this.sandboxProvider) return this.sandboxProvider;
-    const apiKey = this.env.E2B_API_KEY;
-    if (apiKey) {
-      this.sandboxProvider = new E2BProvider(apiKey, this.env.E2B_TEMPLATE ?? "opencode");
-    } else {
-      // No E2B key -> in-memory mock (lets the test harness drive a fake runner).
-      this.sandboxProvider = new MockSandboxProvider();
-    }
+    // The Worker no longer drives real sandbox creation: the e2b SDK is not
+    // safe to call from inside workerd (silent crashes during long-running
+    // waitUntil work). The host-side launcher (scripts/launch-session.ts)
+    // creates the E2B sandbox and drops /opt/hermes/start.json; the runner
+    // inside dials the DO over WebSocket as an "external runner".
+    // The DO only keeps the mock provider for unit tests.
+    this.sandboxProvider = new MockSandboxProvider();
     return this.sandboxProvider;
   }
 
@@ -104,6 +103,18 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     if (!this.profile.repoUrl) {
       // Nothing to clone; skip provisioning and let an external runner
       // (e.g. fake-runner used in tests) connect on its own.
+      return;
+    }
+    if (this.env.E2B_API_KEY) {
+      // Real provider runs host-side (see scripts/launch-session.ts).
+      // The Worker just announces the session is awaiting a runner.
+      this.appendEvent("sandbox.provisioning", "system", {
+        template: this.env.E2B_TEMPLATE ?? "hermes-runner",
+        mode: "external",
+      });
+      if (canTransition(this.session.status, "provisioning")) {
+        this.transition("provisioning");
+      }
       return;
     }
 
@@ -144,43 +155,6 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     }
   }
 
-  private async teardownSandbox(): Promise<void> {
-    if (!this.sandboxHandle || !this.sandboxProvider) return;
-    const handle = this.sandboxHandle;
-    this.sandboxHandle = null;
-    try {
-      await this.sandboxProvider.destroy(handle);
-      this.appendEvent("sandbox.destroyed", "system", { sandboxId: handle.sandboxId });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error("[DO] sandbox destroy failed:", msg);
-      this.appendEvent("sandbox.destroyed", "system", {
-        sandboxId: handle.sandboxId,
-        error: msg,
-      });
-    }
-  }
-
-  async sandboxExec(command: string): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-    if (!this.sandboxHandle || !this.sandboxProvider) {
-      throw new Error("Sandbox not provisioned");
-    }
-    return this.sandboxProvider.exec(this.sandboxHandle, command);
-  }
-
-  async sandboxExposePort(port: number): Promise<string> {
-    if (!this.sandboxHandle || !this.sandboxProvider) {
-      throw new Error("Sandbox not provisioned");
-    }
-    const url = await this.sandboxProvider.exposePort(this.sandboxHandle, port);
-    this.appendEvent("sandbox.ready", "system", {
-      sandboxId: this.sandboxHandle.sandboxId,
-      previewUrl: url,
-      port,
-    });
-    return url;
-  }
-
   getSession(): Session | null {
     return this.session;
   }
@@ -216,9 +190,6 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     this.appendEvent("session.status_changed", "system", { from, to, error: errorMsg });
 
     // Auto-teardown sandbox on any terminal state.
-    if (isTerminal(to) && this.sandboxHandle) {
-      this.ctx.waitUntil(this.teardownSandbox());
-    }
   }
 
   // ---- Event log ----
@@ -404,11 +375,15 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
         break;
       case "runner.event":
         if (msg.payload) {
-          this.appendEvent(
-            msg.payload.eventType as HermesEventType,
-            "opencode",
-            (msg.payload.eventPayload as Record<string, unknown>) ?? {},
-          );
+          const eventType = msg.payload.eventType as HermesEventType;
+          const eventPayload = (msg.payload.eventPayload as Record<string, unknown>) ?? {};
+          // pr.created carries the real GitHub URL — route to the PR-completion
+          // handler instead of appending a duplicate untracked event.
+          if (eventType === "pr.created") {
+            this.onPRCreated((eventPayload.url as string) ?? "");
+          } else {
+            this.appendEvent(eventType, "opencode", eventPayload);
+          }
         }
         break;
       case "runner.command_ack":
@@ -428,6 +403,16 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
 
   private handleRunnerComplete(payload?: Record<string, unknown>): void {
     if (!this.session) return;
+
+    // PR creation case: payload has prUrl. Route to onPRCreated; this is
+    // idempotent if pr.created already advanced us to completed.
+    if (payload?.prUrl) {
+      this.onPRCreated(payload.prUrl as string);
+      return;
+    }
+
+    // If we're already terminal, the runner is just confirming after the fact.
+    if (isTerminal(this.session.status)) return;
 
     this.artifacts = {
       sessionId: this.session.id,
@@ -529,23 +514,28 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
   }
 
   private checkHeartbeat(): void {
-    if (!this.session || isTerminal(this.session.status)) {
+    if (!this.session) return;
+    if (isTerminal(this.session.status)) {
       this.stopHeartbeatCheck();
       return;
     }
+    // Once a PR is being created the runner intentionally goes quiet (it
+    // exits after pushing). Don't flag that as a stall.
+    if (this.session.status === "creating_pr") return;
 
     const now = Date.now();
-    const lastBeat = this.session.lastHeartbeat ?? this.session.updatedAt;
+    const lastBeat = this.session.lastHeartbeat ?? 0;
+    if (!this.session.runnerConnected || lastBeat === 0) return;
 
     if (now - lastBeat > HEARTBEAT_TIMEOUT_MS) {
       this.appendEvent("system.stalled", "system", { lastHeartbeat: lastBeat });
-
       if (canTransition(this.session.status, "stalled")) {
         this.transition("stalled", "Heartbeat timeout");
         if (canTransition("stalled", "failed")) {
           this.transition("failed", "Runner stalled");
         }
       }
+      this.stopHeartbeatCheck();
     }
   }
 
@@ -554,6 +544,10 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
   onPRCreated(prUrl: string): void {
     if (!this.artifacts) {
       this.artifacts = { sessionId: this.session?.id ?? "", changedFiles: [] };
+    }
+    if (this.artifacts.prUrl === prUrl && this.session && isTerminal(this.session.status)) {
+      // Already processed; idempotent no-op.
+      return;
     }
     this.artifacts.prUrl = prUrl;
 
@@ -645,30 +639,25 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
       return new Response(JSON.stringify({ ok: true }), { headers: corsHeaders });
     }
 
-    if (path === "/sandbox/exec" && request.method === "POST") {
-      const { command } = await request.json<{ command: string }>();
-      try {
-        const result = await this.sandboxExec(command);
-        return new Response(JSON.stringify(result), { headers: corsHeaders });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return new Response(JSON.stringify({ error: msg }), { status: 400, headers: corsHeaders });
+    if (path === "/prompt" && request.method === "POST") {
+      // Follow-up prompt to a still-connected runner.
+      // MVP scope: requires runner_connected; sandbox auto-pause + autoResume
+      // keeps the sandbox warm but cannot resurrect a dead runner WS, so we
+      // surface that limitation as 409.
+      if (!this.runnerConn) {
+        return new Response(
+          JSON.stringify({ error: "Runner not connected", status: this.session?.status }),
+          { status: 409, headers: corsHeaders },
+        );
       }
-    }
-
-    if (path === "/sandbox/expose-port" && request.method === "POST") {
-      const { port } = await request.json<{ port: number }>();
-      try {
-        const url = await this.sandboxExposePort(port);
-        return new Response(JSON.stringify({ url }), { headers: corsHeaders });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return new Response(JSON.stringify({ error: msg }), { status: 400, headers: corsHeaders });
-      }
-    }
-
-    if (path === "/sandbox/destroy" && request.method === "POST") {
-      await this.teardownSandbox();
+      const { text } = await request.json<{ text: string }>();
+      this.appendEvent("agent.started", "user", { taskDescription: text });
+      this.sendRunnerCommand("agent.prompt", {
+        taskDescription: text,
+        context: text,
+        model: this.profile?.model ?? "",
+        allowedTools: this.profile?.allowedTools ?? [],
+      });
       return new Response(JSON.stringify({ ok: true }), { headers: corsHeaders });
     }
 

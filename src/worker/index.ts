@@ -67,6 +67,11 @@ export default {
           profile?: Partial<ProjectProfile>;
         }>();
 
+        // M3 concurrency guard is enforced host-side by the launcher
+        // (scripts/launch-session.ts) — the Worker runtime hangs/dies when
+        // it does an outbound HTTPS fetch to E2B's API from this code path.
+        // See docs/ROADMAP.md section 8.6 for the constraint.
+
         // Build profile, inject Zai LLM config from env.
         // OpenCode supports the `zai-coding-plan` provider natively
         // (via models.dev) - api endpoint is https://api.z.ai/api/coding/paas/v4.
@@ -151,11 +156,28 @@ export default {
       // GET /sessions/:id
       if (path.startsWith("/sessions/") && request.method === "GET") {
         const sessionId = path.split("/")[2];
-        const id = env.SESSION_DO.idFromString(sessionId);
+        // Guard against malformed/unknown ids so the orphan sweeper and other
+        // callers get a clean 404 instead of an idFromString crash.
+        let id;
+        try {
+          id = env.SESSION_DO.idFromString(sessionId);
+        } catch {
+          return new Response(
+            JSON.stringify({ error: "session not found" }),
+            { status: 404, headers: corsHeaders },
+          );
+        }
         const stub = env.SESSION_DO.get(id);
 
         const resp = await stub.fetch(new Request("https://do.internal/state"));
         const data = await resp.json();
+        // The DO will auto-instantiate empty; treat a missing session.id as 404.
+        if (!(data as { session?: unknown }).session) {
+          return new Response(
+            JSON.stringify({ error: "session not found" }),
+            { status: 404, headers: corsHeaders },
+          );
+        }
 
         return new Response(JSON.stringify(data), { headers: corsHeaders });
       }
@@ -186,6 +208,21 @@ export default {
         return stub.fetch(new Request("https://do.internal/abort", { method: "POST" }));
       }
 
+      // ---- Follow-up prompt (M2) ----
+      // POST /sessions/:id/prompt   body: { text }
+      if (path.endsWith("/prompt") && request.method === "POST") {
+        const sessionId = path.split("/")[2];
+        const id = env.SESSION_DO.idFromString(sessionId);
+        const stub = env.SESSION_DO.get(id);
+        return stub.fetch(
+          new Request("https://do.internal/prompt", {
+            method: "POST",
+            body: request.body,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+
       // ---- Create PR ----
       // POST /sessions/:id/create-pr
       if (path.endsWith("/create-pr") && request.method === "POST") {
@@ -195,25 +232,6 @@ export default {
 
         return stub.fetch(
           new Request("https://do.internal/create-pr", { method: "POST" }),
-        );
-      }
-
-      // ---- Sandbox passthrough ----
-      // POST /sessions/:id/sandbox/exec         body: { command }
-      // POST /sessions/:id/sandbox/expose-port  body: { port }
-      // POST /sessions/:id/sandbox/destroy
-      const sbxMatch = path.match(/^\/sessions\/([^/]+)\/sandbox\/(exec|expose-port|destroy)$/);
-      if (sbxMatch && request.method === "POST") {
-        const sessionId = sbxMatch[1];
-        const action = sbxMatch[2];
-        const id = env.SESSION_DO.idFromString(sessionId);
-        const stub = env.SESSION_DO.get(id);
-        return stub.fetch(
-          new Request(`https://do.internal/sandbox/${action}`, {
-            method: "POST",
-            body: request.body,
-            headers: { "Content-Type": "application/json" },
-          }),
         );
       }
 
