@@ -51,25 +51,36 @@ function ensurePath(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 
 async function spawnOpencodeServe(): Promise<ChildProcess> {
   log(`spawning opencode serve on ${OPENCODE_HOST}:${OPENCODE_PORT}`);
-  // Pipe to a log file so we can poll for the ready line without holding
-  // stdout in this process (we want the supervisor to keep printing too).
+
+  // Fast path: opencode may already be listening from a previous boot —
+  // either captured live in the template snapshot (E2B's setStartCmd
+  // waitForPort(4096) snapshots the moment the port opens, which is BEFORE
+  // this poll loop sees the log line) or kept alive by `lifecycle:
+  // autoResume`. If a TCP probe succeeds we don't need a fresh process.
+  if (await isPortListening(OPENCODE_HOST, OPENCODE_PORT)) {
+    log(`opencode serve already listening (snapshot/resume); skipping respawn`);
+    // Return a sentinel: nothing to babysit because the process was started
+    // by the snapshot's init, not by us. babysit() handles undefined.
+    return { pid: undefined, exitCode: null, kill: () => {} } as unknown as ChildProcess;
+  }
+
   const proc = spawn(
     "bash",
     ["-c", `exec opencode serve --hostname=${OPENCODE_HOST} --port=${OPENCODE_PORT} > ${OPENCODE_READY_LOG} 2>&1`],
     { env: ensurePath({ ...process.env }), stdio: "ignore", detached: false },
   );
 
-  // Poll the log for the ready line.
+  // Poll for readiness. We use a fresh deadline (resets every call) so a
+  // sandbox resumed long after build-time snapshot doesn't compare against
+  // a stale Date.now() captured in the snapshot's closure.
   const deadline = Date.now() + SERVE_READY_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    if (existsSync(OPENCODE_READY_LOG)) {
-      try {
-        const out = readFileSync(OPENCODE_READY_LOG, "utf-8");
-        if (out.includes(SERVE_READY_LINE)) {
-          log(`opencode serve ready (pid=${proc.pid})`);
-          return proc;
-        }
-      } catch {}
+    // Prefer a real TCP probe over log scraping — the log file write can
+    // race with the listen() syscall, especially when the snapshot fires
+    // on waitForPort but our poll loop hasn't read the buffered log yet.
+    if (await isPortListening(OPENCODE_HOST, OPENCODE_PORT)) {
+      log(`opencode serve ready (port ${OPENCODE_PORT} open, pid=${proc.pid})`);
+      return proc;
     }
     if (proc.exitCode !== null) {
       const out = existsSync(OPENCODE_READY_LOG) ? readFileSync(OPENCODE_READY_LOG, "utf-8") : "";
@@ -78,6 +89,25 @@ async function spawnOpencodeServe(): Promise<ChildProcess> {
     await new Promise((r) => setTimeout(r, 200));
   }
   throw new Error(`opencode serve did not become ready in ${SERVE_READY_TIMEOUT_MS}ms`);
+}
+
+function isPortListening(host: string, port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const { Socket } = require("net") as typeof import("net");
+    const sock = new Socket();
+    let done = false;
+    const finish = (ok: boolean) => {
+      if (done) return;
+      done = true;
+      try { sock.destroy(); } catch {}
+      resolve(ok);
+    };
+    sock.setTimeout(500);
+    sock.once("connect", () => finish(true));
+    sock.once("error", () => finish(false));
+    sock.once("timeout", () => finish(false));
+    sock.connect(port, host);
+  });
 }
 
 async function waitForConfig(): Promise<StartConfig> {
