@@ -181,6 +181,9 @@ async function handleCreate(req: Request): Promise<Response> {
       githubAppId: process.env.GITHUB_APP_ID,
       githubPrivateKey: process.env.GITHUB_PRIVATE_KEY,
       githubPrivateKeyFile: process.env.GITHUB_PRIVATE_KEY_FILE,
+      githubUserToken: process.env.GITHUB_USER_TOKEN,
+      githubUserLogin: process.env.GITHUB_USER_LOGIN,
+      githubUserEmail: process.env.GITHUB_USER_EMAIL,
     });
   } catch (err) {
     await fetch(`${HERMES_BASE_URL}/sessions/${session.id}/abort`, { method: "POST" });

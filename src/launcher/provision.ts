@@ -26,6 +26,14 @@ export interface ProvisionInput {
   githubAppId?: string;
   githubPrivateKey?: string; // PKCS#8 PEM
   githubPrivateKeyFile?: string;
+
+  // P1.1 single-user OAuth: the human's GitHub PAT (or OAuth user token).
+  // When set, the runner uses this for `git push` + PR creation so the PR
+  // `author` is the real user, not the App bot identity. The App token is
+  // still minted and forwarded as a fallback / for repo metadata.
+  githubUserToken?: string;
+  githubUserLogin?: string;
+  githubUserEmail?: string;
 }
 
 export interface ProvisionResult {
@@ -117,6 +125,9 @@ export async function provisionSession(input: ProvisionInput): Promise<Provision
       ZAI_API_KEY: input.zaiApiKey ?? "",
       ZHIPU_API_KEY: input.zaiApiKey ?? "",
       GITHUB_TOKEN: githubToken,
+      GITHUB_USER_TOKEN: input.githubUserToken ?? "",
+      GITHUB_USER_LOGIN: input.githubUserLogin ?? "",
+      GITHUB_USER_EMAIL: input.githubUserEmail ?? "",
       GITHUB_OWNER: owner,
       GITHUB_REPO: repo,
       GITHUB_BASE_BRANCH: input.baseBranch ?? "main",

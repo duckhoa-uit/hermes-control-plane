@@ -329,7 +329,15 @@ async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
   const branch = (payload.branch as string) || `hermes/${Date.now()}`;
   const title = (payload.title as string) || `Hermes: ${payload.taskDescription ?? "automated change"}`;
   const body = (payload.body as string) || "Automated PR created by hermes-control-plane.";
-  const token = process.env.GITHUB_TOKEN || "";
+  // P1.1: prefer the human user's OAuth/PAT token so the PR `author` is the
+  // real user. Fall back to the App installation token (bot identity) only
+  // when no user token is configured.
+  const userToken = process.env.GITHUB_USER_TOKEN || "";
+  const userLogin = process.env.GITHUB_USER_LOGIN || "";
+  const userEmail = process.env.GITHUB_USER_EMAIL || "";
+  const appToken = process.env.GITHUB_TOKEN || "";
+  const token = userToken || appToken;
+  const usingUserIdentity = Boolean(userToken);
   const owner = process.env.GITHUB_OWNER || "";
   const repo = process.env.GITHUB_REPO || "";
   const baseBranch = process.env.GITHUB_BASE_BRANCH || "main";
@@ -339,9 +347,16 @@ async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
     return;
   }
 
+  const gitEmail = usingUserIdentity && userEmail
+    ? userEmail
+    : usingUserIdentity && userLogin
+      ? `${userLogin}@users.noreply.github.com`
+      : "hermes-bot@users.noreply.github.com";
+  const gitName = usingUserIdentity && userLogin ? userLogin : "hermes-bot";
+
   try {
-    await execStrict(`git config user.email "hermes-bot@users.noreply.github.com"`);
-    await execStrict(`git config user.name "hermes-bot"`);
+    await execStrict(`git config user.email "${gitEmail}"`);
+    await execStrict(`git config user.name "${gitName}"`);
     await execStrict(`git checkout -B ${branch}`);
     await execStrict(`git add -A`);
     const diff = await execCmd(`git diff --cached --name-only`);
@@ -350,10 +365,12 @@ async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
       return;
     }
     await execStrict(`git commit -m "${title.replace(/"/g, '\"')}"`);
-    const remoteUrl = `https://x-access-token:${token}@github.com/${owner}/${repo}.git`;
+    const remoteUrl = usingUserIdentity
+      ? `https://${token}:x-oauth-basic@github.com/${owner}/${repo}.git`
+      : `https://x-access-token:${token}@github.com/${owner}/${repo}.git`;
     await execStrict(`git remote set-url origin ${remoteUrl}`);
     const pushOut = await execStrict(`git push --set-upstream origin ${branch} 2>&1`);
-    sendEvent("git.branch.pushed", { branch, pushOutput: pushOut.slice(-500) });
+    sendEvent("git.branch.pushed", { branch, pushOutput: pushOut.slice(-500), authorIdentity: usingUserIdentity ? gitName : "hermes-bot" });
 
     const prResp = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls`, {
       method: "POST",

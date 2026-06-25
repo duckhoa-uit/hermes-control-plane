@@ -148,6 +148,9 @@ async function runDirectMode(): Promise<void> {
       githubAppId: process.env.GITHUB_APP_ID,
       githubPrivateKey: process.env.GITHUB_PRIVATE_KEY,
       githubPrivateKeyFile: process.env.GITHUB_PRIVATE_KEY_FILE,
+      githubUserToken: process.env.GITHUB_USER_TOKEN,
+      githubUserLogin: process.env.GITHUB_USER_LOGIN,
+      githubUserEmail: process.env.GITHUB_USER_EMAIL,
     });
     log(`sandbox=${provisioned.sandboxId} created`);
   } catch (err) {
