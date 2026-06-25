@@ -1307,6 +1307,9 @@ them together in the M5 PR.
 
 ### 12.12 Quick fix shipped — follow-up window 60 s → ~50 min (2026-06-25)
 
+**Partially reverted after §12.14 analysis** (see end of section for
+what survived). Original write-up kept for history.
+
 Closing the most-painful symptom of the §12 gap without doing full M5.
 Three knobs tuned + one new launcher action:
 
@@ -1351,6 +1354,42 @@ Three knobs tuned + one new launcher action:
 | opencode (agent only) | n/a — session in SQLite forever | n/a |
 
 Hermes after the fix sits between Codex (10 min) and OpenHands (∞).
+
+**Partial revert (2026-06-25, after §12.14 docs+probe research)**
+
+§12.14 verified via E2B docs that paused sandboxes are free, indefinite,
+and uncapped. The two §12.12 knobs that kept the sandbox _running_ to
+avoid the pause were therefore counter-productive — they burn toward
+E2B Hobby's 1-hour continuous-runtime cap (which RESETS on resume).
+The right behaviour is "let E2B pause early, resume on demand". Resume
+needs M5 (§12.14) to ship; until then the user-visible behaviour is the
+same 410/409 fail-fast (§12.13), but at least we stop wasting quota.
+
+Reverted:
+- `Sandbox.setTimeout(55min)` extension on first `review_ready` (removed
+  from `src/launcher/server.ts`).
+- Launcher hard deadline `60 min` → bumped to `24 h` (purely a runaway-job
+  backstop; not a follow-up window cap anymore).
+
+Kept (correct regardless of M5):
+- `HEARTBEAT_TIMEOUT_MS = 15 min` (catches real stalls without false-
+  positive on paused sandboxes; paused sandbox state is now handled
+  separately by the runner-disconnected check rather than heartbeat).
+- Heartbeat watchdog skipped at `review_ready` (idle review_ready is not
+  a stall).
+
+**Effective behaviour after the partial revert (today):**
+
+| State | Window |
+|---|---|
+| `running` (turn in progress) | 15 min runner silence → fail |
+| `review_ready` (idle) | sandbox auto-pauses after 15 min; follow-up after that returns 409 with `recoverable: false` (§12.13) until M5 ships |
+| Real runner crash | detected within 15 min |
+| Runaway session not garbage-collected | killed at 24 h hard deadline |
+
+The follow-up window is now bounded by E2B's `onTimeout: 'pause'` (15 min)
+rather than by our 55-min `setTimeout` extension. Same 409 fail-fast UX
+for the user; M5 (§12.14) flips it to a transparent resume.
 
 ---
 

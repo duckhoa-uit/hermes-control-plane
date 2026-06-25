@@ -15,7 +15,6 @@
 //   HERMES_BASE_URL=http://localhost:8788 HERMES_PUBLIC_URL=https://<ngrok>.ngrok-free.app \
 //   bun run src/launcher/server.ts
 
-import { Sandbox } from "e2b";
 import { provisionSession, killSandbox, type ProvisionResult } from "./provision";
 import { sweepOrphans } from "./sweeper";
 
@@ -67,12 +66,12 @@ async function countActiveSandboxes(): Promise<number> {
 /** Background poller: drive create-pr on review_ready, kill sandbox on terminal. */
 function watchSession(sessionId: string): void {
   const intervalMs = 3000;
-  // 60 min: matches E2B Hobby's hard 1h per-sandbox cap. Anything
-  // running longer than this is past E2B's own limit anyway, so we kill
-  // it ourselves to be sure no orphan compute lingers.
-  const deadlineAt = Date.now() + 60 * 60 * 1000;
+  // 24 h: a runaway-job backstop, NOT a follow-up window cap. Paused
+  // sandboxes are free + indefinite on E2B (verified §12.14); the only
+  // reason to kill is if a session has been forgotten about for a day.
+  // Once §12 M5 ships, this will be replaced by D1/R2 retention cron.
+  const deadlineAt = Date.now() + 24 * 60 * 60 * 1000;
   let prTriggered = false;
-  let timeoutExtended = false;
 
   const tick = async (): Promise<void> => {
     const entry = activeSessions.get(sessionId);
@@ -84,21 +83,7 @@ function watchSession(sessionId: string): void {
       if (r.ok) {
         const data = (await r.json()) as { session?: { status: string } };
         const status = data.session?.status ?? "";
-        if (status === "review_ready" && !timeoutExtended) {
-          timeoutExtended = true;
-          // Extend the E2B sandbox lifetime so a follow-up prompt has a
-          // useful window. E2B's default onTimeout (set in provision.ts =
-          // 15 min) would otherwise pause the sandbox while idle in
-          // review_ready, breaking follow-up POST /prompt. 55 min keeps us
-          // safely under E2B Hobby's hard 60-min per-sandbox cap.
-          try {
-            await Sandbox.setTimeout(entry.sandboxId, 55 * 60 * 1000, { apiKey: E2B_API_KEY! });
-            log(`session ${sessionId.slice(0, 8)} review_ready -> extended sandbox timeout to 55 min`);
-          } catch (err) {
-            log(`setTimeout failed for ${sessionId.slice(0, 8)}: ${(err as Error).message}`);
-          }
-        }
-        if (status === "review_ready" && !prTriggered && AUTO_PR) {
+if (status === "review_ready" && !prTriggered && AUTO_PR) {
           prTriggered = true;
           log(`session ${sessionId.slice(0, 8)} review_ready -> trigger create-pr`);
           try {
