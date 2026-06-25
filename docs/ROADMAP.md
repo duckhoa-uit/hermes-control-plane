@@ -1158,3 +1158,147 @@ Triggers, already on the platform.
 ### 12.8 Status
 
 Proposed. Not started.
+
+---
+
+### 12.9 Prior art (research, 2026-06-25)
+
+Researched relevant projects before committing to M5 design. Findings:
+
+#### OpenHands (`All-Hands-AI/openhands`) — direct precedent
+
+Same architecture as hermes (background coding agent + remote sandboxes).
+They shipped exactly the M5 pattern we proposed, with a security wrinkle
+we missed and an architectural simplification we can't borrow.
+
+**What they do, mapped to §12:**
+
+| OpenHands construct | Hermes equivalent in §12 |
+|---|---|
+| `SandboxStatus.PAUSED` first-class status | `idle_paused` (✅ matches §12.3) |
+| `resume_sandbox(id)` → `POST /resume` on runtime API | Launcher `POST /sessions/:id/resume` → `Sandbox.connect(id)` (✅ matches §12.3) |
+| Triggered when picking up a new task (see `live_status_app_conversation_service.py:875-876`) | DO's `POST /prompt` calls resume when status==`idle_paused` (✅ matches §12.3) |
+| LRU pause when concurrency cap hit (`pause_old_sandboxes`) | M3's concurrency guard already in place; M5 just lets paused sessions stay around | 
+| `wait_for_sandbox_running` poll loop after resume | (need to add — see §12.10) |
+| **Rotates `session_api_key_hash` on resume**, clears it on pause | (missed — see §12.10 addendum 1) |
+
+**Key architectural gap from OpenHands to us:** OpenHands uses
+**outbound HTTP polls from app server → agent server inside sandbox**.
+Resume is trivial — the next `httpx.get(/alive)` works after E2B
+resumes. Hermes uses **outbound WebSocket from sandbox runner → DO**.
+After resume the runner's TCP socket is half-dead and the runner
+process needs to notice + redial. Our resume path is more complex.
+
+#### opencode upstream (anomalyco fork) — agent-layer is free
+
+Sessions are durable in SQLite (`packages/core/src/session/sql.ts`).
+`SessionHistory.load(db, sessionID)` rehydrates at any time. Sessions
+have no TTL or expiry. As long as the sandbox disk survives, the
+opencode session survives — and our session-prompt-with-id reuses
+the conversation cache (verified §11.13 99.4% cache hit). **No
+agent-side work needed for M5.**
+
+#### E2B `autoResume: true` — clarified semantics
+
+Verified in `e2b-dev/e2b` source
+(`packages/js-sdk/tests/sandbox/lifecyclePayload.test.ts`):
+**`autoResume: true` only wakes a paused sandbox on an HTTP request
+to an exposed port.** Outbound traffic from inside the sandbox does
+not trigger it. Our outbound-WS architecture means the current
+`provision.ts:47` flag is a no-op for the long-pause case — only an
+explicit `Sandbox.connect()` from the launcher will resume.
+
+→ Strengthens §12.1 gap #2: the flag is set but unreachable from our
+control flow. M5 must replace "autoResume hope" with explicit
+launcher-driven `Sandbox.connect()`.
+
+#### Modal `_experimental_from_snapshot` — different model
+
+Modal exposes `snapshot_filesystem()` + `_experimental_from_snapshot()`
+which returns a **new** sandbox from a snapshot. This is a
+restart-and-rehydrate model (Ramp Inspect uses it). More expensive
+than E2B's pause/resume; primarily useful for forking ("retry this
+prompt with a different model"). **Out of M5 scope.** Tracked in
+§8.3 "Snapshot-based session forking".
+
+#### Ramp Inspect — warm-on-keystroke + snapshots
+
+Per §1 summary: "filesystem snapshots for resume; warm pool for hot
+repos; warm-on-keystroke". Pool + warm-on-keystroke are perf
+optimizations layered ON TOP of basic resume; M5 lands the basic
+resume primitive first (the prerequisite). Pool/warm = future P0.3
+which §11.6 already declares out of scope for M4.
+
+### 12.10 Addenda to §12 from prior-art research
+
+Bumping into OpenHands' design surfaced four refinements to fold into
+M5 implementation when it lands. Each is a small, surgical addition.
+
+#### Addendum 1: Rotate runner token on resume (security)
+
+**Risk:** A leaked runner token (from logs, sandbox dumps, etc.)
+remains usable while the sandbox is paused — there's no expiry on
+hermes session-scoped tokens today.
+
+**Fix in M5:**
+- On `running → idle_paused`: DO drops its cached runner-token hash,
+  forcing re-validation on next WS upgrade.
+- On `idle_paused → running` (launcher `/resume`): launcher mints a
+  new short-lived runner token, writes the new token to
+  `/opt/hermes/start.json` (the supervisor will pick it up on the
+  next runner spawn — or, if the runner is being thawed in-place,
+  we need to re-deliver it some other way; see addendum 2).
+- Add `/sessions/:id/rotate-runner-token` route on the DO; launcher
+  calls it before `Sandbox.connect()` so the DO will accept the new
+  token on the runner's re-dial.
+
+#### Addendum 2: Runner WS reconnect loop
+
+Hermes runner uses outbound WS to DO. After `Sandbox.connect()`:
+- Runner Node process thaws.
+- Its WS socket is in TCP half-close state (peer DO closed long ago).
+- `ws.on("close")` and `ws.on("error")` will fire as the OS notices.
+
+**Fix in M5:**
+- Wrap the WS in a reconnect loop (`src/runner/sandbox-runner.ts`):
+  on `close` or `error`, retry with exponential backoff (1s, 2s, 4s,
+  8s, 16s, cap 30s, total budget 2 min). On reconnect: re-send the
+  initial `runner.connected` frame.
+- Reload `start.json` on reconnect so the new runner token from
+  addendum 1 is picked up. Old in-memory `RUNNER_TOKEN` is stale.
+- If reconnect budget exhausts: process exits cleanly (the supervisor
+  picks this up and shuts down opencode serve, which sets the M4
+  babysit chain in motion).
+
+#### Addendum 3: DO accepts the rotated token
+
+Today the DO checks the incoming token against the one minted at
+session-create time (single hash). M5 needs it to accept either
+"current token" or "previous token" within a short grace window
+during the rotate→resume→reconnect window — otherwise the runner's
+in-flight reconnect with the *old* token gets rejected before
+`start.json` reload completes.
+
+**Fix in M5:** DO stores `currentTokenHash` + `previousTokenHash`
+(both valid for up to 60 s). Rotate sets previous := current,
+current := new.
+
+#### Addendum 4: Use OpenHands' state names
+
+OpenHands' enum:
+`STARTING`, `RUNNING`, `PAUSED`, `ERROR`, `MISSING`. We map cleanly:
+
+- ours `provisioning` / `runner_connecting` → their `STARTING`
+- ours `running` / `review_ready` → their `RUNNING`
+- M5 new `idle_paused` → their `PAUSED`
+- ours `failed` / `aborted` → their `ERROR`
+- ours implicit-after-launcher-kill → their `MISSING`
+
+No rename needed; this is just confirmation that our enum is already
+in the right shape (one new value is all M5 adds).
+
+### 12.11 Decision: ship §12 as-is, fold addenda into PR
+
+The §12 scope is correct. The four addenda above are minor — total
+incremental work ~50 lines beyond what §12.3 already lists. Land
+them together in the M5 PR.
