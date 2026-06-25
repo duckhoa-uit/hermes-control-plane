@@ -83,6 +83,8 @@ See `README.md` for the canonical diagram. Snapshot of the relevant pieces:
 | 19 | Chrome extension | DOM/React-tree, not images | None | ❌ | Low | |
 | 20 | Metrics: merge-rate | % sessions → merged PRs, live users | None | ❌ | Med | |
 | 21 | Repo classifier | Fast LLM, channel-aware | Project id required | 🟡 | Low | Acceptable until Slack exists |
+| 22 | Long-pause resume | autoResume + warm session over hours | M2 `autoResume:true` set but `Sandbox.connect()` never called; heartbeat marks paused sandbox as `failed` after 60 s | 🟡 | Med (kills follow-up UX) | Tracked under §12 M5 |
+| 23 | D1 / R2 retention | retention policy + cron GC | None — sessions accumulate forever | ❌ | Low (single user) | Tracked under §12 M5 |
 
 ---
 
@@ -387,6 +389,8 @@ Revisit deferred items when **any** of these is true:
 - We exceed 5 merged PRs/week and want to know merge-rate → do **P4.1
   metrics** and **P1.2 webhooks**.
 - Template deps drift weekly → do **P0.2 30-min refresh**.
+- Users want to follow up on a session hours later → do **§12 M5 long-pause resume**.
+- D1 / R2 storage cost noticeable → do **§12 M5 retention cron**.
 
 ---
 
@@ -1014,3 +1018,143 @@ contains both turns' edits in one commit.
 
 M4 fully done. All §11.4 success criteria (1, 2, 3, 4) verified by live
 evidence.
+
+---
+
+## 12. M5 — long-pause resume + session lifecycle GC (proposed)
+
+### 12.1 Why
+
+M4 §11.13 verified that **immediate** follow-up prompts (seconds after
+`review_ready`) work. Walking the code revealed three honest gaps in
+the longer-tail story:
+
+1. **DO can't tell "sandbox paused" from "runner dead"**. Heartbeat
+   stops the moment E2B pauses the sandbox (process frozen). After
+   `HEARTBEAT_TIMEOUT_MS = 60s` the DO transitions `running → stalled
+   → failed`. The launcher's per-session watcher then sees `failed`
+   and kills the sandbox. So in practice the "follow-up window" is
+   ~60 s, not the 15-min auto-pause window M2 implies.
+   - Source: `src/worker/session-do.ts:506-535`, `constants.ts:2`,
+     `src/launcher/server.ts:62-117`.
+
+2. **`Sandbox.connect()` never gets called from runtime code.** The
+   M2 `autoResume: true` flag is set
+   (`src/launcher/provision.ts:47`) but no path triggers a resume —
+   the launcher only `Sandbox.create()`s, never reconnects. So
+   "auto-pause + autoResume" is half-implemented: pause works, resume
+   doesn't reach the user.
+
+3. **`MAX_SESSION_RUNTIME_MS` is declared dead code.** Defined in
+   `src/core/constants.ts:3` and listed in `wrangler.toml`, but no
+   code path enforces it. The actual upper bound is the launcher
+   watcher's 35-min hard deadline (`src/launcher/server.ts:69`).
+
+4. **D1 / R2 / DO storage never GC'd.** Sessions accumulate forever
+   in terminal states. No cron job, no retention policy.
+
+### 12.2 What "long-pause resume" should look like
+
+```
+t=0       turn 1 ends, status=review_ready, runner WS connected
+t=60s     runner heartbeat dies (E2B paused sandbox → process frozen)
+t=60s     DO sees no heartbeat → NEW status: `idle_paused` (not `failed`)
+          (heartbeat watchdog stays quiet while in `idle_paused`)
+t=2h      user POST /sessions/:id/prompt
+          DO sees status=idle_paused → calls launcher /resume
+          launcher does Sandbox.connect(id) → runner Node thaws →
+          re-dials WS to DO → DO transitions back to `running` →
+          forwards agent.prompt as today
+```
+
+### 12.3 Scope of change
+
+| Layer | Change |
+|---|---|
+| `src/core/state-machine.ts` | New status `idle_paused`. Allowed transitions: `running → idle_paused`, `review_ready → idle_paused`, `idle_paused → running`, `idle_paused → failed`, `idle_paused → aborted`. |
+| `src/worker/session-do.ts` | (a) Heartbeat timeout in `running` / `review_ready` transitions to `idle_paused` (not `stalled → failed`). (b) `idle_paused` stops the heartbeat watchdog. (c) `POST /prompt` while `idle_paused` → call launcher `/resume`; if 200, transition `idle_paused → running` and queue the prompt for delivery once `runner.connected` arrives again. |
+| `src/launcher/server.ts` | (a) Watcher does NOT kill sandbox on DO status `idle_paused` — only on `failed`/`aborted`/`completed` or absolute deadline. (b) New route `POST /sessions/:id/resume` calls `Sandbox.connect(sandboxId)`; on success the runner thaws and dials back to DO. (c) Watcher deadline becomes the *upper* idle bound: e.g. `MAX_IDLE_PAUSED_MS = 2 h` for `idle_paused`, `MAX_RUNTIME_MS = 6 h` absolute. |
+| `src/launcher/provision.ts` | Increase `SANDBOX_TIMEOUT_MS` (today 15 min) to match the new `MAX_IDLE_PAUSED_MS`, since the pause budget should be the user-facing knob. |
+| `src/core/constants.ts` | Replace dead `MAX_SESSION_RUNTIME_MS` with `MAX_IDLE_PAUSED_MS` + `MAX_TOTAL_RUNTIME_MS` (both enforced; values overridable via `wrangler.toml`). |
+| `src/worker/session-do.ts` | Pending-prompt queue: while `idle_paused → running` transition is mid-flight, hold the new prompt in DO storage and replay on `runner.connected`. (This is the M2.3 "prompt queue" wedge but only the minimal subset needed for resume; full queue is still M2.3.) |
+| Tests | (a) state-machine: idle_paused round-trip. (b) Mock provision.test.ts: `Sandbox.connect` called on resume path. (c) Integration: heartbeat timeout → idle_paused, not failed. |
+| Docs | Update README "Flow" diagram + §11.13's "Reading the result" — now follow-up window is hours, not seconds. |
+
+### 12.4 Cleanup strategy (after M5)
+
+| Resource | Owner | When killed | Mechanism |
+|---|---|---|---|
+| E2B sandbox (compute) | Launcher | DO terminal (`completed`/`failed`/`aborted`) OR `MAX_IDLE_PAUSED_MS` exceeded OR `MAX_TOTAL_RUNTIME_MS` exceeded | watcher tick + `entry.kill()` |
+| E2B sandbox (orphaned post-launcher-restart) | Launcher sweeper | Sidecar boot | `sweepOrphans()` (already exists) |
+| E2B sandbox billing | E2B platform | `idle_paused` → pause billing (already today via `onTimeout: 'pause'`) | E2B native |
+| DO instance | Cloudflare | Hibernation between events (free) | Workers Runtime |
+| D1 session row | New cron | Terminal age > `D1_RETENTION_DAYS` (e.g. 30) | scheduled Worker (P4.1 prereq) |
+| Event log | New cron | Same retention | scheduled Worker |
+| R2 artifacts | New cron | Same retention | scheduled Worker |
+
+The cron piece is the right home for these — Cloudflare Workers Cron
+Triggers, already on the platform.
+
+### 12.5 Success criteria
+
+1. **Follow-up after 1 hour idle works.** Manual test: create session,
+   reach `review_ready`, wait > 60s (let heartbeat lapse) → wait
+   another 60 min → `POST /prompt` → status flips
+   `idle_paused → running` → second turn completes → cumulative diff
+   contains both turns. Wall-clock of the resume step ≤ 5 s (E2B
+   `Sandbox.connect` is ~500 ms per §11.8.B; runner re-dial + WS
+   handshake adds the rest).
+
+2. **Sandbox not killed prematurely.** During the 1-hour idle wait,
+   `Sandbox.list` shows the sandbox in `paused` state the whole time
+   (not removed); launcher watcher log shows no `killing sandbox`
+   line.
+
+3. **Hard upper bound holds.** Session left fully idle for >
+   `MAX_IDLE_PAUSED_MS` (e.g. 2 h) → launcher kills sandbox → DO
+   transitions `idle_paused → failed` with `errorMessage = "idle
+   timeout"`. Subsequent `POST /prompt` returns 410 Gone with a clear
+   message.
+
+4. **Retention cron deletes old terminal sessions.** Insert a fake
+   terminal session aged `D1_RETENTION_DAYS + 1` → run cron handler
+   → row gone, event log gone, R2 prefix gone. Live sessions
+   untouched.
+
+### 12.6 Risks
+
+- **E2B paused-sandbox quota.** Hobby/Pro tier has a cap on total
+  paused sandboxes (separate from the 20-concurrent live cap). With
+  longer idle windows we accumulate more paused sandboxes per active
+  user. Check current limit before raising `MAX_IDLE_PAUSED_MS` past
+  the cap. Mitigation: include paused count in the M3 concurrency
+  guard.
+
+- **Resume not always idempotent.** If `Sandbox.connect()` races with
+  E2B's own GC (sandbox aged past *E2B's* internal pause TTL, not
+  ours), connect returns 404. Handle as terminal failure with a
+  user-friendly "session expired" message.
+
+- **Runner state-on-disk drift.** While paused, the runner's repo
+  working copy on `/home/user/repo` is frozen but the *real* base
+  branch on GitHub may have moved. The follow-up turn might produce a
+  diff that doesn't apply cleanly anymore. M5 surfaces this as a
+  runtime error from `git push`; a real fix (rebase before turn 2)
+  is its own concern, tracked alongside P1.2 webhook ingestion.
+
+- **Prompt-queue subset overlap with M2.3.** M5 introduces a tiny
+  prompt-queue (one slot, drained on `runner.connected`). M2.3 is
+  the full prompt-queue + mid-run stop. Make M5's slot a single
+  field, not an array, so M2.3 can replace it without churn.
+
+### 12.7 Out of scope for M5
+
+- Full prompt-queue (M2.3).
+- Webhook ingestion + auto-resume on PR comment (P1.2).
+- Session forking via E2B snapshots (deferred §8.3).
+- D1 / R2 retention UI controls — cron with a constant is enough for
+  one user.
+
+### 12.8 Status
+
+Proposed. Not started.
