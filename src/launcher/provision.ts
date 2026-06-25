@@ -115,6 +115,34 @@ export async function provisionSession(input: ProvisionInput): Promise<Provision
       // leave token empty; runner will surface the error
     }
 
+    // 3b. Bake credentials into the cloned repo so the agent's own `git push`
+    //     works directly (Option A). P1.1: prefer the user OAuth token so the
+    //     pushed commits and the PR author are the real human, not the App bot.
+    //     The token only lives inside .git/config of this ephemeral sandbox.
+    const userToken = input.githubUserToken ?? "";
+    const usingUserIdentity = Boolean(userToken && input.githubUserLogin);
+    const pushToken = userToken || githubToken;
+    const gitName = usingUserIdentity ? (input.githubUserLogin ?? "") : "hermes-bot";
+    const gitEmail = usingUserIdentity
+      ? (input.githubUserEmail || `${input.githubUserLogin}@users.noreply.github.com`)
+      : "hermes-bot@users.noreply.github.com";
+    const branch = `hermes/${input.sessionId.slice(-8)}`;
+    if (owner && repo) {
+      const remoteUrl = usingUserIdentity
+        ? `https://${pushToken}:x-oauth-basic@github.com/${owner}/${repo}.git`
+        : pushToken
+          ? `https://x-access-token:${pushToken}@github.com/${owner}/${repo}.git`
+          : "";
+      const setup = [
+        `cd ${REPO_DIR}`,
+        `git config user.name '${gitName.replace(/'/g, "'\\''")}'`,
+        `git config user.email '${gitEmail.replace(/'/g, "'\\''")}'`,
+        remoteUrl ? `git remote set-url origin '${remoteUrl}'` : "",
+        `git checkout -B ${branch}`,
+      ].filter(Boolean).join(" && ");
+      await sbx.commands.run(setup, { timeoutMs: 30_000 });
+    }
+
     // 4. Drop the per-session start config. The supervisor (baked into the
     //    template, already running in the snapshot) is polling this path and
     //    will exec the runner with these env vars.
