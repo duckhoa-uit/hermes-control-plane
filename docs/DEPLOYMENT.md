@@ -217,16 +217,21 @@ Listed so the on-caller knows what each one protects against.
 |---|---|---|
 | `MAX_CONCURRENT_SESSIONS=10` | `wrangler.toml` + launcher env | E2B Hobby cap exhaustion |
 | Launcher hard deadline = 24 h | `src/launcher/server.ts:75` | runaway-job backstop (paused sandboxes are free and indefinite per §12.14, so this is purely a GC ceiling, not a follow-up window) |
-| `HEARTBEAT_TIMEOUT_MS=60s` | `wrangler.toml` | runner stall (transitions to `stalled → failed`) |
+| `HEARTBEAT_TIMEOUT_MS=15 min` | `wrangler.toml` (bumped 60 s → 15 min in ROADMAP §12.7) | runner stall (transitions to `stalled → failed`); matches E2B's 15-min auto-pause window so short idles don't fire false stalls |
 | Orphan sweeper at boot | `src/launcher/sweeper.ts` | leaked sandboxes after launcher crash |
-| 35-min force-kill | per-session watcher in `src/launcher/server.ts` | safety net above E2B's 15-min idle pause |
 | Session-scoped runner token | minted in DO, dropped in `start.json` | broad-credential exposure inside the sandbox |
 | GH installation token, repo-scoped, ≤ 1 h | `src/launcher/github-token.ts` | long-lived GH credentials inside the sandbox |
 | Sandbox auto-pause on idle (15 min) | `Sandbox.create` lifecycle | wasted E2B compute |
-| Per-session turn cap (proposed §8.4 ROADMAP, not yet implemented) | DO | runaway loops under full auto-allow |
+| ~~Per-session turn cap~~ | ~~DO~~ | ~~runaway loops under full auto-allow~~ — explicitly **skipped** for the 1-user release; see `ROADMAP.md §8.4` for the survey of peers (OpenHands/Aider/Cline/SWE-agent) and trigger criteria for revisiting |
 
-Action for release: confirm the turn cap (`ROADMAP.md §8.4`) is
-implemented or explicitly accept the risk in the release notes.
+**Action for release** (resolved 2026-06-25): no turn cap to ship. The
+wall-clock backstops (E2B 1 h continuous, launcher 24 h hard deadline,
+heartbeat 15 min, `MAX_CONCURRENT_SESSIONS = 10`) plus the Z.AI flat-rate
+plan make a per-session turn count cap non-essential for the 1-user
+release. The decision and the revisit triggers are documented in
+`ROADMAP.md §8.4`. If any trigger fires in production, port Cline's
+`LoopDetectionTracker` (pattern-based, ~100 LoC) — that is the preferred
+shape over a raw counter.
 
 ---
 

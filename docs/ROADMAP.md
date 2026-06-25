@@ -396,8 +396,10 @@ described, revisit.
   E2B sandbox isolation + GitHub branch protection on `main`); (b) no
   defense against a buggy/compromised runner skipping the gate (mitigated:
   short-lived session-scoped runner token, sandbox is throwaway); (c) a
-  runaway agent can spend Zai tokens until M3's runtime cap kicks in — add
-  a per-session turn count cap (e.g. 50 turns) as a cheap backstop.
+  runaway agent can spend Zai tokens until the wall-clock backstops kick
+  in (E2B 1 h continuous + launcher 24 h hard deadline). A per-session
+  turn count cap was considered and explicitly skipped — see §8.4 for the
+  decision and the trigger criteria for revisiting.
 - **`spawn_session` agent tool (was P2.2).** *Purpose:* let the agent
   fan out parallel research across repos or split big tasks into multiple
   smaller PRs. *Limitation while deferred:* no multi-repo research; no
@@ -422,9 +424,36 @@ described, revisit.
 These are not roadmap items, just small constants/checks that prevent the
 deferred-item limitations from biting hard:
 
-- Per-session **turn count cap** (e.g. 50) in `SessionDurableObject` — kills
-  runaway loops even with full auto-allow.
-- Per-session **token spend cap** if OpenCode exposes usage — same reason.
+- Per-session **turn count cap** — proposed but **explicitly skipped**
+  for the 1-user release after surveying peers (decision 2026-06-25):
+  - **OpenHands** ships `max_iteration_per_run = 500` + a pattern-based
+    `StuckDetector` (`software-agent-sdk/openhands/sdk/conversation/stuck_detector.py`).
+  - **Aider** ships `max_reflections = 3` (different concept — caps
+    test-fail → re-edit cycles, not raw prompts).
+  - **Cline / Roo Code** ship a pattern-based `LoopDetectionTracker`
+    (3 repeated tool+args → soft, 5 → hard) and **no** raw turn cap.
+  - **SWE-agent** ships a `per_instance_cost_limit` ($) instead of a
+    turn count.
+  - **OpenCode (sst)** has neither — interactive, the human is the cap.
+
+  For the Hermes 1-user shape the wall-clock backstops already in place
+  (launcher 24 h hard deadline, E2B 1 h continuous runtime,
+  `MAX_CONCURRENT_SESSIONS = 10`, heartbeat 15 min) are sufficient. The
+  Z.AI Coding Plan is a flat-rate subscription so a $-budget cap is not
+  meaningful either. Revisit when **any** of the following triggers fire:
+  - A real runaway-loop incident drains Z.AI usage past the plan
+    fair-use limit.
+  - We migrate off Z.AI to a per-token model and the wall-clock cap is
+    no longer a tight enough $$ bound.
+  - We onboard a 2nd human user (P3.1) and need per-user fairness.
+
+  Preferred implementation when triggered: port Cline's
+  `LoopDetectionTracker` (pattern-based, ~100 LoC, fewer false positives
+  than a raw counter) rather than the dumb counter. Fallback: hard
+  counter `MAX_TURNS_PER_SESSION = 50` in `SessionDurableObject` (~5 LoC).
+- Per-session **token spend cap** if OpenCode exposes usage — same
+  decision tree as the turn cap above. Skipped for the Z.AI flat-rate
+  era; revisit when we move to per-token pricing.
 - ~~**`MAX_SESSION_RUNTIME_MS`** already exists; verify it's enforced.~~
   Verified: it was *never* enforced (§12.1) and was removed in this sync.
   The launcher's 24 h hard deadline (`src/launcher/server.ts:75`) is the
