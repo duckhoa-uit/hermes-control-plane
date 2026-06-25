@@ -41,9 +41,8 @@ shipped or in-flight, not new asks of this plan):
   pause/resume with the same PID and warm cache (`ROADMAP.md §11.8.B`).
 - Author-attributed events (`author_user_id` on `session_events`, populated
   from the Slack user id; required for multi-user — §6.2).
-- GitHub App for *repo metadata* + *push* via short-lived installation
-  token; **per-user GitHub OAuth for PR authorship** (release blocker —
-  §7.3 + ROADMAP P1.1).
+- Single-user GitHub PAT (P1.1) for `git push` + `POST /pulls`; the PR
+  `author` is the real user. No GitHub App involved.
 - `% sessions → merged PR` as the only release-quality metric.
 
 What we explicitly do **not** copy from Inspect at this stage:
@@ -194,9 +193,7 @@ cadence:
 |---|---|---|---|---|
 | `E2B_API_KEY` | launcher VM env | infra | quarterly | rotate via E2B dashboard, hot-swap env, restart launcher |
 | `ZAI_API_KEY` | launcher VM env | infra | quarterly | Forwarded into the sandbox; supervisor applies it to opencode via `auth.set` |
-| `GITHUB_APP_ID` + `GITHUB_PRIVATE_KEY` (PKCS#8) | launcher VM env | infra | yearly or on suspicion | broker mints ≤ 1 h installation tokens per session — main credential is short-lived |
-| `GITHUB_OAUTH_CLIENT_ID` + `GITHUB_OAUTH_CLIENT_SECRET` | Worker secret (`wrangler secret put`) | infra | yearly | OAuth app for per-user PR authorship (P1.1). Distinct from the GitHub *App* above. |
-| `OAUTH_TOKEN_ENCRYPTION_KEY` (32-byte AES-256-GCM, base64) | Worker secret | infra | quarterly | encrypts per-user OAuth tokens at rest in DO storage. Rotation = decrypt-then-reencrypt sweep (script in `scripts/rotate-oauth-key.ts`). |
+| `GITHUB_USER_TOKEN` (fine-grained PAT) | launcher VM env | infra | every 90 days | P1.1 single-user OAuth. Runner uses it for `git push` + `POST /pulls`; PR `author` is the real user. |
 | `HERMES_PUBLIC_URL` | launcher VM env | infra | n/a | the Worker URL; static per env |
 | Slack signing secret + bot token | Hermes agent infra | Hermes team | yearly | not in this repo |
 
@@ -220,7 +217,7 @@ Listed so the on-caller knows what each one protects against.
 | `HEARTBEAT_TIMEOUT_MS=15 min` | `wrangler.toml` (bumped 60 s → 15 min in ROADMAP §12.7) | runner stall (transitions to `stalled → failed`); matches E2B's 15-min auto-pause window so short idles don't fire false stalls |
 | Orphan sweeper at boot | `src/launcher/sweeper.ts` | leaked sandboxes after launcher crash |
 | Session-scoped runner token | minted in DO, dropped in `start.json` | broad-credential exposure inside the sandbox |
-| GH installation token, repo-scoped, ≤ 1 h | `src/launcher/github-token.ts` | long-lived GH credentials inside the sandbox |
+| User-OAuth PAT scoped per-repo, baked into `.git/config` of the per-session sandbox only | `src/launcher/provision.ts` step 3 | long-lived GH credentials never leave the launcher VM long-term |
 | Sandbox auto-pause on idle (15 min) | `Sandbox.create` lifecycle | wasted E2B compute |
 | ~~Per-session turn cap~~ | ~~DO~~ | ~~runaway loops under full auto-allow~~ — explicitly **skipped** for the 1-user release; see `ROADMAP.md §8.4` for the survey of peers (OpenHands/Aider/Cline/SWE-agent) and trigger criteria for revisiting |
 
@@ -269,13 +266,11 @@ Three things land before release 1. Each is one PR.
    every event as `event.author_user_id = actor.github_user_id`. Drops the
    single-owner assumption (ROADMAP P3.1).
 2. **User GitHub OAuth for PR creation (P1.1).** Replace the App-token
-   PR-open path in the runner with a Worker-side handoff: runner emits
-   `pr.ready` carrying branch + commits; Worker reads the OAuth token from
-   DO storage (decrypted), calls `POST /repos/{owner}/{repo}/pulls` as the
-   user, emits `pr.created`. The App installation token still does the
-   `git push` (it's the only thing with write access via Hermes' GH App
-   install). Authorship = real user; pusher = bot. GitHub's UI shows the
-   user as PR author, which is what branch-protection's
+   PR-open path entirely in the runner: launcher bakes the user PAT into
+   `.git/config` of the cloned repo (Option A), runner pushes the branch
+   and calls `POST /repos/{owner}/{repo}/pulls` with the same token,
+   emits `pr.created`. Authorship + pusher = the real user. GitHub's UI
+   shows the user as PR author, which is what branch-protection's
    "no-self-approve" rule reads.
 3. **OAuth dance routes on the Worker.** `GET /auth/github/start?return_to=…`
    and `GET /auth/github/callback`. Tokens stored AES-256-GCM-encrypted in
@@ -358,15 +353,13 @@ Hermes app — confirm before release.
 
 ### 7.3 Authoring rule (release blocker — shipped under P1.1)
 
-PRs are authored by the **real user** via OAuth (P1.1). The GitHub App
-installation token only pushes the branch — it is not the PR author.
-Concretely on GitHub:
+PRs are authored by the **real user** via a fine-grained PAT (P1.1).
+The same token does both `git push` and `POST /pulls`, so author =
+pusher = real user. Concretely on GitHub:
 
-- `pull_request.user.login` = the Slack user's GitHub login
-- `pull_request.head` was pushed by the App (visible in commit "verified
-  by" + push-event payload)
+- `pull_request.user.login` = `$GITHUB_USER_LOGIN`
 - Branch protection's "PR review by someone other than author" rule
-  rejects self-approval because the author is a real user, not the bot
+  works because the author is a real human, not a bot.
 
 If the user does not have an OAuth token on file, `POST /sessions`
 returns **412 Precondition Failed** with `{ error: "user not
@@ -494,8 +487,8 @@ the deploy". The launcher VM is the only place in the stack that holds
 *long-lived* secrets in cleartext:
 
 - `E2B_API_KEY` — full sandbox + billing control on the E2B account
-- `GITHUB_PRIVATE_KEY` (PKCS#8) — issues installation tokens for any
-  repo the GitHub App is installed on
+- `GITHUB_USER_TOKEN` (fine-grained PAT) — push + open PR on the repos
+  this PAT is scoped to
 - `ZAI_API_KEY` — drains the Z.AI Coding Plan budget if abused
 
 The owner is a **named human** with these responsibilities:
@@ -587,8 +580,8 @@ Hermes:
 - **When to use** the tools (concrete code change against a GitHub repo,
   bounded scope, real PR wanted).
 - **When NOT to use** them (questions, explanations, local-only repos).
-- **Prerequisites** (MCP server registered, GitHub App installed,
-  `GITHUB_USER_TOKEN` in launcher env).
+- **Prerequisites** (MCP server registered, `GITHUB_USER_TOKEN` in
+  launcher env).
 - **Procedure** (5 ordered steps with completion criteria per the
   Hermes authoring HARDLINE §5).
 - **Pitfalls** (don't shell out to `gh`/`git`, don't auto-merge, one

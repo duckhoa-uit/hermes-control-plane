@@ -16,7 +16,7 @@
 //   POST /sessions/:id/resume  M5: Sandbox.connect() on a paused sandbox
 //
 // Run:
-//   E2B_API_KEY=... ZAI_API_KEY=... GITHUB_APP_ID=... GITHUB_PRIVATE_KEY_FILE=... \
+//   E2B_API_KEY=... ZAI_API_KEY=... GITHUB_USER_TOKEN=... GITHUB_USER_LOGIN=... \
 //   HERMES_BASE_URL=http://localhost:8788 HERMES_PUBLIC_URL=https://<ngrok>.ngrok-free.app \
 //   bun run src/launcher/server.ts
 
@@ -193,9 +193,6 @@ async function handleCreate(req: Request): Promise<Response> {
       e2bApiKey: E2B_API_KEY!,
       e2bTemplate: E2B_TEMPLATE,
       zaiApiKey: ZAI_API_KEY,
-      githubAppId: process.env.GITHUB_APP_ID,
-      githubPrivateKey: process.env.GITHUB_PRIVATE_KEY,
-      githubPrivateKeyFile: process.env.GITHUB_PRIVATE_KEY_FILE,
       githubUserToken: process.env.GITHUB_USER_TOKEN,
       githubUserLogin: process.env.GITHUB_USER_LOGIN,
       githubUserEmail: process.env.GITHUB_USER_EMAIL,

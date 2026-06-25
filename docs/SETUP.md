@@ -81,101 +81,29 @@ model id is sent in the prompt body, not via env.
 Available models: `glm-5.2` (1M ctx, default), `glm-5.1` (200K), `glm-4.7`
 (200K), `glm-4.5-air` (fast/cheap).
 
-## 5. GitHub App (for PR creation)
+## 5. GitHub PAT (for PR creation)
 
-PRs are pushed and opened by a GitHub App, using short-lived (≤ 1 h),
-repo-scoped installation tokens minted per session.
-
-### Create the App
-
-1. Go to:
-   - personal: https://github.com/settings/apps/new
-   - org: `https://github.com/organizations/<org>/settings/apps/new`
-2. Fill in:
-   - Name: `Hermes Control Plane` (must be globally unique)
-   - Homepage URL: `http://localhost:8787`
-3. **Webhook**: uncheck "Active". Leave URL/secret blank.
-4. **Repository permissions**:
-
-   | Permission | Value | Why |
-   |---|---|---|
-   | Administration | Read-only | list repos |
-   | Contents | Read & write | clone, push branch |
-   | Metadata | Read-only | auto-required |
-   | Pull requests | Read & write | open the PR |
-   | Commit statuses | Read-only | read CI status |
-   | Actions | Read-only | read workflow runs (optional) |
-
-   Leave everything else as **No access**.
-5. **Where can this App be installed?** "Only on this account" for personal
-   use.
-6. Click **Create GitHub App**.
-7. On the App settings page note **App ID** (numeric).
-8. Scroll to **Private keys** → **Generate a private key**. A `.pem`
-   downloads. Keep it safe — GitHub only gives it to you once.
-9. Left sidebar → **Install App** → select the repos Hermes is allowed to
-   touch → Install.
-
-### Convert the key to PKCS#8
-
-GitHub gives you a PKCS#1 key (`-----BEGIN RSA PRIVATE KEY-----`). The token
-broker expects PKCS#8 (`-----BEGIN PRIVATE KEY-----`). Convert once:
-
-```bash
-openssl pkcs8 -topk8 -nocrypt \
-  -in  hermes-control-plane.private-key.pem \
-  -out hermes-control-plane.pkcs8.pem
-```
-
-Keep both files outside the repo.
-
-### Configure the launcher
-
-Two options. Either reference the file (recommended):
-
-```bash
-export GITHUB_APP_ID=123456
-export GITHUB_PRIVATE_KEY_FILE=/abs/path/hermes-control-plane.pkcs8.pem
-```
-
-…or paste the PEM into `.dev.vars` (note: multi-line in `.dev.vars` works,
-each subsequent line is treated as the continuation of the value):
-
-```
-GITHUB_APP_ID=123456
-GITHUB_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----
-MIIEv…
-…
------END PRIVATE KEY-----
-```
-
-### Single-user mode: PR authored by you (P1.1)
-
-By default the runner pushes and opens the PR with the App installation
-token, so the PR `author` is the GitHub App bot (e.g. `hermes-bot`). For a
-single-user setup, point the runner at a personal access token so the PR
-`author` is your real user — required for branch-protection rules like "PRs
-must be reviewed by someone other than the author".
+PRs are pushed and opened as the **real user** via a fine-grained personal
+access token (P1.1). The runner uses it for `git push` and `POST /pulls`,
+and the commit author is set from `GITHUB_USER_LOGIN`/`GITHUB_USER_EMAIL`.
+That way branch-protection rules like "PR must be reviewed by someone
+other than the author" work correctly.
 
 1. Create a fine-grained PAT at https://github.com/settings/tokens?type=beta
    - Resource owner: your user (or org).
    - Repository access: select the repos Hermes touches.
    - Repository permissions: **Contents: Read & write**,
      **Pull requests: Read & write**. Leave everything else as No access.
-   - Expiration: 90 days (rotate).
-2. Export it alongside the App creds:
+   - Expiration: 90 days (rotate quarterly).
+2. Export the PAT plus your identity:
    ```bash
    export GITHUB_USER_TOKEN=github_pat_xxx
    export GITHUB_USER_LOGIN=your-github-handle
-   export GITHUB_USER_EMAIL=you@example.com   # optional; falls back to
+   export GITHUB_USER_EMAIL=you@example.com   # optional; defaults to
                                               # <login>@users.noreply.github.com
    ```
-
-When `GITHUB_USER_TOKEN` is set the runner uses it for `git push` and the
-`POST /pulls` call, and sets the git author from `GITHUB_USER_LOGIN/EMAIL`.
-The App token is still minted and forwarded as a fallback. When the user
-token is absent the runner falls back to the App-bot identity (the previous
-behaviour).
+3. Make sure GitHub has signed-commit / fork-permission settings that
+   allow your PAT to push to the target repos.
 
 ## 6. Public URL for the runner (ngrok in dev)
 
@@ -202,13 +130,7 @@ E2B_API_KEY=e2b_xxxxxxxxxxxxxxxxxxxx
 # Z.AI (forwarded into the sandbox by the launcher)
 ZAI_API_KEY=…
 
-# GitHub App (broker is in src/launcher/github-token.ts, host-side only)
-GITHUB_APP_ID=123456
-GITHUB_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----
-…
------END PRIVATE KEY-----
-
-# Single-user mode (P1.1): PR authored by the real user
+# GitHub single-user OAuth (P1.1): PR authored by the real user
 GITHUB_USER_TOKEN=github_pat_xxx
 GITHUB_USER_LOGIN=your-github-handle
 GITHUB_USER_EMAIL=you@example.com
@@ -233,7 +155,7 @@ ngrok http 8787
 ```bash
 # Terminal 3 — launcher (sidecar)
 export E2B_API_KEY=… ZAI_API_KEY=…
-export GITHUB_APP_ID=… GITHUB_PRIVATE_KEY_FILE=/abs/path/...pkcs8.pem
+export GITHUB_USER_TOKEN=… GITHUB_USER_LOGIN=…
 export HERMES_BASE_URL=http://localhost:8787
 export HERMES_PUBLIC_URL=https://abcd-1234.ngrok-free.app
 export E2B_TEMPLATE=hermes-runner
@@ -318,13 +240,7 @@ export E2B_TEMPLATE=hermes-runner
 # Model (Z.AI / OpenCode provider)
 export ZAI_API_KEY=...
 
-# GitHub App (bot fallback + repo metadata)
-export GITHUB_APP_ID=123456
-export GITHUB_PRIVATE_KEY_FILE=/etc/hermes-control-plane/app.pkcs8.pem
-#   ...or paste the PEM inline:
-# export GITHUB_PRIVATE_KEY="$(cat /etc/hermes-control-plane/app.pkcs8.pem)"
-
-# P1.1 single-user OAuth — PR author = real user
+# GitHub single-user OAuth — PR author = real user (P1.1)
 export GITHUB_USER_TOKEN=github_pat_...     # fine-grained PAT, see §5 sub-section
 export GITHUB_USER_LOGIN=your-github-handle
 export GITHUB_USER_EMAIL=you@example.com
@@ -346,8 +262,6 @@ policy). On boot it runs the orphan sweep, so a crash + restart is safe.
 
 ### 10.3 Token rotation
 
-- **GitHub App private key**: rotate from GitHub App settings → regenerate
-  PEM → replace `GITHUB_PRIVATE_KEY_FILE` → restart launcher.
 - **`GITHUB_USER_TOKEN`** (PAT): rotate every 90 days. Restart launcher to
   pick up the new value. In-flight sessions started with the old token
   finish on the old token (the token is captured in the sandbox env at

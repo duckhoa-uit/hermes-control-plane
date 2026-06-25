@@ -329,20 +329,17 @@ async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
   const branch = (payload.branch as string) || `hermes/${Date.now()}`;
   const title = (payload.title as string) || `Hermes: ${payload.taskDescription ?? "automated change"}`;
   const body = (payload.body as string) || "Automated PR created by hermes-control-plane.";
-  // Token/identity/remote/branch are already wired by the launcher post-clone
-  // (src/launcher/provision.ts step 3b). Runner uses GITHUB_USER_TOKEN for the
-  // PR REST call, falling back to GITHUB_TOKEN (App installation) only when
-  // P1.1 single-user OAuth is not configured.
-  const userToken = process.env.GITHUB_USER_TOKEN || "";
-  const appToken = process.env.GITHUB_TOKEN || "";
-  const token = userToken || appToken;
-  const usingUserIdentity = Boolean(userToken);
+  // Token / git identity / origin / branch are already wired by the launcher
+  // post-clone (src/launcher/provision.ts step 3). Runner uses GITHUB_USER_TOKEN
+  // (P1.1 single-user OAuth) to call the PR REST endpoint as the real user.
+  const token = process.env.GITHUB_USER_TOKEN || "";
+  const userLogin = process.env.GITHUB_USER_LOGIN || "";
   const owner = process.env.GITHUB_OWNER || "";
   const repo = process.env.GITHUB_REPO || "";
   const baseBranch = process.env.GITHUB_BASE_BRANCH || "main";
 
   if (!token || !owner || !repo) {
-    sendError(`Missing GitHub credentials: token=${!!token} owner=${owner} repo=${repo}`);
+    sendError(`Missing GITHUB_USER_TOKEN / owner / repo (token=${!!token} owner=${owner} repo=${repo})`);
     return;
   }
 
@@ -361,7 +358,7 @@ async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
       }
     }
     const pushOut = await execStrict(`git push --set-upstream origin ${branch} 2>&1`);
-    sendEvent("git.branch.pushed", { branch, pushOutput: pushOut.slice(-500), authorIdentity: usingUserIdentity ? (process.env.GITHUB_USER_LOGIN ?? "") : "hermes-bot" });
+    sendEvent("git.branch.pushed", { branch, pushOutput: pushOut.slice(-500), authorIdentity: userLogin });
 
     const prResp = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls`, {
       method: "POST",

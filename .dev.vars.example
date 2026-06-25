@@ -6,6 +6,9 @@ E2B_API_KEY=
 # https://api.z.ai/api/coding/paas/v4).
 ZAI_API_KEY=
 
-# ---- GitHub App (optional, chỉ cần khi test PR thật) ----
-GITHUB_APP_ID=
-GITHUB_PRIVATE_KEY=
+# ---- GitHub single-user OAuth (P1.1, required for opening PRs) ----
+# Fine-grained PAT, Contents + Pull-requests read & write.
+GITHUB_USER_TOKEN=
+GITHUB_USER_LOGIN=
+# Optional. Defaults to <login>@users.noreply.github.com.
+GITHUB_USER_EMAIL=

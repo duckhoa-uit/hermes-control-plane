@@ -3,8 +3,12 @@
 // (scripts/launch-session.ts).
 
 import { Sandbox } from "e2b";
-import { readFileSync } from "fs";
-import { mintInstallationToken, parseRepoUrl } from "./github-token";
+
+function parseRepoUrl(url: string): { owner: string; repo: string } {
+  const m = url.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
+  if (!m) throw new Error(`cannot parse GitHub repo URL: ${url}`);
+  return { owner: m[1], repo: m[2] };
+}
 
 export interface ProvisionInput {
   sessionId: string;
@@ -22,15 +26,11 @@ export interface ProvisionInput {
   // request body); the launcher only forwards the API key.
   zaiApiKey?: string;
 
-  // GitHub App (so the runner can push + open PRs)
-  githubAppId?: string;
-  githubPrivateKey?: string; // PKCS#8 PEM
-  githubPrivateKeyFile?: string;
-
   // P1.1 single-user OAuth: the human's GitHub PAT (or OAuth user token).
-  // When set, the runner uses this for `git push` + PR creation so the PR
-  // `author` is the real user, not the App bot identity. The App token is
-  // still minted and forwarded as a fallback / for repo metadata.
+  // The runner uses this for `git push` + PR creation so the PR `author`
+  // is the real user. Required for the launcher entry-point (server.ts
+  // fails fast if unset); kept optional here for unit tests and the
+  // offline CLI (scripts/launch-session.ts).
   githubUserToken?: string;
   githubUserLogin?: string;
   githubUserEmail?: string;
@@ -91,52 +91,29 @@ export async function provisionSession(input: ProvisionInput): Promise<Provision
       );
     }
 
-    // 3. Mint a short-lived GitHub installation token so the runner can push
-    //    and open the PR. Best-effort: if creds are missing, runner will report
-    //    a clear error when it tries to push.
-    let githubToken = "";
+    // 3. Bake P1.1 single-user OAuth credentials into the cloned repo so
+    //    the agent's own `git push` works directly (Option A). The token
+    //    only lives inside .git/config of this ephemeral sandbox.
     let owner = "";
     let repo = "";
     try {
       ({ owner, repo } = parseRepoUrl(input.repoUrl));
-      const pk = input.githubPrivateKey
-        ? input.githubPrivateKey
-        : input.githubPrivateKeyFile
-          ? readFileSync(input.githubPrivateKeyFile, "utf-8")
-          : "";
-      if (input.githubAppId && pk) {
-        const tok = await mintInstallationToken(input.githubAppId, pk, owner, repo);
-        githubToken = tok.token;
-      }
     } catch {
-      // leave token empty; runner will surface the error
+      // non-GitHub repo URL — runner's PR step will surface a clear error.
     }
-
-    // 3b. Bake credentials into the cloned repo so the agent's own `git push`
-    //     works directly (Option A). P1.1: prefer the user OAuth token so the
-    //     pushed commits and the PR author are the real human, not the App bot.
-    //     The token only lives inside .git/config of this ephemeral sandbox.
     const userToken = input.githubUserToken ?? "";
-    const usingUserIdentity = Boolean(userToken && input.githubUserLogin);
-    const pushToken = userToken || githubToken;
-    const gitName = usingUserIdentity ? (input.githubUserLogin ?? "") : "hermes-bot";
-    const gitEmail = usingUserIdentity
-      ? (input.githubUserEmail || `${input.githubUserLogin}@users.noreply.github.com`)
-      : "hermes-bot@users.noreply.github.com";
-    const branch = `hermes/${input.sessionId.slice(-8)}`;
-    if (owner && repo) {
-      const remoteUrl = usingUserIdentity
-        ? `https://${pushToken}:x-oauth-basic@github.com/${owner}/${repo}.git`
-        : pushToken
-          ? `https://x-access-token:${pushToken}@github.com/${owner}/${repo}.git`
-          : "";
+    const userLogin = input.githubUserLogin ?? "";
+    if (owner && repo && userToken && userLogin) {
+      const gitEmail = input.githubUserEmail || `${userLogin}@users.noreply.github.com`;
+      const branch = `hermes/${input.sessionId.slice(-8)}`;
+      const remoteUrl = `https://${userToken}:x-oauth-basic@github.com/${owner}/${repo}.git`;
       const setup = [
         `cd ${REPO_DIR}`,
-        `git config user.name '${gitName.replace(/'/g, "'\\''")}'`,
+        `git config user.name '${userLogin.replace(/'/g, "'\\''")}'`,
         `git config user.email '${gitEmail.replace(/'/g, "'\\''")}'`,
-        remoteUrl ? `git remote set-url origin '${remoteUrl}'` : "",
+        `git remote set-url origin '${remoteUrl}'`,
         `git checkout -B ${branch}`,
-      ].filter(Boolean).join(" && ");
+      ].join(" && ");
       await sbx.commands.run(setup, { timeoutMs: 30_000 });
     }
 
@@ -148,9 +125,8 @@ export async function provisionSession(input: ProvisionInput): Promise<Provision
       HERMES_RUNNER_TOKEN: input.runnerToken,
       HERMES_CONTROL_WS: input.controlWsUrl,
       ZAI_API_KEY: input.zaiApiKey ?? "",
-      GITHUB_TOKEN: githubToken,
-      GITHUB_USER_TOKEN: input.githubUserToken ?? "",
-      GITHUB_USER_LOGIN: input.githubUserLogin ?? "",
+      GITHUB_USER_TOKEN: userToken,
+      GITHUB_USER_LOGIN: userLogin,
       GITHUB_USER_EMAIL: input.githubUserEmail ?? "",
       GITHUB_OWNER: owner,
       GITHUB_REPO: repo,

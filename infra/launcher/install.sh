@@ -123,31 +123,27 @@ Next steps (manual — secrets and Cloudflare cannot be automated):
 1.  Drop real secrets in $ENV_FILE:
       sudo nano $ENV_FILE
 
-2.  Drop GitHub App private key (PKCS#8 PEM):
-      sudo install -o $HERMES_USER -g $HERMES_USER -m 0600 \\
-        /path/to/app.pkcs8.pem /etc/hermes-control-plane/app.pkcs8.pem
-
-3.  Start the launcher:
+2.  Start the launcher:
       sudo systemctl enable --now hermes-launcher
       sudo journalctl -u hermes-launcher -f
     Expect:
       [launcher] hermes-launcher listening on http://localhost:8789
 
-4.  Smoke-test from the same VPS (Hermes will use this URL):
+3.  Smoke-test from the same VPS (Hermes will use this URL):
       curl http://localhost:8789/health
 
-5.  Expose port 8789 to the Worker via Cloudflare Tunnel:
+4.  Expose port 8789 to the Worker via Cloudflare Tunnel:
       cloudflared tunnel login
       cloudflared tunnel create hermes-launcher
       cloudflared tunnel route dns hermes-launcher launcher.<your-domain>
       # write /etc/cloudflared/config.yml — see infra/launcher/README.md §3
       sudo cloudflared service install <tunnel-token>
 
-6.  Set the Worker secret (from your dev machine):
+5.  Set the Worker secret (from your dev machine):
       echo "https://launcher.<your-domain>" | bun x wrangler secret put HERMES_LAUNCHER_URL
       bun run deploy
 
-7.  Wire Hermes Agent to the MCP server + skill. Edit ~/.hermes/config.yaml:
+6.  Wire Hermes Agent to the MCP server + skill. Edit ~/.hermes/config.yaml:
 
       mcp_servers:
         hermes-control-plane:

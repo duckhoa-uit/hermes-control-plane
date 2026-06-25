@@ -50,14 +50,12 @@ Do NOT use this skill when:
       timeout: 300
   ```
 
-- **GitHub App installed on the target repo** (one-time owner setup).
-  The control plane's launcher mints short-lived installation tokens
-  per session; the repo must show the app under Settings → Installations.
-
 - **Operator's `GITHUB_USER_TOKEN` in the launcher env**
-  (`/etc/hermes-control-plane/launcher.env`). This is the PAT whose identity the PR
-  will be authored by — required so branch-protection rules like "PR
-  review by someone other than author" work.
+  (`/etc/hermes-control-plane/launcher.env`). Fine-grained PAT scoped to
+  the target repos with Contents + Pull-requests read & write. The
+  runner uses this for both `git push` and `POST /pulls`, so the PR
+  `author` is the real operator — required for branch-protection rules
+  like "PR review by someone other than author".
 
 ## How to Run
 
@@ -158,7 +156,7 @@ next `pr.created` or status change before responding to the user.
 After running the skill once end-to-end, verify on GitHub:
 
 1. The PR exists and `pull_request.user.login` equals the operator's
-   GitHub handle (NOT the bot identity `hermes-bot`).
+   GitHub handle (`GITHUB_USER_LOGIN`).
 2. The branch name starts with `hermes/`.
 3. The PR body references `hermes-control-plane`.
 4. The launcher's E2B sandbox list is empty after the session reaches

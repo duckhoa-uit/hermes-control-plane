@@ -31,15 +31,14 @@ curl -fsSL https://raw.githubusercontent.com/duckhoa-uit/hermes-control-plane/ma
 `main`. The `env.example` file is only copied on first run — your filled-in
 `/etc/hermes-control-plane/launcher.env` is preserved on re-runs.
 
-After it finishes, the script prints the 7 remaining manual steps:
+After it finishes, the script prints the 6 remaining manual steps:
 
 1. Edit `/etc/hermes-control-plane/launcher.env` with real secrets.
-2. Drop GitHub App PEM at `/etc/hermes-control-plane/app.pkcs8.pem`.
-3. `sudo systemctl enable --now hermes-launcher`.
-4. Smoke-test: `curl http://localhost:8789/health`.
-5. Set up Cloudflare Tunnel for `launcher.<your-domain>` → `localhost:8789`.
-6. From your dev machine: `wrangler secret put HERMES_LAUNCHER_URL`, then `bun run deploy`.
-7. Wire Hermes Agent → MCP server + skill: edit `~/.hermes/config.yaml` with `mcp_servers.hermes-control-plane.url: http://localhost:8789/mcp` and `skills.external_dirs: [/opt/hermes-control-plane/src/skills]`. Full runbook: [`infra/mcp/README.md`](../mcp/README.md).
+2. `sudo systemctl enable --now hermes-launcher`.
+3. Smoke-test: `curl http://localhost:8789/health`.
+4. Set up Cloudflare Tunnel for `launcher.<your-domain>` → `localhost:8789`.
+5. From your dev machine: `wrangler secret put HERMES_LAUNCHER_URL`, then `bun run deploy`.
+6. Wire Hermes Agent → MCP server + skill: edit `~/.hermes/config.yaml` with `mcp_servers.hermes-control-plane.url: http://localhost:8789/mcp` and `skills.external_dirs: [/opt/hermes-control-plane/src/skills]`. Full runbook: [`infra/mcp/README.md`](../mcp/README.md).
 
 You should see:
 
