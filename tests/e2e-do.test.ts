@@ -231,6 +231,10 @@ interface FakeEnv {
     idFromString(s: string): { toString(): string };
     get(id: { toString(): string }): FakeStub;
   };
+  PR_INDEX_DO: {
+    idFromName(name: string): { toString(): string };
+    get(id: { toString(): string }): { register: (...a: any[]) => Promise<any> };
+  };
   E2B_TEMPLATE: string;
   E2B_API_KEY?: string;
   CONTROL_PLANE_LAUNCHER_URL?: string;
@@ -239,6 +243,8 @@ interface FakeEnv {
 
 let counter = 0;
 const instances = new Map<string, { instance: SessionDurableObject; ctx: FakeDOState }>();
+// Captured calls to PR_INDEX_DO.register so tests can assert wiring.
+export const prIndexRegisterCalls: { prKey: string; sessionId: string; ownerLogin: string }[] = [];
 
 function makeEnv(): FakeEnv {
   return {
@@ -263,6 +269,17 @@ function makeEnv(): FakeEnv {
         return new FakeStub(entry.instance, (req) => (entry!.instance as any).fetch(req));
       },
     },
+    PR_INDEX_DO: {
+      idFromName(name: string) { return { toString: () => `pr-index:${name}` }; },
+      get(_id: { toString(): string }) {
+        return {
+          async register(prKey: string, sessionId: string, ownerLogin: string) {
+            prIndexRegisterCalls.push({ prKey, sessionId, ownerLogin });
+            return { prKey, sessionId, ownerLogin, status: "open", autofixCount: 0, lastUpdated: Date.now() };
+          },
+        };
+      },
+    },
     E2B_TEMPLATE: "control-plane-runner",
     E2B_API_KEY: "test-key", // present so provisionSandbox doesn't fail
     CONTROL_PLANE_LAUNCHER_URL: "http://launcher.invalid",
@@ -276,7 +293,7 @@ const PROFILE: Partial<ProjectProfile> = {
   allowedTools: ["read", "edit"],
 };
 
-beforeEach(() => { instances.clear(); counter = 0; });
+beforeEach(() => { instances.clear(); counter = 0; prIndexRegisterCalls.length = 0; });
 
 // ---------- Tests ----------
 
@@ -418,17 +435,28 @@ describe("E2E: Worker + SessionDurableObject", () => {
     const prCmd = runnerInbound.find(m => m.type === "command" && m.command?.type === "pr.create");
     expect(prCmd).toBeDefined();
 
-    // Runner reports pr.created
+    // Runner reports pr.created (with ownerLogin → PR_INDEX_DO.register).
     sendRunner({
       type: "runner.event",
       sessionId: id,
-      payload: { eventType: "pr.created", eventPayload: { url: "https://github.com/x/y/pull/1" } },
+      payload: {
+        eventType: "pr.created",
+        eventPayload: {
+          url: "https://github.com/x/y/pull/1",
+          ownerLogin: "alice",
+        },
+      },
     });
     await new Promise(r => setTimeout(r, 10));
 
     const state2 = await env.SESSION_DO.get(env.SESSION_DO.idFromString(id)).getState();
     expect(state2.session.status).toBe("completed");
     expect(state2.artifacts.prUrl).toBe("https://github.com/x/y/pull/1");
+
+    // PR Index DO must have one register() call for this PR.
+    expect(prIndexRegisterCalls).toEqual([
+      { prKey: "x/y#1", sessionId: id, ownerLogin: "alice" },
+    ]);
   });
 
   it("event log persists per-key (storage.list returns events in seq order)", async () => {

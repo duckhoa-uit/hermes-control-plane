@@ -375,7 +375,7 @@ async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
       return;
     }
     const prJson = (await prResp.json()) as { html_url: string; number: number };
-    sendEvent("pr.created", { url: prJson.html_url, number: prJson.number, branch });
+    sendEvent("pr.created", { url: prJson.html_url, number: prJson.number, branch, ownerLogin: userLogin });
     sendComplete({ prUrl: prJson.html_url });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

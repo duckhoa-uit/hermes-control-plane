@@ -4,6 +4,7 @@
 // ============================================================
 
 import { SessionDurableObject } from "./session-do";
+import { PrIndexDurableObject } from "./pr-index-do";
 import type { PromptResult } from "./session-do";
 import type {
   ProjectProfile,
@@ -41,7 +42,7 @@ function asRpc(stub: unknown): SessionDORpc {
   return stub as SessionDORpc;
 }
 
-export { SessionDurableObject };
+export { SessionDurableObject, PrIndexDurableObject };
 
 // ---- In-memory project profiles (MVP: replace with D1 later) ----
 

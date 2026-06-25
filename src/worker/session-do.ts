@@ -18,6 +18,7 @@ import type {
   SessionArtifacts,
 } from "../core/types";
 import { EventLog } from "../core/event-log";
+import { getPrIndexStub, prKeyFromUrl } from "./pr-index-do";
 import { canTransition, isTerminal } from "../core/state-machine";
 import { generateCommandId, generateRunnerToken, generateRequestId } from "../core/id";
 import { HEARTBEAT_INTERVAL_MS, HEARTBEAT_TIMEOUT_MS, PAUSED_HEARTBEAT_THRESHOLD_MS, WS_TAGS } from "../core/constants";
@@ -382,7 +383,10 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
           // pr.created carries the real GitHub URL — route to the PR-completion
           // handler instead of appending a duplicate untracked event.
           if (eventType === "pr.created") {
-            this.onPRCreated((eventPayload.url as string) ?? "");
+            this.onPRCreated(
+              (eventPayload.url as string) ?? "",
+              (eventPayload.ownerLogin as string) ?? "",
+            );
           } else {
             this.appendEvent(eventType, "opencode", eventPayload);
           }
@@ -409,7 +413,10 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     // PR creation case: payload has prUrl. Route to onPRCreated; this is
     // idempotent if pr.created already advanced us to completed.
     if (payload?.prUrl) {
-      this.onPRCreated(payload.prUrl as string);
+      this.onPRCreated(
+        payload.prUrl as string,
+        (payload.ownerLogin as string) ?? "",
+      );
       return;
     }
 
@@ -576,17 +583,38 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
 
   // ---- PR created callback ----
 
-  onPRCreated(prUrl: string): void {
+  onPRCreated(prUrl: string, ownerLogin: string = ""): void {
     if (!this.artifacts) {
       this.artifacts = { sessionId: this.session?.id ?? "", changedFiles: [] };
     }
-    if (this.artifacts.prUrl === prUrl && this.session && isTerminal(this.session.status)) {
+    const alreadyRegistered = this.artifacts.prUrl === prUrl;
+    if (alreadyRegistered && this.session && isTerminal(this.session.status)) {
       // Already processed; idempotent no-op.
       return;
     }
     this.artifacts.prUrl = prUrl;
 
-    this.appendEvent("pr.created", "runner", { url: prUrl });
+    this.appendEvent("pr.created", "runner", { url: prUrl, ownerLogin });
+
+    // Register the PR in the global index so webhook deliveries and
+    // follow-up MCP calls can map this PR back to our session id.
+    // Fire-and-forget — the worker rolls the storage write into the
+    // current request lifetime; a failure to register only loses the
+    // lifecycle update path, not the PR itself.
+    if (!alreadyRegistered && this.session) {
+      const sessionId = this.session.id;
+      this.ctx.waitUntil((async () => {
+        try {
+          const prKey = prKeyFromUrl(prUrl);
+          const stub = getPrIndexStub(this.env);
+          await (stub as unknown as {
+            register(k: string, s: string, o: string): Promise<unknown>;
+          }).register(prKey, sessionId, ownerLogin);
+        } catch (err) {
+          console.error(`[DO] PR_INDEX_DO.register failed: ${(err as Error).message}`);
+        }
+      })());
+    }
 
     if (this.session?.status === "creating_pr" && canTransition("creating_pr", "completed")) {
       this.transition("completed");
