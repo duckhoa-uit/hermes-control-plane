@@ -34,8 +34,6 @@ interface StartConfig {
   HERMES_CONTROL_WS: string;
   // M4: Z.AI key is applied via opencode REST auth.set, not env var.
   ZAI_API_KEY?: string;
-  // Back-compat name (pre-M4 launcher might still emit ZHIPU_API_KEY).
-  ZHIPU_API_KEY?: string;
   [k: string]: string | undefined;
 }
 
@@ -137,9 +135,9 @@ async function main(): Promise<void> {
   log(`config loaded for session ${cfg.HERMES_SESSION_ID.slice(0, 8)}`);
 
   // 3. Apply Z.AI credentials to opencode.
-  const zaiKey = cfg.ZAI_API_KEY || cfg.ZHIPU_API_KEY || "";
+  const zaiKey = cfg.ZAI_API_KEY || "";
   if (!zaiKey) {
-    log("WARNING: no ZAI_API_KEY / ZHIPU_API_KEY in start.json; runner prompts will fail");
+    log("WARNING: no ZAI_API_KEY in start.json; runner prompts will fail");
   } else {
     try {
       await applyZaiAuthLog(zaiKey);

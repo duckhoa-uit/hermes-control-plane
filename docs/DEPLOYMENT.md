@@ -193,7 +193,7 @@ cadence:
 | Secret | Where | Owner | Rotation | Notes |
 |---|---|---|---|---|
 | `E2B_API_KEY` | launcher VM env | infra | quarterly | rotate via E2B dashboard, hot-swap env, restart launcher |
-| `ZAI_API_KEY` | launcher VM env | infra | quarterly | OpenCode reads `ZHIPU_API_KEY` inside the sandbox; launcher forwards |
+| `ZAI_API_KEY` | launcher VM env | infra | quarterly | Forwarded into the sandbox; supervisor applies it to opencode via `auth.set` |
 | `GITHUB_APP_ID` + `GITHUB_PRIVATE_KEY` (PKCS#8) | launcher VM env | infra | yearly or on suspicion | broker mints ≤ 1 h installation tokens per session — main credential is short-lived |
 | `GITHUB_OAUTH_CLIENT_ID` + `GITHUB_OAUTH_CLIENT_SECRET` | Worker secret (`wrangler secret put`) | infra | yearly | OAuth app for per-user PR authorship (P1.1). Distinct from the GitHub *App* above. |
 | `OAUTH_TOKEN_ENCRYPTION_KEY` (32-byte AES-256-GCM, base64) | Worker secret | infra | quarterly | encrypts per-user OAuth tokens at rest in DO storage. Rotation = decrypt-then-reencrypt sweep (script in `scripts/rotate-oauth-key.ts`). |

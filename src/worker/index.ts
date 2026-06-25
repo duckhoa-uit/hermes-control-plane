@@ -72,25 +72,16 @@ export default {
         // it does an outbound HTTPS fetch to E2B's API from this code path.
         // See docs/ROADMAP.md section 8.6 for the constraint.
 
-        // Build profile, inject Zai LLM config from env.
-        // OpenCode supports the `zai-coding-plan` provider natively
-        // (via models.dev) - api endpoint is https://api.z.ai/api/coding/paas/v4.
-        // We just pass ZHIPU_API_KEY and a "provider/model" model id.
-        // No custom opencode.json or baseURL override is needed.
-        const zaiEnv: Record<string, string> = {};
-        if (env.ZAI_API_KEY) zaiEnv.ZHIPU_API_KEY = env.ZAI_API_KEY;
-        if (env.ZAI_MODEL) {
-          const m = env.ZAI_MODEL.includes("/") ? env.ZAI_MODEL : `zai-coding-plan/${env.ZAI_MODEL}`;
-          zaiEnv.OPENCODE_MODEL = m;
-        }
-
+        // Build profile. LLM credentials (ZAI_API_KEY etc.) and any other
+        // per-session env vars are injected host-side by the launcher into
+        // the sandbox's start.json (src/launcher/provision.ts) — the Worker
+        // does not need them.
         const profile: ProjectProfile = {
           ...DEFAULT_PROFILE,
           ...body.profile,
           id: body.projectId,
           repoUrl: body.repoUrl ?? DEFAULT_PROFILE.repoUrl,
           env: {
-            ...zaiEnv,
             ...(body.profile?.env ?? {}),
           },
         };

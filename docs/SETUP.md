@@ -71,12 +71,12 @@ provider (no custom `opencode.json` needed).
 3. Add to `.dev.vars`:
    ```
    ZAI_API_KEY=…
-   ZAI_MODEL=glm-5.2
    ```
 
-The launcher injects two env vars into the sandbox per session:
-- `ZHIPU_API_KEY` = `ZAI_API_KEY` (what OpenCode's provider reads)
-- `OPENCODE_MODEL` = `zai-coding-plan/glm-5.2` (or whatever `ZAI_MODEL` is)
+The launcher injects `ZAI_API_KEY` into the sandbox per session. The
+runner-side supervisor (src/runner/supervisor.ts) then registers it with
+opencode via `PUT /auth/zai-coding-plan` before the runner starts. The
+model id is sent in the prompt body, not via env.
 
 Available models: `glm-5.2` (1M ctx, default), `glm-5.1` (200K), `glm-4.7`
 (200K), `glm-4.5-air` (fast/cheap).
@@ -201,7 +201,6 @@ E2B_API_KEY=e2b_xxxxxxxxxxxxxxxxxxxx
 
 # Z.AI (forwarded into the sandbox by the launcher)
 ZAI_API_KEY=…
-ZAI_MODEL=glm-5.2
 
 # GitHub App (broker is in src/launcher/github-token.ts, host-side only)
 GITHUB_APP_ID=123456
@@ -233,7 +232,7 @@ ngrok http 8787
 
 ```bash
 # Terminal 3 — launcher (sidecar)
-export E2B_API_KEY=… ZAI_API_KEY=… ZAI_MODEL=glm-5.2
+export E2B_API_KEY=… ZAI_API_KEY=…
 export GITHUB_APP_ID=… GITHUB_PRIVATE_KEY_FILE=/abs/path/...pkcs8.pem
 export HERMES_BASE_URL=http://localhost:8787
 export HERMES_PUBLIC_URL=https://abcd-1234.ngrok-free.app
@@ -294,11 +293,9 @@ secrets, then deploy:
 wrangler login
 
 # Secrets (use `wrangler secret put` — do NOT commit them to wrangler.toml)
+wrangler secret put E2B_API_KEY              # required; Worker refuses to provision otherwise
 wrangler secret put PUBLIC_BASE_URL          # https://hermes.<your-domain>.workers.dev
-wrangler secret put HERMES_LAUNCHER_URL      # https://<your-launcher-host>:8789
-
-# Optional override of the default 10 from wrangler.toml [vars]
-# wrangler secret put MAX_CONCURRENT_SESSIONS
+wrangler secret put HERMES_LAUNCHER_URL      # https://<your-launcher-host>:8789 (Cloudflare Tunnel URL of the launcher VPS)
 
 bun run deploy
 ```
@@ -318,9 +315,8 @@ process env:
 export E2B_API_KEY=e2b_...
 export E2B_TEMPLATE=hermes-runner
 
-# Model
+# Model (Z.AI / OpenCode provider)
 export ZAI_API_KEY=...
-export ZAI_MODEL=glm-5.2
 
 # GitHub App (bot fallback + repo metadata)
 export GITHUB_APP_ID=123456

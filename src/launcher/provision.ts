@@ -58,10 +58,7 @@ export async function provisionSession(input: ProvisionInput): Promise<Provision
       hermes_repo: input.repoUrl,
     },
     envs: {
-      // ZAI_API_KEY is the canonical name in M4; ZHIPU_API_KEY kept for
-      // back-compat with the pre-M4 template/supervisor that read it.
       ZAI_API_KEY: input.zaiApiKey ?? "",
-      ZHIPU_API_KEY: input.zaiApiKey ?? "",
     },
   });
 
@@ -151,7 +148,6 @@ export async function provisionSession(input: ProvisionInput): Promise<Provision
       HERMES_RUNNER_TOKEN: input.runnerToken,
       HERMES_CONTROL_WS: input.controlWsUrl,
       ZAI_API_KEY: input.zaiApiKey ?? "",
-      ZHIPU_API_KEY: input.zaiApiKey ?? "",
       GITHUB_TOKEN: githubToken,
       GITHUB_USER_TOKEN: input.githubUserToken ?? "",
       GITHUB_USER_LOGIN: input.githubUserLogin ?? "",

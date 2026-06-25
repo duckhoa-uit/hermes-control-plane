@@ -15,10 +15,8 @@ new_sqlite_classes = ["SessionDurableObject"]
 
 [vars]
 E2B_TEMPLATE = "hermes-runner"
-HEARTBEAT_TIMEOUT_MS = 900000  # 15 min — see comment on the constant in src/core/constants.ts
-# Hobby tier cap is 20 concurrent sandboxes. Leave headroom for retries and
-# template builds. See docs/ROADMAP.md section 8.
-MAX_CONCURRENT_SESSIONS = 10
 # M5: launcher sidecar URL — DO posts /resume here to thaw paused sandboxes.
-# Defaults to localhost; override per-environment.
+# Defaults to localhost (only useful for `wrangler dev` against a local launcher);
+# in production override with `wrangler secret put HERMES_LAUNCHER_URL` pointing
+# at the Cloudflare Tunnel URL of your VPS launcher.
 HERMES_LAUNCHER_URL = "http://localhost:8789"
