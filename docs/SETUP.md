@@ -365,8 +365,111 @@ There is no authentication on the Worker's session-mutating routes. Do
 **not** expose the deployed Worker URL publicly without a Cloudflare
 Access policy or equivalent (Zero Trust, IP allowlist, basic auth via a
 front-end Worker). A second operator hitting `POST /sessions` would push
-under your `GITHUB_USER_TOKEN`. Multi-user auth is tracked under P3.1 in
-[`ROADMAP.md`](ROADMAP.md).
+under your `GITHUB_USER_TOKEN`. Multi-user auth (per-user OAuth storage,
+per-route auth) is the locked design in
+[`ROADMAP.md §14`](ROADMAP.md).
+
+§10.5 is the concrete runbook for the recommended approach
+(Cloudflare Access) for 1-user release.
+
+### 10.5 Locking the deployed Worker behind Cloudflare Access
+
+Zero code changes. ~10 minutes one-off setup. Free on the Cloudflare
+Zero Trust free plan (up to 50 users — more than enough for solo use).
+
+**The trick:** the Worker exposes two kinds of routes that need
+different treatment:
+
+| Route group | Who calls it | Protection |
+|---|---|---|
+| `POST /sessions`, `POST /sessions/:id/prompt`, `POST /sessions/:id/abort`, `POST /sessions/:id/approve`, `POST /sessions/:id/create-pr`, `DELETE /sessions/:id`, `GET /sessions/:id`, `WS /sessions/:id/stream` | You (browser, curl with `cf-access-token` cookie, Slack-via-Hermes later) | **Behind Access** — login required |
+| `WS /sessions/:id/runner?token=<runnerToken>` | The runner inside the E2B sandbox | **Bypass Access** — already protected by the per-session `runnerToken` (verified in `src/worker/session-do.ts:248`); the sandbox has no browser/cookie to satisfy Access |
+| `GET /health` | Uptime monitors, smoke tests | **Bypass Access** — public health check |
+
+The two bypass paths are safe because:
+- `/sessions/*/runner` is gated by a per-session, single-use, 32-byte
+  runner token minted in the DO and dropped into the sandbox at
+  provision time. Not knowing the token → 401 from the DO.
+- `/health` returns a static OK string with no session info.
+
+#### Setup steps
+
+1. **Get a Cloudflare Zero Trust account** (free):
+   - Cloudflare dashboard → **Zero Trust** in the left sidebar.
+   - Pick a team name (e.g. `hermes-yourname`); this becomes
+     `<team>.cloudflareaccess.com`.
+
+2. **Add a login method** (Zero Trust → Settings → Authentication):
+   - Add **One-time PIN** (email magic-link) — simplest. Or GitHub /
+     Google SSO if you prefer.
+
+3. **Create an Access application** (Zero Trust → Access →
+   Applications → Add):
+   - Type: **Self-hosted**.
+   - Application name: `hermes-control-plane`.
+   - Session duration: 24 h is fine.
+   - Application domain: `hermes.<your-subdomain>.workers.dev`
+     (or your custom domain).
+   - Path: leave blank to cover the whole domain.
+
+4. **Add bypass rules for runner WS + health** (same app, **Add a
+   path** → repeat for each):
+   - Path `/health`: policy **Bypass** (or **Service Auth** if you
+     want fewer logs; Bypass is fine for `/health`).
+   - Path `/sessions/*/runner`: policy **Bypass**. (Be explicit
+     about the trailing `/runner` — bypassing all of `/sessions/*`
+     would defeat the point.)
+
+5. **Add the allow rule for everything else**:
+   - Policy name: `allow me`.
+   - Action: **Allow**.
+   - Include rule: **Emails** → `your@email.example`. (Or
+     **Identity provider group**, etc.)
+   - Save.
+
+6. **Verify**:
+   - Open `https://hermes.<your-subdomain>.workers.dev/health` in a
+     browser → static `{ ok: true }` (or whatever, no Access prompt).
+   - Open `https://hermes.<your-subdomain>.workers.dev/sessions` →
+     Access login page → after login, the route returns the usual
+     405 (no GET handler). Confirms the auth wall works.
+   - Run `bun run launch …` against the deployed launcher — the
+     runner inside the sandbox connects fine via `/sessions/*/runner`,
+     the e2e completes, a real PR opens.
+
+#### Things Cloudflare Access does *not* fix
+
+- **CORS `*` in `src/worker/index.ts`.** Access does not strip CORS
+  headers from your Worker. If you ever build a browser frontend
+  served from a different origin, restrict CORS to that origin
+  explicitly. For a solo CLI/curl flow this is harmless.
+- **Rate limiting.** Access stops anonymous traffic; it does not
+  cap *your own* traffic. Set a Cloudflare WAF rate-limit rule on
+  the same domain if you want a soft cap.
+- **Slack integration.** When you ship the multi-user Slack path
+  (`ROADMAP.md §14`), Slack's outbound calls won't have an Access
+  cookie either. Either bypass the Hermes-agent IP range, or move
+  off Access entirely and use the §14 OAuth gate.
+
+#### Locking the launcher too (recommended)
+
+The launcher is a Bun process on a public-ish host. Lock it the same
+way:
+
+- If on Fly.io / Railway / Render: use the platform's built-in
+  private networking + IP allowlist; only the Worker needs to reach
+  it (and the Worker calls it from Cloudflare-owned IPs).
+- If on a plain VPS: bind the launcher to `127.0.0.1:8789` and front
+  it with a Cloudflare Tunnel (free) into the same Zero Trust app.
+  Add `/sessions/*/resume` as a Bypass path (the Worker DO calls
+  this when resuming a paused sandbox — no human cookie either).
+- If you're the only caller and the host is on a NAT'd home network:
+  Tailscale + launcher binding to the Tailscale IP works too. Same
+  net effect.
+
+Either way, do **not** leave the launcher's `POST /sessions` open to
+the internet — that's the single endpoint that can spawn a sandbox
+under your E2B account.
 
 ## 11. Verification checklist
 
@@ -380,3 +483,6 @@ under your `GITHUB_USER_TOKEN`. Multi-user auth is tracked under P3.1 in
 | Orphan sweeper | restart launcher; existing tagged sandboxes whose sessions are terminal die | sweep log `scanned=N killed=N kept=0` |
 | Full e2e | `POST /sessions` on launcher | session reaches `completed`; real PR opened; E2B list empty after |
 | **P1.1 PR author** | `gh pr view <N> --json author` on the resulting PR | `author.login == $GITHUB_USER_LOGIN` and `author.is_bot == false` |
+| **Access — auth wall** (prod only) | open `https://<worker>/sessions` in a private browser window | Cloudflare Access login page appears (not a 405/200) |
+| **Access — runner bypass** (prod only) | run an e2e session against the deployed launcher | runner connects, session reaches `completed`, real PR opens — proves `/sessions/*/runner` was *not* gated |
+| **Access — health bypass** (prod only) | `curl https://<worker>/health` with no cookie | 200 OK, no Access redirect |
