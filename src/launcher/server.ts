@@ -17,7 +17,7 @@
 //
 // Run:
 //   E2B_API_KEY=... ZAI_API_KEY=... GITHUB_USER_TOKEN=... GITHUB_USER_LOGIN=... \
-//   HERMES_BASE_URL=http://localhost:8788 HERMES_PUBLIC_URL=https://<ngrok>.ngrok-free.app \
+//   HERMES_BASE_URL=https://<deployed-worker>.workers.dev \
 //   bun run src/launcher/server.ts
 
 import { Sandbox } from "e2b";
@@ -27,7 +27,6 @@ import { buildMcpHandler } from "../mcp/server";
 
 const PORT = Number(process.env.HERMES_LAUNCHER_PORT ?? 8789);
 const HERMES_BASE_URL = process.env.HERMES_BASE_URL;
-const HERMES_PUBLIC_URL = process.env.HERMES_PUBLIC_URL ?? HERMES_BASE_URL;
 const E2B_API_KEY = process.env.E2B_API_KEY;
 const E2B_TEMPLATE = process.env.E2B_TEMPLATE ?? "hermes-runner";
 const ZAI_API_KEY = process.env.ZAI_API_KEY;
@@ -187,7 +186,7 @@ async function handleCreate(req: Request): Promise<Response> {
     provisioned = await provisionSession({
       sessionId: session.id,
       runnerToken: session.runnerToken,
-      controlWsUrl: HERMES_PUBLIC_URL!,
+      controlWsUrl: HERMES_BASE_URL!,
       repoUrl: body.repoUrl,
       baseBranch: body.baseBranch,
       e2bApiKey: E2B_API_KEY!,
@@ -343,7 +342,6 @@ async function handleHealth(): Promise<Response> {
       startedAt: s.startedAt,
     })),
     worker: HERMES_BASE_URL,
-    publicUrl: HERMES_PUBLIC_URL,
     cap: MAX_CONCURRENT_SESSIONS,
   });
 }
@@ -402,7 +400,6 @@ async function main(): Promise<void> {
 
   log(`hermes-launcher listening on http://localhost:${server.port}`);
   log(`  worker = ${HERMES_BASE_URL}`);
-  log(`  public = ${HERMES_PUBLIC_URL}`);
   log(`  cap    = ${MAX_CONCURRENT_SESSIONS}`);
   log(`  autoPR = ${AUTO_PR}`);
   log(`  mcp    = http://localhost:${server.port}/mcp`);

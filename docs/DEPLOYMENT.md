@@ -194,7 +194,7 @@ cadence:
 | `E2B_API_KEY` | launcher VM env | infra | quarterly | rotate via E2B dashboard, hot-swap env, restart launcher |
 | `ZAI_API_KEY` | launcher VM env | infra | quarterly | Forwarded into the sandbox; supervisor applies it to opencode via `auth.set` |
 | `GITHUB_USER_TOKEN` (fine-grained PAT) | launcher VM env | infra | every 90 days | P1.1 single-user OAuth. Runner uses it for `git push` + `POST /pulls`; PR `author` is the real user. |
-| `HERMES_PUBLIC_URL` | launcher VM env | infra | n/a | the Worker URL; static per env |
+| `HERMES_BASE_URL` | launcher VM env | infra | n/a | the Worker URL; static per env. Used both for launcher→Worker calls and as the WS dial-back URL given to the runner inside the sandbox. |
 | Slack signing secret + bot token | Hermes agent infra | Hermes team | yearly | not in this repo |
 
 Secrets that *do* live in the Worker (post-P1.1): the GitHub OAuth

@@ -40,7 +40,7 @@ curl -fsSL https://raw.githubusercontent.com/duckhoa-uit/hermes-control-plane/ma
   | sudo bash
 # install.sh asks for E2B_API_KEY, ZAI_API_KEY, GITHUB_USER_TOKEN,
 # GITHUB_USER_LOGIN, GITHUB_USER_EMAIL (optional),
-# HERMES_BASE_URL (default: the deployed Worker URL), HERMES_PUBLIC_URL.
+# HERMES_BASE_URL (default: the deployed Worker URL).
 
 # 2. Pre-exported env vars (good when piping into bash):
 curl -fsSL https://raw.githubusercontent.com/duckhoa-uit/hermes-control-plane/main/infra/launcher/install.sh \

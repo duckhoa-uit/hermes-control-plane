@@ -152,9 +152,8 @@ else
   ask GITHUB_USER_EMAIL  "GITHUB_USER_EMAIL (blank → <login>@users.noreply.github.com)"
   ask HERMES_BASE_URL    "HERMES_BASE_URL (deployed Worker URL)" \
                          "https://hermes-control-plane.duckhoa-dev.workers.dev"
-  ask HERMES_PUBLIC_URL  "HERMES_PUBLIC_URL (usually the same)" "$HERMES_BASE_URL"
 
-  for k in E2B_API_KEY ZAI_API_KEY GITHUB_USER_TOKEN GITHUB_USER_LOGIN HERMES_BASE_URL HERMES_PUBLIC_URL; do
+  for k in E2B_API_KEY ZAI_API_KEY GITHUB_USER_TOKEN GITHUB_USER_LOGIN HERMES_BASE_URL; do
     if [[ -z "${!k}" ]]; then
       die "$k is required; re-run install.sh or edit $ENV_FILE by hand"
     fi
@@ -179,7 +178,6 @@ ${GITHUB_USER_EMAIL:+GITHUB_USER_EMAIL=$GITHUB_USER_EMAIL}
 
 # ---- Worker ----
 HERMES_BASE_URL=$HERMES_BASE_URL
-HERMES_PUBLIC_URL=$HERMES_PUBLIC_URL
 
 # ---- Launcher tunables (defaults are fine) ----
 HERMES_LAUNCHER_PORT=8789

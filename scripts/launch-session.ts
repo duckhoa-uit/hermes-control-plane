@@ -12,7 +12,6 @@
 import { provisionSession, killSandbox } from "../src/launcher/provision";
 
 const HERMES_BASE_URL = process.env.HERMES_BASE_URL ?? "http://localhost:8788";
-const HERMES_PUBLIC_URL = process.env.HERMES_PUBLIC_URL ?? HERMES_BASE_URL;
 const HERMES_LAUNCHER_URL = process.env.HERMES_LAUNCHER_URL;
 const E2B_API_KEY = process.env.E2B_API_KEY;
 const E2B_TEMPLATE = process.env.E2B_TEMPLATE ?? "hermes-runner";
@@ -139,7 +138,7 @@ async function runDirectMode(): Promise<void> {
     provisioned = await provisionSession({
       sessionId: session.id,
       runnerToken: session.runnerToken,
-      controlWsUrl: HERMES_PUBLIC_URL,
+      controlWsUrl: HERMES_BASE_URL,
       repoUrl,
       e2bApiKey: E2B_API_KEY,
       e2bTemplate: E2B_TEMPLATE,

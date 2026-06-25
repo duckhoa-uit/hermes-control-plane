@@ -140,9 +140,8 @@ E2B_API_KEY=… bun run template:build
 # Three terminals:
 bun run dev                                  # 1. Cloudflare Worker on :8787
 ngrok http 8787                              # 2. public URL for the runner to dial
-HERMES_PUBLIC_URL=https://<ngrok> \
+HERMES_BASE_URL=https://<ngrok> \
 E2B_API_KEY=… ZAI_API_KEY=… \
-GITHUB_APP_ID=… GITHUB_PRIVATE_KEY_FILE=… \
 GITHUB_USER_TOKEN=$(gh auth token) GITHUB_USER_LOGIN=<your-handle> \
 bun run launcher                             # 3. sidecar on :8789
 
@@ -193,13 +192,12 @@ The launcher (process env):
 |-----|---------|
 | `E2B_API_KEY` | required |
 | `E2B_TEMPLATE` | template alias, default `hermes-runner` |
-| `HERMES_BASE_URL` | where to reach the Worker, default `http://localhost:8787` |
-| `HERMES_PUBLIC_URL` | URL the runner inside the sandbox dials over WS (ngrok in dev) |
+| `HERMES_BASE_URL` | required; URL of the deployed Worker (or ngrok in dev). Used both for launcher→Worker calls and as the WS dial-back URL given to the runner inside the sandbox. |
 | `HERMES_LAUNCHER_PORT` | default `8789` |
-| `ZAI_API_KEY`, `ZAI_MODEL` | OpenCode model config |
-| `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY` *or* `GITHUB_PRIVATE_KEY_FILE` | PKCS#8 PEM; used to mint short-lived, repo-scoped installation tokens (fallback identity) |
-| `GITHUB_USER_TOKEN` | Single-user mode: the human's GitHub PAT or OAuth token. When set, the runner uses it for `git push` + `POST /pulls` so the PR `author` is the real user. Falls back to the App token when unset. |
-| `GITHUB_USER_LOGIN`, `GITHUB_USER_EMAIL` | Git author identity used inside the sandbox when `GITHUB_USER_TOKEN` is set. Email defaults to `<login>@users.noreply.github.com`. |
+| `ZAI_API_KEY` | required; OpenCode (z.ai) provider key |
+| `GITHUB_USER_TOKEN` | required; fine-grained PAT (Contents + Pull-requests RW). Runner uses it for `git push` + `POST /pulls` so the PR `author` is the real user. |
+| `GITHUB_USER_LOGIN` | required; git author identity used inside the sandbox |
+| `GITHUB_USER_EMAIL` | optional; defaults to `<login>@users.noreply.github.com` |
 
 ## Sandbox lifecycle
 

@@ -107,17 +107,19 @@ other than the author" work correctly.
 
 ## 6. Public URL for the runner (ngrok in dev)
 
-The runner inside the sandbox dials your Worker over WebSocket. Locally that
-needs a public URL.
+The runner inside the sandbox dials your Worker over WebSocket, and
+the launcher calls the same Worker over HTTPS. Locally that needs one
+public URL — `HERMES_BASE_URL`.
 
 ```bash
 ngrok http 8787
 # copy the https URL, e.g. https://abcd-1234.ngrok-free.app
-export HERMES_PUBLIC_URL=https://abcd-1234.ngrok-free.app
+export HERMES_BASE_URL=https://abcd-1234.ngrok-free.app
 ```
 
 Free-tier ngrok is fine; the browser interstitial doesn't affect WS
-upgrades.
+upgrades. In production point `HERMES_BASE_URL` at the deployed Worker
+URL — no tunnel needed.
 
 ## 7. `.dev.vars` example
 
@@ -156,8 +158,8 @@ ngrok http 8787
 # Terminal 3 — launcher (sidecar)
 export E2B_API_KEY=… ZAI_API_KEY=…
 export GITHUB_USER_TOKEN=… GITHUB_USER_LOGIN=…
-export HERMES_BASE_URL=http://localhost:8787
-export HERMES_PUBLIC_URL=https://abcd-1234.ngrok-free.app
+# Use the ngrok URL for both launcher→Worker and runner→Worker.
+export HERMES_BASE_URL=https://abcd-1234.ngrok-free.app
 export E2B_TEMPLATE=hermes-runner
 bun run launcher
 # [launcher] startup sweep: scanned=0 killed=0 kept=0
@@ -245,9 +247,9 @@ export GITHUB_USER_TOKEN=github_pat_...     # fine-grained PAT, see §5 sub-sect
 export GITHUB_USER_LOGIN=your-github-handle
 export GITHUB_USER_EMAIL=you@example.com
 
-# Wire to the deployed Worker
+# Wire to the deployed Worker (one URL serves both launcher→Worker calls
+# and the runner-inside-sandbox WS dial-back)
 export HERMES_BASE_URL=https://hermes.<your-domain>.workers.dev
-export HERMES_PUBLIC_URL=https://hermes.<your-domain>.workers.dev
 
 # Optional
 export HERMES_LAUNCHER_PORT=8789
