@@ -79,7 +79,7 @@ Three logical components, three deploy targets:
                │ status updates                    ▼
                │ (Block Kit)            ┌───────────────────────────┐
                ▼                        │ control-plane-launcher (Bun)     │
-        Slack thread                    │  - E2B SDK + GH App key   │
+        Slack thread                    │  - E2B SDK + GH PAT       │
                                         │  - per-session reaper     │
                                         │  - orphan sweeper         │
                                         └────────────┬──────────────┘
@@ -97,7 +97,7 @@ Three logical components, three deploy targets:
 | Component | Runtime | Deploy target | Why |
 |---|---|---|---|
 | Worker + DO + WS hub | Cloudflare Workers | `wrangler deploy` | Already on CF; free tier covers the control plane. |
-| Launcher sidecar | Bun 1.3+ | Single VM (Fly Machine / Hetzner CX22 / Railway) | Holds E2B + GH App secrets; `workerd` cannot drive the E2B SDK (see `ROADMAP.md §9.2`). One process is fine for ≤ 10 concurrent sessions. |
+| Launcher sidecar | Bun 1.3+ | Single VM (Fly Machine / Hetzner CX22 / Railway) | Holds the E2B API key + the user's GitHub PAT; `workerd` cannot drive the E2B SDK (see `ROADMAP.md §9.2`). One process is fine for ≤ 10 concurrent sessions. |
 | E2B sandbox | E2B Hobby (Pro after §6) | E2B cloud | Throwaway per session. |
 | Hermes agent | (existing infra) | (existing infra) | Out of scope for this repo — we only define the contract. |
 | Slack app | Slack | (existing) | Already connected to Hermes; we add one outbound call. |
@@ -145,7 +145,7 @@ the same git tag.
 ### 4.1 Versioning
 
 We use a single monorepo version (`package.json#version` →
-`HERMES_RELEASE` env var on both Worker and launcher). The template
+`CONTROL_PLANE_RELEASE` env var on both Worker and launcher). The template
 inherits the tag in its alias: `control-plane-runner-prod-v0.3.1`. This makes
 every running sandbox traceable to a git tag from the E2B dashboard.
 
@@ -186,7 +186,7 @@ The rollback target is **always the previous green release tag**, not
 
 ### 4.4 Secrets
 
-Lifted from `.dev.vars.example` and `wrangler.toml`. Owners and rotation
+Lifted from `.dev.vars.example` and `wrangler.jsonc`. Owners and rotation
 cadence:
 
 | Secret | Where | Owner | Rotation | Notes |
@@ -198,10 +198,19 @@ cadence:
 | Slack signing secret + bot token | Hermes agent infra | Hermes team | yearly | not in this repo |
 
 Secrets that *do* live in the Worker (post-P1.1): the GitHub OAuth
-client secret and the OAuth token encryption key. Everything else
-(E2B, GH App, Z.AI) is launcher-only. The Worker is the right place
+client secret and the OAuth token encryption key. Everything else (E2B, Z.AI, `GITHUB_USER_TOKEN`) is launcher-only. The Worker is the right place
 for OAuth secrets because the OAuth dance terminates there
 (`/auth/github/callback`).
+
+**Rotation logistics** (kept here as the canonical reference; SETUP §10.3
+moved into this section):
+
+- `GITHUB_USER_TOKEN` (PAT): rotate every 90 days. Restart launcher to
+  pick up the new value. In-flight sessions started with the old token
+  finish on the old token (the token is captured in the sandbox env at
+  provision time).
+- `E2B_API_KEY`, `ZAI_API_KEY`: same pattern — replace env + restart
+  launcher.
 
 ---
 
@@ -212,9 +221,9 @@ Listed so the on-caller knows what each one protects against.
 
 | Guardrail | Where | Protects against |
 |---|---|---|
-| `MAX_CONCURRENT_SESSIONS=10` | `wrangler.toml` + launcher env | E2B Hobby cap exhaustion |
-| Launcher hard deadline = 24 h | `src/launcher/server.ts:75` | runaway-job backstop (paused sandboxes are free and indefinite per §12.14, so this is purely a GC ceiling, not a follow-up window) |
-| `HEARTBEAT_TIMEOUT_MS=15 min` | `wrangler.toml` (bumped 60 s → 15 min in ROADMAP §12.7) | runner stall (transitions to `stalled → failed`); matches E2B's 15-min auto-pause window so short idles don't fire false stalls |
+| `MAX_CONCURRENT_SESSIONS=10` | `wrangler.jsonc` + launcher env | E2B Hobby cap exhaustion |
+| Launcher hard deadline = 24 h | `src/launcher/server.ts` (`watchSession()`) | runaway-job backstop (paused sandboxes are free and indefinite per §12.14, so this is purely a GC ceiling, not a follow-up window) |
+| `HEARTBEAT_TIMEOUT_MS=15 min` | `wrangler.jsonc` (bumped 60 s → 15 min in ROADMAP §12.7) | runner stall (transitions to `stalled → failed`); matches E2B's 15-min auto-pause window so short idles don't fire false stalls |
 | Orphan sweeper at boot | `src/launcher/sweeper.ts` | leaked sandboxes after launcher crash |
 | Session-scoped runner token | minted in DO, dropped in `start.json` | broad-credential exposure inside the sandbox |
 | User-OAuth PAT scoped per-repo, baked into `.git/config` of the per-session sandbox only | `src/launcher/provision.ts` step 3 | long-lived GH credentials never leave the launcher VM long-term |
@@ -265,13 +274,14 @@ Three things land before release 1. Each is one PR.
    github_user_id, slack? }`. Stored on the `session` record and echoed on
    every event as `event.author_user_id = actor.github_user_id`. Drops the
    single-owner assumption (ROADMAP P3.1).
-2. **User GitHub OAuth for PR creation (P1.1).** Replace the App-token
-   PR-open path entirely in the runner: launcher bakes the user PAT into
-   `.git/config` of the cloned repo (Option A), runner pushes the branch
-   and calls `POST /repos/{owner}/{repo}/pulls` with the same token,
-   emits `pr.created`. Authorship + pusher = the real user. GitHub's UI
-   shows the user as PR author, which is what branch-protection's
-   "no-self-approve" rule reads.
+2. **User GitHub OAuth for PR creation (P1.1).** ✅ Shipped. Launcher
+   bakes the user PAT into `.git/config` of the cloned repo
+   (`src/launcher/provision.ts` step 3 — "Option A"); the runner pushes
+   the branch and calls `POST /repos/{owner}/{repo}/pulls` with the
+   same token, then emits `pr.created`. Authorship + pusher = the real
+   user. GitHub's UI shows the user as PR author, which is what
+   branch-protection's "no-self-approve" rule reads. (Full multi-user
+   OAuth dance is item 3 below — still pending.)
 3. **OAuth dance routes on the Worker.** `GET /auth/github/start?return_to=…`
    and `GET /auth/github/callback`. Tokens stored AES-256-GCM-encrypted in
    the DO `users` namespace, keyed by `github_user_id`. No D1 — see
@@ -411,14 +421,14 @@ Alert rules (PagerDuty-free, just Slack DM to the on-caller):
 Run this top-to-bottom for each promotion (staging → prod). No
 shortcuts.
 
-- [ ] `bun run test` → 87/87 (or current number) passing
+- [ ] `bun run test` → 100/100 (or current number) passing; `bun run e2e:real` → 37/37 against `bunx wrangler dev`
 - [ ] `bun run typecheck` → clean
 - [ ] E2B template built and tagged with the release version
 - [ ] `wrangler deploy --env <env>` → succeeds
 - [ ] Launcher binary deployed; `curl https://launcher/<env>/health` → ok
 - [ ] `scripts/release-smoke.ts` end-to-end → PR opened on the sentinel
       repo, sandbox killed, E2B list empty afterwards
-- [ ] GH App installed on the target repos (push-only)
+- [ ] `GITHUB_USER_TOKEN` set on the launcher; PAT has Contents + Pull-requests RW on the target repos
 - [ ] GitHub OAuth app created; `GITHUB_OAUTH_CLIENT_ID`/`_SECRET` set as
       Worker secrets (`wrangler secret put`)
 - [ ] `OAUTH_TOKEN_ENCRYPTION_KEY` minted (`openssl rand -base64 32`) and
@@ -452,6 +462,16 @@ Recorded so we stop relitigating:
   release 1, not a release blocker.
 - **Computer-use / streamed desktop / Chrome extension.** As `ROADMAP §5`.
 
+**Single-user reminder** (merged in from SETUP §10.4):
+
+There is no authentication on the Worker's session-mutating routes. Do
+**not** expose the deployed Worker URL publicly without a Cloudflare
+Access policy or equivalent (Zero Trust, IP allowlist, basic auth via a
+front-end Worker). A second operator hitting `POST /sessions` would push
+under your `GITHUB_USER_TOKEN`. Multi-user auth (per-user OAuth storage,
+per-route auth) is the locked design in [`ROADMAP.md §14`](ROADMAP.md);
+the 1-user mitigation is [§14 Cloudflare Access](#14-locking-the-deployed-worker-behind-cloudflare-access).
+
 ---
 
 ## 11. Decisions (closed open-questions)
@@ -462,13 +482,13 @@ stop blocking the release ticket.
 1. **Prod Slack channel** → the channel Hermes already lives in. No
    new channel created for release 1; reduces split-attention. If
    volume warrants splitting later, the channel id is a launcher env
-   var (`HERMES_SLACK_DEFAULT_CHANNEL`), one-line change.
+   var (`CONTROL_PLANE_SLACK_DEFAULT_CHANNEL`), one-line change.
 2. **Sentinel repo for `release-smoke.ts`** → a throwaway in the team
    GitHub org named `hermes-sentinel`. Public, README-only, branch
-   protection off, single file `README.md`. Exercises the real GH App
-   install path (the app must be installed on this repo too) — that
-   coverage is exactly what we want before promoting to prod. A
-   read-only test repo would miss the install-token mint code path.
+   protection off, single file `README.md`. Exercises the real user-PAT `git push` +
+   PR-create path against a live remote — that coverage is exactly
+   what we want before promoting to prod. A read-only test repo
+   would miss the push code path.
 3. **Launcher VM owner of record** → see [§11.1](#111-launcher-vm-owner-of-record-explainer)
    below for what this means and how to pick. Default for release 1:
    the Hermes tech lead, named in the release ticket.
@@ -647,3 +667,168 @@ The MCP server and the SKILL.md are versioned independently:
 A breaking MCP tool change (rename / required-arg add) requires
 bumping the server major and updating the skill in the same PR.
 
+
+---
+
+## 13. Concrete deploy steps (Worker + Launcher)
+
+Two long-running components: the **Worker** on Cloudflare and the
+**launcher** on any always-on host with public egress.
+
+### 13.1 Worker (Cloudflare)
+
+Durable Object Storage is the only persistent store (no D1/R2). Set
+secrets, then deploy:
+
+```bash
+# One-off: log into Cloudflare
+wrangler login
+
+# Secrets (use `wrangler secret put` — do NOT commit them to wrangler.jsonc)
+wrangler secret put E2B_API_KEY              # required; Worker refuses to provision otherwise
+wrangler secret put PUBLIC_BASE_URL          # https://hermes.<your-domain>.workers.dev
+wrangler secret put CONTROL_PLANE_LAUNCHER_URL      # https://<your-launcher-host>:8789 (Cloudflare Tunnel URL of the launcher VPS)
+
+bun run deploy
+```
+
+Cloudflare will print the deployed Worker URL. Set that as
+`PUBLIC_BASE_URL` (the runner inside the sandbox dials this over WSS —
+no more ngrok needed in prod).
+
+### 13.2 Launcher (any always-on host)
+
+The launcher cannot run on Workers (workerd kills the E2B SDK). Run it
+on a tiny VPS, Fly.io machine, Railway service, or your own box.
+Required process env:
+
+```bash
+# E2B
+export E2B_API_KEY=e2b_...
+export E2B_TEMPLATE=control-plane-runner
+
+# Model (Z.AI / OpenCode provider)
+export ZAI_API_KEY=...
+
+# GitHub single-user OAuth — PR author = real user (P1.1)
+export GITHUB_USER_TOKEN=github_pat_...     # fine-grained PAT, see SETUP §5
+export GITHUB_USER_LOGIN=your-github-handle
+export GITHUB_USER_EMAIL=you@example.com
+
+# Wire to the deployed Worker (one URL serves both launcher→Worker calls
+# and the runner-inside-sandbox WS dial-back)
+export CONTROL_PLANE_BASE_URL=https://hermes.<your-domain>.workers.dev
+
+# Optional
+export CONTROL_PLANE_LAUNCHER_PORT=8789
+export MAX_CONCURRENT_SESSIONS=10
+export CONTROL_PLANE_AUTO_PR=1
+
+bun run launcher
+```
+
+Run it under a process supervisor (systemd, pm2, the platform's
+restart policy). On boot it runs the orphan sweep, so a crash +
+restart is safe. The canonical `infra/launcher/install.sh` +
+`env.example` cover the systemd path.
+
+---
+
+## 14. Locking the deployed Worker behind Cloudflare Access
+
+Zero code changes. ~10 minutes one-off setup. Free on the Cloudflare
+Zero Trust free plan (up to 50 users — more than enough for solo use).
+
+**The trick:** the Worker exposes two kinds of routes that need
+different treatment:
+
+| Route group | Who calls it | Protection |
+|---|---|---|
+| `POST /sessions`, `POST /sessions/:id/prompt`, `POST /sessions/:id/abort`, `POST /sessions/:id/approve`, `POST /sessions/:id/create-pr`, `DELETE /sessions/:id`, `GET /sessions/:id`, `WS /sessions/:id/stream` | You (browser, curl with `cf-access-token` cookie, Slack-via-Hermes later) | **Behind Access** — login required |
+| `WS /sessions/:id/runner?token=<runnerToken>` | The runner inside the E2B sandbox | **Bypass Access** — already protected by the per-session `runnerToken` (verified in `src/worker/session-do.ts:248`); the sandbox has no browser/cookie to satisfy Access |
+| `GET /health` | Uptime monitors, smoke tests | **Bypass Access** — public health check |
+
+The two bypass paths are safe because:
+- `/sessions/*/runner` is gated by a per-session, single-use, 32-byte
+  runner token minted in the DO and dropped into the sandbox at
+  provision time. Not knowing the token → 401 from the DO.
+- `/health` returns a static OK string with no session info.
+
+### 14.1 Setup steps
+
+1. **Get a Cloudflare Zero Trust account** (free):
+   - Cloudflare dashboard → **Zero Trust** in the left sidebar.
+   - Pick a team name (e.g. `hermes-yourname`); this becomes
+     `<team>.cloudflareaccess.com`.
+
+2. **Add a login method** (Zero Trust → Settings → Authentication):
+   - Add **One-time PIN** (email magic-link) — simplest. Or GitHub /
+     Google SSO if you prefer.
+
+3. **Create an Access application** (Zero Trust → Access →
+   Applications → Add):
+   - Type: **Self-hosted**.
+   - Application name: `hermes-control-plane`.
+   - Session duration: 24 h is fine.
+   - Application domain: `hermes.<your-subdomain>.workers.dev`
+     (or your custom domain).
+   - Path: leave blank to cover the whole domain.
+
+4. **Add bypass rules for runner WS + health** (same app, **Add a
+   path** → repeat for each):
+   - Path `/health`: policy **Bypass** (or **Service Auth** if you
+     want fewer logs; Bypass is fine for `/health`).
+   - Path `/sessions/*/runner`: policy **Bypass**. (Be explicit
+     about the trailing `/runner` — bypassing all of `/sessions/*`
+     would defeat the point.)
+
+5. **Add the allow rule for everything else**:
+   - Policy name: `allow me`.
+   - Action: **Allow**.
+   - Include rule: **Emails** → `your@email.example`. (Or
+     **Identity provider group**, etc.)
+   - Save.
+
+6. **Verify**:
+   - Open `https://hermes.<your-subdomain>.workers.dev/health` in a
+     browser → static `{ ok: true }` (or whatever, no Access prompt).
+   - Open `https://hermes.<your-subdomain>.workers.dev/sessions` →
+     Access login page → after login, the route returns the usual
+     405 (no GET handler). Confirms the auth wall works.
+   - Run `bun run launch …` against the deployed launcher — the
+     runner inside the sandbox connects fine via `/sessions/*/runner`,
+     the e2e completes, a real PR opens.
+
+### 14.2 Things Cloudflare Access does *not* fix
+
+- **CORS `*` in `src/worker/index.ts`.** Access does not strip CORS
+  headers from your Worker. If you ever build a browser frontend
+  served from a different origin, restrict CORS to that origin
+  explicitly. For a solo CLI/curl flow this is harmless.
+- **Rate limiting.** Access stops anonymous traffic; it does not
+  cap *your own* traffic. Set a Cloudflare WAF rate-limit rule on
+  the same domain if you want a soft cap.
+- **Slack integration.** When you ship the multi-user Slack path
+  (`ROADMAP.md §14`), Slack's outbound calls won't have an Access
+  cookie either. Either bypass the Hermes-agent IP range, or move
+  off Access entirely and use the §14 OAuth gate.
+
+### 14.3 Locking the launcher too (recommended)
+
+The launcher is a Bun process on a public-ish host. Lock it the same
+way:
+
+- If on Fly.io / Railway / Render: use the platform's built-in
+  private networking + IP allowlist; only the Worker needs to reach
+  it (and the Worker calls it from Cloudflare-owned IPs).
+- If on a plain VPS: bind the launcher to `127.0.0.1:8789` and front
+  it with a Cloudflare Tunnel (free) into the same Zero Trust app.
+  Add `/sessions/*/resume` as a Bypass path (the Worker DO calls
+  this when resuming a paused sandbox — no human cookie either).
+- If you're the only caller and the host is on a NAT'd home network:
+  Tailscale + launcher binding to the Tailscale IP works too. Same
+  net effect.
+
+Either way, do **not** leave the launcher's `POST /sessions` open to
+the internet — that's the single endpoint that can spawn a sandbox
+under your E2B account.

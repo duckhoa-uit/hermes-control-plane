@@ -8,8 +8,9 @@ Three files in this directory:
 | `control-plane-launcher.service` | systemd unit. Loads `/etc/hermes-control-plane/launcher.env`, runs `bun /opt/hermes-control-plane/launcher.js` as the `hermes-cp` user, restarts on crash. |
 | `env.example` | Template for `/etc/hermes-control-plane/launcher.env`. Copy + fill in real values. |
 
-See `docs/SETUP.md` §10.2 for the env block this file documents, and
-§10.5 for locking the launcher behind a Cloudflare Tunnel.
+See [`docs/DEPLOYMENT.md §13.2`](../../docs/DEPLOYMENT.md#132-launcher-any-always-on-host)
+for the env block this file documents, and [`§14.3`](../../docs/DEPLOYMENT.md#143-locking-the-launcher-too-recommended)
+for locking the launcher behind a Cloudflare Tunnel.
 
 ## Quick install (on the VM, as root)
 
@@ -90,7 +91,7 @@ IPs. Three options, from simplest to most locked-down:
    on a Tailscale net; the launcher binds to its Tailscale IP. Cleanest
    when both ends are yours.
 
-Option 2 is documented in `docs/SETUP.md` §10.5 "Locking the launcher
-too". Option 3 requires reaching the launcher from the Worker, which
+Option 2 is documented in [`docs/DEPLOYMENT.md §14.3`](../../docs/DEPLOYMENT.md#143-locking-the-launcher-too-recommended)
+"Locking the launcher too". Option 3 requires reaching the launcher from the Worker, which
 needs a Cloudflare-side Tailscale subnet router — out of scope for the
 1-user release.

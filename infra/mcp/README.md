@@ -23,12 +23,12 @@ Add to `~/.hermes/config.yaml`:
 mcp_servers:
   hermes-control-plane:
     # When Hermes Agent runs on the same VPS as control-plane-launcher (the
-    # default deployment shape — see docs/SETUP.md §10.2):
+    # default deployment shape — see docs/DEPLOYMENT.md §13.2):
     url: "http://localhost:8789/mcp"
     timeout: 300
 
     # When the launcher is on a different host, expose its port 8789
-    # via Cloudflare Tunnel (docs/SETUP.md §10.5) and use the tunnel
+    # via Cloudflare Tunnel (docs/DEPLOYMENT.md §14.3) and use the tunnel
     # URL instead:
     # url: "https://launcher.<your-domain>/mcp"
 ```
@@ -80,7 +80,7 @@ into the chat.
 
 ```bash
 # Start launcher locally (dummy E2B creds are fine — we only test MCP)
-E2B_API_KEY=dummy ZAI_API_KEY=dummy ZAI_MODEL=glm-5.2 \
+E2B_API_KEY=dummy ZAI_API_KEY=dummy \
 CONTROL_PLANE_BASE_URL=http://localhost:8787 \
 E2B_TEMPLATE=control-plane-runner bun run launcher &
 
@@ -112,7 +112,7 @@ From `hermes-agent/AGENTS.md` "The Footprint Ladder":
 > resort).
 
 `hermes-control-plane` is an external HTTP service holding long-lived
-secrets (E2B API key, GitHub App PEM, operator's GitHub PAT). It already
+secrets (E2B API key, operator's GitHub PAT, Z.AI API key). It already
 runs as a separate process. Wrapping it as an MCP server is exactly the
 shape that ladder rung is designed for: zero permanent Hermes-core
 schema footprint, reusable by any MCP host (not just Hermes), and

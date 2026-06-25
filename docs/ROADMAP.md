@@ -79,25 +79,13 @@ terse — it is reference, not aspiration.
 
 ## 2. Current architecture (hermes-control-plan)
 
-See `README.md` for the canonical diagram. Snapshot of the relevant pieces:
+For the canonical snapshot of how the system works today see
+[`docs/ARCHITECTURE.md`](./ARCHITECTURE.md) — components, request
+flow, DO best-practice playbook, state machine, runner / launcher
+internals, E2B template, security model, testing layers.
 
-- **Control plane:** Cloudflare Worker + `SessionDurableObject`
-  (`src/worker/session-do.ts`). DO Storage is the sole truth (D1/R2
-  removed in §12.16).
-- **Sandbox:** E2B, provisioned by the launcher sidecar
-  (`src/launcher/provision.ts`); the pre-baked `control-plane-runner` template
-  (`infra/e2b/build-template.ts`) bakes Node + bun + `opencode` + supervisor
-  + runner into the snapshot. Per-session runtime cost is `git clone` +
-  drop `/opt/control-plane/start.json`; supervisor execs the runner. (Post-§10.5
-  the worker no longer drives E2B; legacy `src/providers/e2b.ts` was deleted.)
-- **Runner:** TypeScript driver (`src/runner/sandbox-runner.ts`) bundled
-  into the template; talks to a local `opencode serve` via the OpenCode
-  SDK + SSE (M4, §11.12); bridges events back to the DO over WebSocket.
-- **GitHub:** App-installation token broker (`src/launcher/github-token.ts`),
-  host-side only. Legacy worker-side broker `src/providers/github.ts`
-  was deleted in this sync (zero callers).
-- **Clients:** none — only test CLIs in `src/testing/`.
-- **Auth/multi-user:** none — sessions are implicitly single-owner.
+The diary of how we got there is the rest of this file. The
+Cloudflare-best-practices refactor specifically is §12.18.
 
 ---
 
@@ -119,7 +107,7 @@ row in the **Notes / PR** column._
 | 7 | Sub-session tool | Agent can spawn sessions | No | ❌ | Low | |
 | 8 | Prompt queue / mid-run stop | Queued, stoppable | Single-slot `pendingPrompt` shipped (drained on `runner.connected` reconnect); follow-ups while runner alive forwarded immediately. Full FIFO queue + `/stop` (distinct from `/abort`) still ❌. | 🟡 | Low | Single-slot shipped §12.15 (M5); full M2.3 deferred |
 | 9 | DO + SQLite per session | Yes | DO Storage only (D1/R2 declared but unused — deleted §12.16) | 🟡 | Low | Split-store deferred per §8.5 |
-| 10 | WebSocket hibernation | Cloudflare Agents SDK | Plain WS in DO | 🟡 | Low (cost) | |
+| 10 | WebSocket hibernation | Cloudflare Agents SDK | DO Hibernation API (`ctx.acceptWebSocket` + tagged attachments) + alarm-driven heartbeat; sockets survive DO hibernation | ✅ | Low (cost) | shipped §12.18 |
 | 11 | Multiplayer / author attribution | Yes, per-prompt author | Single implicit owner; no `author_user_id` on events. Explicitly a single-user app until §14 ships (`docs/DEPLOYMENT.md` multi-user Slack rollout depends on §14). | ❌ | Med | P3.1 / §14 |
 | 12 | PR auth | User GitHub OAuth token | **Single-user shipped:** `GITHUB_USER_TOKEN` env (PAT/OAuth) used by the runner for `git push` + `POST /pulls`; PR `author` = real user. App token is fallback. Multi-user (per-user OAuth storage) still locked design in §14. | 🟡 | Low (single user) | P1.1 single-user shipped; §14 = multi-user |
 | 13 | GitHub webhooks | PR open/merge/close → events | None | ❌ | Med | |
@@ -224,9 +212,12 @@ without re-asking. Keep items small enough to ship in one PR.
   `humans_prompting_5m`.
   - Verify: merging a PR moves `sessions_merged`; `humans_prompting_5m` reacts
     within the window.
-- [ ] **P4.2 WebSocket hibernation.** Adopt Cloudflare Agents SDK or the
-  hibernatable WS API on the DO.
-  - Verify: idle DO CPU time ≈ 0 between events.
+- [x] **P4.2 WebSocket hibernation.** ✅ Shipped (M6 / §12.17). The DO
+  uses the Hibernation WebSocket API (`ctx.acceptWebSocket` + tagged
+  attachments + `webSocketMessage/Close/Error` overrides); the heartbeat
+  runs off `ctx.storage.setAlarm()` instead of `setInterval` so the DO
+  hibernates between ticks. Verified by the in-process E2E
+  (`tests/e2e-do.test.ts`) and the real-workerd run (`scripts/e2e-real.ts`).
 
 ---
 
@@ -350,7 +341,7 @@ findable later:
   this sync.
 - Per-session disk: **≤ 10 GB** (E2B Hobby cap). Not enforced; document and
   monitor.
-- Template version: hand-tagged in env (`E2B_TEMPLATE` in `wrangler.toml`).
+- Template version: hand-tagged in env (`E2B_TEMPLATE` in `wrangler.jsonc`).
   Rebuild by running a script; no cron.
 
 ### 8.3 Deferred items and their limitations
@@ -478,13 +469,15 @@ Revisit deferred items when **any** of these is true:
 
 ## 9. M1 implementation log (2026-06-25)
 
+> **Historical (2026-06-25).** Implementation diary for M1 — pre-baked E2B template + first end-to-end PR. Kept for reference. For current behaviour see §2 (Current architecture), §3 (Gap matrix) and the latest entries in §12.
+
 ### What shipped
 
 | Item | Status | Notes |
 |---|---|---|
 | M1 — pre-baked E2B template | ✅ done | Template `control-plane-runner` (id `ihf90c8bik7w8rwrk1u7`); bundles node, opencode CLI, supervisor, runner; supervisor runs in the snapshot via `setStartCmd` and execs the runner on `/opt/control-plane/start.json` arrival. |
 | M2 — auto-pause + autoResume | ✅ done | `Sandbox.create()` passes `lifecycle: { onTimeout: 'pause', autoResume: true }`, `timeoutMs: 15min`. Verified the option is wired; long-idle resume not stress-tested. |
-| M3 — Hobby concurrency guard | ✅ done | Enforced host-side in `scripts/launch-session.ts` via `checkConcurrencyCap()` (E2B REST `GET /v2/sandboxes`). Static cap is `MAX_CONCURRENT_SESSIONS = 10` in `wrangler.toml`, overridable via env. Exits with code 2 and a clear message when at cap. Verified live: with cap=3 and 3 paused sandboxes, the launcher refuses to launch. |
+| M3 — Hobby concurrency guard | ✅ done | Enforced host-side in `scripts/launch-session.ts` via `checkConcurrencyCap()` (E2B REST `GET /v2/sandboxes`). Static cap is `MAX_CONCURRENT_SESSIONS = 10` in `wrangler.jsonc`, overridable via env. Exits with code 2 and a clear message when at cap. Verified live: with cap=3 and 3 paused sandboxes, the launcher refuses to launch. |
 | Real PR creation flow | ✅ done | Launcher mints a short-lived, repo-scoped GitHub App installation token; runner does `git push` and opens the PR via REST. Bot identity `hermes-bot`. Verified by opening PR #2 against duckhoa-uit/hermes-control-plane adding `it's worked!` to README.md. |
 
 ### 9.1 End-to-end verification
@@ -540,6 +533,8 @@ This is a permanent constraint, not a temporary workaround. Updates to ROADMAP P
 ---
 
 ## 10. Launcher sidecar (2026-06-25)
+
+> **Historical (2026-06-25).** Notes from the launcher-sidecar split (workerd cannot drive the E2B SDK). Kept for reference. For current behaviour see §2 (Current architecture) and `src/launcher/`.
 
 A small Bun HTTP service, `src/launcher/server.ts`, that owns sandbox
 lifecycle and the only copy of the E2B + GitHub App credentials. Future
@@ -605,6 +600,8 @@ session. Untagged sandboxes are never touched.
 ---
 
 ## 11. M4 — Runner ↔ OpenCode SDK/SSE (shipped — see §11.12 / §11.13)
+
+> **Historical (2026-06-25).** Implementation diary for the OpenCode-SDK-and-SSE migration. Kept for reference. For current behaviour see `src/runner/sandbox-runner.ts` + `src/runner/event-mapper.ts`.
 
 Today's runner shells out to `opencode run` once per turn and parses stdout
 chunks. That's the single largest gap between us and the Ramp Inspect
@@ -1109,6 +1106,8 @@ evidence.
 
 ## 12. M5 — long-pause resume + session lifecycle GC (shipped — see §12.15)
 
+> **Historical (2026-06-25)** for §12.1–§12.17. §12.18 (the Cloudflare-best-practices refactor) is the latest live section in this chapter. For current behaviour see §2 and §12.18.
+
 ### 12.1 Why
 
 M4 §11.13 verified that **immediate** follow-up prompts (seconds after
@@ -1132,7 +1131,7 @@ the longer-tail story:
    doesn't reach the user.
 
 3. **`MAX_SESSION_RUNTIME_MS` is declared dead code.** Defined in
-   `src/core/constants.ts:3` and listed in `wrangler.toml`, but no
+   `src/core/constants.ts:3` and listed in `wrangler.jsonc`, but no
    code path enforces it. The actual upper bound is the launcher
    watcher's 35-min hard deadline (`src/launcher/server.ts:69`).
 
@@ -1161,7 +1160,7 @@ t=2h      user POST /sessions/:id/prompt
 | `src/worker/session-do.ts` | (a) Heartbeat timeout in `running` / `review_ready` transitions to `idle_paused` (not `stalled → failed`). (b) `idle_paused` stops the heartbeat watchdog. (c) `POST /prompt` while `idle_paused` → call launcher `/resume`; if 200, transition `idle_paused → running` and queue the prompt for delivery once `runner.connected` arrives again. |
 | `src/launcher/server.ts` | (a) Watcher does NOT kill sandbox on DO status `idle_paused` — only on `failed`/`aborted`/`completed` or absolute deadline. (b) New route `POST /sessions/:id/resume` calls `Sandbox.connect(sandboxId)`; on success the runner thaws and dials back to DO. (c) Watcher deadline becomes the *upper* idle bound: e.g. `MAX_IDLE_PAUSED_MS = 2 h` for `idle_paused`, `MAX_RUNTIME_MS = 6 h` absolute. |
 | `src/launcher/provision.ts` | Increase `SANDBOX_TIMEOUT_MS` (today 15 min) to match the new `MAX_IDLE_PAUSED_MS`, since the pause budget should be the user-facing knob. |
-| `src/core/constants.ts` | Replace dead `MAX_SESSION_RUNTIME_MS` with `MAX_IDLE_PAUSED_MS` + `MAX_TOTAL_RUNTIME_MS` (both enforced; values overridable via `wrangler.toml`). |
+| `src/core/constants.ts` | Replace dead `MAX_SESSION_RUNTIME_MS` with `MAX_IDLE_PAUSED_MS` + `MAX_TOTAL_RUNTIME_MS` (both enforced; values overridable via `wrangler.jsonc`). |
 | `src/worker/session-do.ts` | Pending-prompt queue: while `idle_paused → running` transition is mid-flight, hold the new prompt in DO storage and replay on `runner.connected`. (This is the M2.3 "prompt queue" wedge but only the minimal subset needed for resume; full queue is still M2.3.) |
 | Tests | (a) state-machine: idle_paused round-trip. (b) Mock provision.test.ts: `Sandbox.connect` called on resume path. (c) Integration: heartbeat timeout → idle_paused, not failed. |
 | Docs | Update README "Flow" diagram + §11.13's "Reading the result" — now follow-up window is hours, not seconds. |
@@ -1404,7 +1403,7 @@ Three knobs tuned + one new launcher action:
 
 | Change | Rationale |
 |---|---|
-| `HEARTBEAT_TIMEOUT_MS: 60s → 15 min` (`src/core/constants.ts`, `wrangler.toml`) | Codex picks 10 min, OpenHands picks none; 15 min splits the middle and matches E2B's 15-min auto-pause window. Real runner crashes still detected within 15 min — well under the 60-min launcher hard cap. |
+| `HEARTBEAT_TIMEOUT_MS: 60s → 15 min` (`src/core/constants.ts`, `wrangler.jsonc`) | Codex picks 10 min, OpenHands picks none; 15 min splits the middle and matches E2B's 15-min auto-pause window. Real runner crashes still detected within 15 min — well under the 60-min launcher hard cap. |
 | Skip heartbeat watchdog at `review_ready` (`src/worker/session-do.ts:checkHeartbeat`) | E2B may pause the sandbox after 15 min idle in `review_ready`; that silences heartbeats but is not a real failure. Watchdog runs in `running` only (where stalls do mean trouble). |
 | Launcher extends sandbox timeout on first `review_ready` (`src/launcher/server.ts:watchSession`) | `Sandbox.setTimeout(sandboxId, 55*60_000)` extends the E2B-side onTimeout from 15 min to 55 min — safely under Hobby's 60-min hard cap. Without this the sandbox would pause + heartbeat would resume firing in 60-90 s. |
 | Launcher hard deadline `35 min → 60 min` (`src/launcher/server.ts`) | Matches E2B Hobby's per-sandbox cap. Anything past 60 min is illegal at E2B's level anyway. |
@@ -1834,12 +1833,12 @@ yet — see deferred work below.
 **1. Delete D1 (zero-use, no migration needed)**
 
 - `schema.sql` — entire file (64 LoC)
-- `wrangler.toml` — `[[d1_databases]]` block
+- `wrangler.jsonc` — `[[d1_databases]]` block
 - `src/worker/env.d.ts` — `DB: D1Database` binding
 
 **2. Delete R2 (zero-use, no migration needed)**
 
-- `wrangler.toml` — `[[r2_buckets]]` block
+- `wrangler.jsonc` — `[[r2_buckets]]` block
 - `src/worker/env.d.ts` — `ARTIFACTS: R2Bucket` binding
 
 **3. De-duplicate `git.diff.ready`**
@@ -1880,7 +1879,7 @@ single copy), accessible via the existing artifacts API path.
 #### Risks
 
 - **Low**: D1/R2 bindings being deleted have zero callers. If a future
-  feature needs them, re-add the binding (one-line wrangler.toml edit).
+  feature needs them, re-add the binding (one-line wrangler.jsonc edit).
 - **Low**: SSE clients that rely on receiving `git.diff.ready` after
   the `session.completed` transition will now see it slightly earlier
   (runner-side, before review_ready). Documented contract is "emitted
@@ -1969,9 +1968,67 @@ tools: ALLOW_ALL_TOOLS,
    - `permission.asked`/`permission.updated` events: 0
    - Session completes without heartbeat-timeout failure
 
+### 12.18 Cloudflare-best-practices refactor of SessionDurableObject (2026-06-25)
+
+Audit pass against the Cloudflare Workers/DO best-practice guide.
+Surgical refactor — no behavioural changes visible to clients or the
+runner. All three test layers stayed green
+(`tests/e2e-do.test.ts` 13/13, `scripts/e2e-real.ts` 37/37,
+`scripts/e2e-full.ts` 6/6 against real E2B + real GitHub PR).
+
+#### What changed
+
+| # | Concern | Before | After |
+|---|---|---|---|
+| 1 | Cross-DO calls | `stub.fetch(new Request(...))` with JSON-over-HTTP framing inside `worker/index.ts` | Typed RPC methods on `SessionDurableObject` (`initSession`, `getState`, `sendPrompt`, `approveRequest`, `abortSession`, `createPR`). `stub.fetch()` kept *only* for the WS upgrade hop because RPC can't return a `WebSocket`. |
+| 2 | Event log durability | `events: HermesEvent[]` blob persisted in a single key; lost on partial writes | Per-event keys `evt:<10-digit-seq>` via `storage.put`; rehydrated with `storage.list({prefix:"evt:"})`. Adds `EventLog.appendExisting()` for the restore path. |
+| 3 | Heartbeat ticker | `setInterval` inside the DO — kept it warm, blocked hibernation | `ctx.storage.setAlarm()` + `override async alarm()`. DO sleeps between ticks. |
+| 4 | WebSocket lifecycle | In-memory `Set<WSConnection>` + `runnerConn` field; sockets died on hibernation | Hibernation API: `ctx.acceptWebSocket(ws, [tag])` with `tag ∈ {"client","runner"}`, `ws.serializeAttachment({tag,lastSeq})`, `override webSocketMessage/Close/Error`. Lookups via `ctx.getWebSockets(tag)`. |
+| 5 | Init race | `init()` called on first request, could race subsequent requests | Wrapped in `ctx.blockConcurrencyWhile()`. |
+| 6 | Config format | `wrangler.toml` | `wrangler.jsonc` with `$schema` and an `[observability]` block (10 % sampling). |
+| 7 | Typed binding | `DurableObjectNamespace` (untyped) | `DurableObjectNamespace<SessionDurableObject>` via a type-only import in `src/worker/env.d.ts`. |
+
+#### Caveats
+
+Maintainer-facing notes (RPC type caveat → `asRpc()` cast; hibernation
+attachment shape; single alarm slot) live in
+[`docs/ARCHITECTURE.md §3`](./ARCHITECTURE.md#3-durable-object--cloudflare-best-practice-playbook).
+
+#### Migration safety
+
+- `wrangler.jsonc` keeps `new_sqlite_classes: ["SessionDurableObject"]`;
+  class name unchanged → no migration needed.
+- Legacy sessions that stored the event log under the single `events`
+  key won't be restored by the new `evt:*` reader. Accepted: only
+  affects in-flight sessions during deploy. New sessions write the
+  per-key format from the first event.
+
+#### Bonus: supervisor TCP probe
+
+Sandbox snapshots can capture the supervisor mid poll-loop. After
+restore, `Date.now()` jumps past the pre-snapshot deadline and the
+supervisor immediately throws *"opencode-serve did not become ready"*,
+leaving the DO stuck in `provisioning`. Fix landed in the same batch:
+the supervisor now treats a successful TCP probe of `127.0.0.1:4096`
+as the authoritative ready signal (log scraping kept as a fast-path
+hint). Verified against opencode upstream
+(`anomalyco/opencode packages/opencode/src/cli/cmd/serve.ts`) — the
+"listening on …" log line is printed *after* `Server.listen()`
+resolves.
+
+#### E2B template rename
+
+`hermes-runner` → `control-plane-runner` to match the project rename
+(`HERMES_*` env vars → `CONTROL_PLANE_*`). Build-script override env
+var is now `CONTROL_PLANE_TEMPLATE_NAME`. (For why the alias has to
+be rebuilt per-account, see [`ARCHITECTURE.md §8`](./ARCHITECTURE.md#8-e2b-template).)
+
+
 ---
 
 ## 13. Doc sync — 2026-06-25
+
+> **Historical (2026-06-25).** Doc-sync log from the M5 / M5.x landing. Kept for reference.
 
 Audit + sync pass against the current code. No new features; only making
 the roadmap match shipped reality. Per §6, history is preserved with
@@ -2015,7 +2072,7 @@ in place.
 | File | Why | Verified safe |
 |---|---|---|
 | `src/providers/github.ts` | Legacy worker-side GitHub App broker. Zero callers (`grep "providers/github"` → 0 hits). Launcher uses `src/launcher/github-token.ts`. | grep clean |
-| `MAX_SESSION_RUNTIME_MS` in `src/core/constants.ts`, `src/worker/env.d.ts`, `wrangler.toml` | Declared dead by §12.1; no code path reads it. §12.14 explicitly drops the concept. | grep clean across `src/ tests/ scripts/ infra/` |
+| `MAX_SESSION_RUNTIME_MS` in `src/core/constants.ts`, `src/worker/env.d.ts`, `wrangler.jsonc` | Declared dead by §12.1; no code path reads it. §12.14 explicitly drops the concept. | grep clean across `src/ tests/ scripts/ infra/` |
 
 ### 13.3 Doc fixes in this sync
 
