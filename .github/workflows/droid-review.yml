@@ -1,0 +1,73 @@
+# AI-generated PR review.
+#
+# On every PR (open / synchronize / reopen / ready_for_review),
+# invokes the Factory Droid CLI to produce a structured code-review
+# comment that lands directly on the PR. This is the automated half of
+# the review loop; humans still hold merge.
+#
+# Requires the `FACTORY_API_KEY` repository secret (or org secret).
+# Scope: only the PR diff + touched files; the action's own permissions
+# are limited to PR comments + read access.
+name: droid-review
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  # One review per PR head sha — synchronize storms collapse.
+  group: droid-review-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0 # full history for diff context
+
+      - uses: factory-ai/factory-cli-action@v1
+        with:
+          factory_api_key: ${{ secrets.FACTORY_API_KEY }}
+          model: claude-opus-4-7
+          prompt: |
+            You are reviewing pull request #${{ github.event.pull_request.number }}
+            on ${{ github.repository }}.
+
+            Title: ${{ github.event.pull_request.title }}
+
+            Read the diff with `git diff origin/${{ github.event.pull_request.base.ref }}...HEAD`,
+            inspect any file you need with `cat`, and post ONE concise GitHub
+            review comment via `gh pr review`. Structure it as:
+
+              ## Droid review
+
+              **Summary.** 1-2 sentences on what the change does and the
+              risk surface.
+
+              **Findings.** Bullet list of concrete issues — bugs, missing
+              tests, regressions, naming/style violations against
+              CONTRIBUTING.md, security smells. Quote file:line. Skip
+              section if zero findings.
+
+              **Suggestions.** Optional improvements that aren't blockers.
+
+              **Verdict.** One of: APPROVE | COMMENT | REQUEST_CHANGES,
+              with a one-sentence rationale.
+
+            Be brief. No filler. Do not duplicate what oxlint / typecheck
+            already gate (those run in the lint workflow). Use --body-file
+            to avoid shell quoting issues. The PAT scope only allows
+            COMMENT — never call `gh pr review --approve` directly; emit
+            the verdict as text only.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

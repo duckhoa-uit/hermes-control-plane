@@ -3,6 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
+    "setup": "bash scripts/dev-setup.sh",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "test": "vitest run",

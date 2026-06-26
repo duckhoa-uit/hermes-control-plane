@@ -149,3 +149,39 @@ edit `package.json` + `bun.lock` manually and explain why in the PR.
 
 Unused dependencies are caught by `bun run deadcode` (knip, CI gate) — no
 human policy needed there.
+
+---
+
+## Feature flags
+
+Lightweight env-driven flag system in `src/core/feature-flags.ts`. No
+LaunchDarkly / Statsig; sufficient for kill-switches and progressive
+rollout of agent-shipped changes. Two primary entry points:
+
+```ts
+import { isFlagEnabled, percentageRollout } from "@/core/feature-flags";
+
+// Boolean kill-switch.
+if (isFlagEnabled("autofix_review_changes", env)) {
+  /* ... */
+}
+
+// Stable per-key rollout.
+if (percentageRollout("new_sandbox_image", sessionId, env)) {
+  /* ... */
+}
+```
+
+Flag-name convention: lowercase snake_case in code. Stored as an env var
+named `FF_<UPPERCASE>`:
+
+| Code call | Env var | Accepted values |
+|---|---|---|
+| `isFlagEnabled("foo", env)` | `FF_FOO` | `1`, `true`, `on`, `yes` (case-insensitive) → on; anything else (or missing) → off |
+| `percentageRollout("foo", key, env)` | `FF_FOO_PCT` | integer/float 0..100; bucket assignment is deterministic on `key` via FNV-1a |
+| `flagValue("model", env)` | `FF_MODEL` | raw string (variant flags) |
+
+Set flags via `wrangler secret put FF_FOO` (Worker), `.dev.vars` (local),
+or the launcher's systemd unit env (VPS). Removing a stale flag is a
+one-line PR — the call site just becomes the code path that was behind
+the flag.

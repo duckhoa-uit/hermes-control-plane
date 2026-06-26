@@ -83,8 +83,31 @@ docs/
 
 ## Running it locally
 
-You need `bun 1.3+`, `wrangler`, `ngrok`, an E2B Hobby account, a Z.AI
-key, a fine-grained GitHub PAT. Step-by-step is in
+One-command bootstrap from a fresh clone:
+
+```bash
+bun run setup
+```
+
+That runs `scripts/dev-setup.sh`: verifies tooling, `bun install`, runs lint
++ typecheck + the vitest suite, copies `.dev.vars.example` → `.dev.vars`
+(if missing), and lists the env vars still left to fill in. Idempotent.
+
+Then, in three terminals:
+
+```bash
+# A — Worker
+set -a && source .dev.vars && set +a && bunx wrangler dev
+
+# B — Launcher sidecar
+set -a && source .dev.vars && set +a && bun run launcher
+
+# C — Real end-to-end PR against a throwaway repo
+bun run e2e:full --repo https://github.com/<you>/<throwaway>
+```
+
+You need `bun 1.3+`, an E2B Hobby account, a Z.AI key, and a fine-grained
+GitHub PAT. Full per-service walk-through is in
 [`docs/SETUP.md`](docs/SETUP.md).
 
 ## HTTP API
