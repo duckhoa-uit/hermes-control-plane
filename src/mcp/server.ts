@@ -70,14 +70,9 @@ export function buildMcpHandler(wiring: McpServerWiring): (req: Request) => Prom
   };
 }
 
-function makeServer(w: McpServerWiring): McpServer {
-  const server = new McpServer({
-    name: "hermes-control-plane",
-    version: "1.0.0",
-  });
-
+function registerStartCodingTask(server: McpServer, w: McpServerWiring): void {
   // ──────────────────────────────────────────────────────────────────────
-  // 1. start_coding_task — POST /sessions on the launcher.
+  // start_coding_task — POST /sessions on the launcher.
   //
   // The single primary entry point. Spawns an E2B sandbox, clones the
   // repo, runs the agent, opens a real GitHub PR authored by the user
@@ -166,9 +161,11 @@ function makeServer(w: McpServerWiring): McpServer {
       };
     },
   );
+}
 
+function registerGetSessionStatus(server: McpServer, w: McpServerWiring): void {
   // ──────────────────────────────────────────────────────────────────────
-  // 2. get_session_status — GET /sessions/:id on the Worker.
+  // get_session_status — GET /sessions/:id on the Worker.
   // ──────────────────────────────────────────────────────────────────────
   server.registerTool(
     "get_session_status",
@@ -210,9 +207,11 @@ function makeServer(w: McpServerWiring): McpServer {
       };
     },
   );
+}
 
+function registerSendFollowupPrompt(server: McpServer, w: McpServerWiring): void {
   // ──────────────────────────────────────────────────────────────────────
-  // 3. send_followup_prompt — three flows depending on session state:
+  // send_followup_prompt — three flows depending on session state:
   //
   //   a. session running / paused — POST /sessions/:id/prompt on the
   //      Worker (the existing M5 path; sandbox resumes if paused).
@@ -359,9 +358,11 @@ function makeServer(w: McpServerWiring): McpServer {
       };
     },
   );
+}
 
+function registerAbortSession(server: McpServer, w: McpServerWiring): void {
   // ──────────────────────────────────────────────────────────────────────
-  // 4. abort_session — DELETE /sessions/:id on the launcher.
+  // abort_session — DELETE /sessions/:id on the launcher.
   // ──────────────────────────────────────────────────────────────────────
   server.registerTool(
     "abort_session",
@@ -393,6 +394,16 @@ function makeServer(w: McpServerWiring): McpServer {
       };
     },
   );
+}
 
+function makeServer(w: McpServerWiring): McpServer {
+  const server = new McpServer({
+    name: "hermes-control-plane",
+    version: "1.0.0",
+  });
+  registerStartCodingTask(server, w);
+  registerGetSessionStatus(server, w);
+  registerSendFollowupPrompt(server, w);
+  registerAbortSession(server, w);
   return server;
 }

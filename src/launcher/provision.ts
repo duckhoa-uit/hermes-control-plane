@@ -97,6 +97,148 @@ const SANDBOX_TIMEOUT_MS = 15 * 60 * 1000;
 const REPO_INSTRUCTIONS_MAX_BYTES = 8 * 1024;
 const REPO_INSTRUCTIONS_CANDIDATES = ["AGENTS.md", "CLAUDE.md", "CONVENTIONS.md"] as const;
 
+// --- Provision helpers -------------------------------------------------------
+// Pulled out of provisionSession to keep its complexity in check. Each helper
+// owns one phase and throws (caught and re-killed by the parent) on failure.
+
+async function cloneRepo(sbx: Sandbox, repoUrl: string): Promise<void> {
+  // Capture exit via shell suffix because the E2B SDK throws on non-zero
+  // exit by default.
+  const clone = await sbx.commands.run(
+    `rm -rf ${REPO_DIR} && (git clone --depth 1 ${repoUrl} ${REPO_DIR} 2>&1; echo "__exit=$?")`,
+    { timeoutMs: 120_000 },
+  );
+  const exitMatch = clone.stdout.match(/__exit=(\d+)/);
+  const exitCode = exitMatch ? Number(exitMatch[1]) : 0;
+  if (exitCode !== 0) {
+    throw new Error(
+      `git clone failed (exit ${exitCode}): ${clone.stdout.trim().split("\n").slice(-3).join(" | ")}`,
+    );
+  }
+}
+
+interface GitConfigDeps {
+  owner: string;
+  repo: string;
+  sandboxOriginToken: string;
+  userLogin: string;
+  userEmail: string;
+  prMode?: ProvisionInput["prMode"];
+  branchSuffix?: string;
+  sessionId: string;
+}
+
+async function configureGitRemote(sbx: Sandbox, d: GitConfigDeps): Promise<void> {
+  const remoteUrl = `https://${d.userLogin}:${d.sandboxOriginToken}@github.com/${d.owner}/${d.repo}.git`;
+  const setupCmds: string[] = [
+    `cd ${REPO_DIR}`,
+    `git config user.name '${d.userLogin.replace(/'/g, "'\\''")}'`,
+    `git config user.email '${d.userEmail.replace(/'/g, "'\\''")}'`,
+    `git remote set-url origin '${remoteUrl}'`,
+  ];
+
+  if (d.prMode) {
+    // Amend: fetch the PR branch and check it out. We cloned with
+    // --depth 1 --single-branch so the remote refspec only tracks
+    // HEAD; we have to fetch the PR branch by its full ref AND
+    // unshallow it (push will fail without enough history). The
+    // explicit refspec also creates the origin/<branch> tracking
+    // ref the subsequent checkout points at.
+    const br = d.prMode.branch.replace(/'/g, "'\\''");
+    setupCmds.push(`git fetch --depth 50 origin '+refs/heads/${br}:refs/remotes/origin/${br}'`);
+    setupCmds.push(`git checkout -B '${br}' 'origin/${br}'`);
+  } else {
+    // Fresh session: create a new hermes/<short-session-id> branch. When a
+    // valid suggested suffix is supplied (A1), branch becomes
+    // hermes/<suffix>-<id4> so reviewers see something meaningful.
+    const suffix = d.branchSuffix && /^[a-z0-9-]{1,40}$/.test(d.branchSuffix) ? d.branchSuffix : "";
+    const branch = suffix
+      ? `hermes/${suffix}-${d.sessionId.slice(-4)}`
+      : `hermes/${d.sessionId.slice(-8)}`;
+    setupCmds.push(`git checkout -B ${branch}`);
+  }
+
+  const setup = await sbx.commands.run(`(${setupCmds.join(" && ")}; echo "__setup_exit=$?") 2>&1`, {
+    timeoutMs: 30_000,
+  });
+  const setupExitMatch = setup.stdout.match(/__setup_exit=(\d+)/);
+  const setupExit = setupExitMatch ? Number(setupExitMatch[1]) : 0;
+  if (setupExit !== 0) {
+    throw new Error(
+      `git setup failed (exit ${setupExit}): ${setup.stdout.trim().split("\n").slice(-10).join(" | ")}`,
+    );
+  }
+}
+
+function buildStartConfig(
+  input: ProvisionInput,
+  owner: string,
+  repo: string,
+  userLogin: string,
+): Record<string, string> {
+  const startConfig: Record<string, string> = {
+    CONTROL_PLANE_SESSION_ID: input.sessionId,
+    CONTROL_PLANE_RUNNER_TOKEN: input.runnerToken,
+    CONTROL_PLANE_WS_URL: input.controlWsUrl,
+    ZAI_API_KEY: input.zaiApiKey ?? "",
+    // PR #C: GITHUB_WRITE_TOKEN is never put in start.json. The launcher
+    // /publish-pr endpoint is the only holder.
+    GITHUB_USER_LOGIN: userLogin,
+    GITHUB_USER_EMAIL: input.githubUserEmail ?? "",
+    GITHUB_OWNER: owner,
+    GITHUB_REPO: repo,
+    GITHUB_BASE_BRANCH: input.baseBranch ?? "main",
+  };
+  if (input.prMode) {
+    // Runner reads these to switch into amend mode: skips POST /pulls and
+    // emits pr.updated instead of pr.created on push.
+    startConfig.CONTROL_PLANE_PR_MODE_BRANCH = input.prMode.branch;
+    startConfig.CONTROL_PLANE_PR_MODE_NUMBER = String(input.prMode.prNumber);
+    startConfig.CONTROL_PLANE_PR_MODE_URL = input.prMode.prUrl;
+  }
+  if (input.amendTrigger) {
+    // A5: structured trigger metadata so the runner can pick a tailored
+    // preamble. Serialised as JSON to avoid spreading ad-hoc env names.
+    startConfig.CONTROL_PLANE_AMEND_TRIGGER_KIND = input.amendTrigger.kind;
+    startConfig.CONTROL_PLANE_AMEND_TRIGGER_JSON = JSON.stringify(input.amendTrigger);
+  }
+  return startConfig;
+}
+
+async function probeRepoInstructions(
+  sbx: Sandbox,
+): Promise<ProvisionResult["repoInstructions"] | undefined> {
+  for (const candidate of REPO_INSTRUCTIONS_CANDIDATES) {
+    try {
+      const check = await sbx.commands.run(
+        `test -f ${REPO_DIR}/${candidate} && wc -c < ${REPO_DIR}/${candidate} || echo MISSING`,
+        { timeoutMs: 5_000 },
+      );
+      const out = check.stdout.trim();
+      if (out === "MISSING" || out === "") continue;
+      const bytes = Number(out);
+      if (!Number.isFinite(bytes) || bytes <= 0) continue;
+      const read = await sbx.commands.run(
+        `head -c ${REPO_INSTRUCTIONS_MAX_BYTES} ${REPO_DIR}/${candidate}`,
+        { timeoutMs: 5_000 },
+      );
+      const content = read.stdout;
+      if (!content) continue;
+      const truncated = bytes > REPO_INSTRUCTIONS_MAX_BYTES;
+      return {
+        source: candidate,
+        content: truncated
+          ? content +
+            `\n\n[... truncated, original was ${bytes} bytes, cap is ${REPO_INSTRUCTIONS_MAX_BYTES} ...]`
+          : content,
+      };
+    } catch {
+      // best-effort
+    }
+  }
+  return undefined;
+}
+
 export async function provisionSession(input: ProvisionInput): Promise<ProvisionResult> {
   // 1. Spawn from snapshot. Tag with hermes session id so the orphan sweeper
   //    can map a stray sandbox back to a session later.
@@ -127,20 +269,8 @@ export async function provisionSession(input: ProvisionInput): Promise<Provision
   })();
 
   try {
-    // 2. Clone repo (per-session). Capture exit via shell suffix because the
-    //    E2B SDK throws on non-zero exit by default.
-    const clone = await sbx.commands.run(
-      `rm -rf ${REPO_DIR} && (git clone --depth 1 ${input.repoUrl} ${REPO_DIR} 2>&1; echo "__exit=$?")`,
-      { timeoutMs: 120_000 },
-    );
-    const exitMatch = clone.stdout.match(/__exit=(\d+)/);
-    const exitCode = exitMatch ? Number(exitMatch[1]) : 0;
-    if (exitCode !== 0) {
-      await killOnce();
-      throw new Error(
-        `git clone failed (exit ${exitCode}): ${clone.stdout.trim().split("\n").slice(-3).join(" | ")}`,
-      );
-    }
+    // 2. Clone repo (per-session).
+    await cloneRepo(sbx, input.repoUrl);
 
     // 3. Bake P1.1 single-user OAuth credentials into the cloned repo so
     //    the agent's own `git push` works directly (Option A). The token
@@ -157,137 +287,36 @@ export async function provisionSession(input: ProvisionInput): Promise<Provision
     const userLogin = input.githubUserLogin ?? "";
     // B3 / PR #C: sandbox origin uses the read-only token.  Falls back to
     // the write token only when the read token is unset so legacy dev
-    // setups without GITHUB_READ_TOKEN keep cloning; the runner
-    // still cannot push because the write token is never put in
-    // start.json (the launcher /publish-pr endpoint holds the only
-    // copy used for push).
+    // setups without GITHUB_READ_TOKEN keep cloning; the runner still
+    // cannot push because the write token is never put in start.json
+    // (the launcher /publish-pr endpoint holds the only copy used for push).
     const sandboxOriginToken = readToken || userToken;
     if (owner && repo && sandboxOriginToken && userLogin) {
-      const gitEmail = input.githubUserEmail || `${userLogin}@users.noreply.github.com`;
-      const remoteUrl = `https://x-access-token:${sandboxOriginToken}@github.com/${owner}/${repo}.git`;
-      const setupCmds: string[] = [
-        `cd ${REPO_DIR}`,
-        `git config user.name '${userLogin.replace(/'/g, "'\\''")}'`,
-        `git config user.email '${gitEmail.replace(/'/g, "'\\''")}'`,
-        `git remote set-url origin '${remoteUrl}'`,
-      ];
-      if (input.prMode) {
-        // Amend: fetch the PR branch and check it out. We cloned with
-        // --depth 1 --single-branch so the remote refspec only tracks
-        // HEAD; we have to fetch the PR branch by its full ref AND
-        // unshallow it (push will fail without enough history). The
-        // explicit refspec also creates the origin/<branch> tracking
-        // ref the subsequent checkout points at.
-        const br = input.prMode.branch.replace(/'/g, "'\\''");
-        setupCmds.push(`git fetch --depth 50 origin '+refs/heads/${br}:refs/remotes/origin/${br}'`);
-        setupCmds.push(`git checkout -B '${br}' 'origin/${br}'`);
-      } else {
-        // Fresh session: create a new hermes/<short-session-id> branch.
-        // A1: when a valid suggested suffix is supplied, the branch
-        // becomes hermes/<suffix>-<id4> so reviewers see something
-        // meaningful in the GitHub branch picker.
-        const suffix =
-          input.branchSuffix && /^[a-z0-9-]{1,40}$/.test(input.branchSuffix)
-            ? input.branchSuffix
-            : "";
-        const branch = suffix
-          ? `hermes/${suffix}-${input.sessionId.slice(-4)}`
-          : `hermes/${input.sessionId.slice(-8)}`;
-        setupCmds.push(`git checkout -B ${branch}`);
-      }
-      const setup = await sbx.commands.run(
-        // Suffix with `; echo __exit=$?` so we capture the real exit code
-        // from the chain — E2B SDK throws on non-zero, so wrap in `(... ; true)`
-        // and grep the exit ourselves to get a useful error message.
-        `(${setupCmds.join(" && ")}; echo "__setup_exit=$?") 2>&1`,
-        { timeoutMs: 30_000 },
-      );
-      const setupExitMatch = setup.stdout.match(/__setup_exit=(\d+)/);
-      const setupExit = setupExitMatch ? Number(setupExitMatch[1]) : 0;
-      if (setupExit !== 0) {
-        await killOnce();
-        throw new Error(
-          `git setup failed (exit ${setupExit}): ${setup.stdout.trim().split("\n").slice(-10).join(" | ")}`,
-        );
-      }
+      await configureGitRemote(sbx, {
+        owner,
+        repo,
+        sandboxOriginToken,
+        userLogin,
+        userEmail: input.githubUserEmail || `${userLogin}@users.noreply.github.com`,
+        prMode: input.prMode,
+        branchSuffix: input.branchSuffix,
+        sessionId: input.sessionId,
+      });
     }
 
-    // 4. Drop the per-session start config. The supervisor (baked into the
-    //    template, already running in the snapshot) is polling this path and
-    //    will exec the runner with these env vars.
-    const startConfig: Record<string, string> = {
-      CONTROL_PLANE_SESSION_ID: input.sessionId,
-      CONTROL_PLANE_RUNNER_TOKEN: input.runnerToken,
-      CONTROL_PLANE_WS_URL: input.controlWsUrl,
-      ZAI_API_KEY: input.zaiApiKey ?? "",
-      // PR #C: GITHUB_WRITE_TOKEN is never put in start.json.
-      // The launcher /publish-pr endpoint is the only holder.
-      GITHUB_USER_LOGIN: userLogin,
-      GITHUB_USER_EMAIL: input.githubUserEmail ?? "",
-      GITHUB_OWNER: owner,
-      GITHUB_REPO: repo,
-      GITHUB_BASE_BRANCH: input.baseBranch ?? "main",
-    };
-    if (input.prMode) {
-      // Runner reads these to switch into amend mode: skips POST /pulls
-      // and emits pr.updated instead of pr.created on push.
-      startConfig.CONTROL_PLANE_PR_MODE_BRANCH = input.prMode.branch;
-      startConfig.CONTROL_PLANE_PR_MODE_NUMBER = String(input.prMode.prNumber);
-      startConfig.CONTROL_PLANE_PR_MODE_URL = input.prMode.prUrl;
-    }
-    if (input.amendTrigger) {
-      // A5: structured trigger metadata so the runner can pick a
-      // tailored preamble (review feedback vs CI failure). Optional;
-      // when absent the runner falls back to today's generic amend text.
-      startConfig.CONTROL_PLANE_AMEND_TRIGGER_KIND = input.amendTrigger.kind;
-      // Serialise the details payload as JSON; cheaper than spreading
-      // multiple ad-hoc env names and easier to evolve.
-      startConfig.CONTROL_PLANE_AMEND_TRIGGER_JSON = JSON.stringify(input.amendTrigger);
-    }
-
-    // A4: probe for repo-level agent instructions BEFORE writing start.json
-    // so the runner can include them in its initial WS handshake — that
-    // lands in the DO before sendInitialPrompt() fires, so the first
-    // turn's context package already carries them.
-    let repoInstructions:
-      | { source: "AGENTS.md" | "CLAUDE.md" | "CONVENTIONS.md"; content: string }
-      | undefined;
-    for (const candidate of REPO_INSTRUCTIONS_CANDIDATES) {
-      try {
-        const check = await sbx.commands.run(
-          `test -f ${REPO_DIR}/${candidate} && wc -c < ${REPO_DIR}/${candidate} || echo MISSING`,
-          { timeoutMs: 5_000 },
-        );
-        const out = check.stdout.trim();
-        if (out === "MISSING" || out === "") continue;
-        const bytes = Number(out);
-        if (!Number.isFinite(bytes) || bytes <= 0) continue;
-        const read = await sbx.commands.run(
-          `head -c ${REPO_INSTRUCTIONS_MAX_BYTES} ${REPO_DIR}/${candidate}`,
-          { timeoutMs: 5_000 },
-        );
-        const content = read.stdout;
-        if (!content) continue;
-        const truncated = bytes > REPO_INSTRUCTIONS_MAX_BYTES;
-        repoInstructions = {
-          source: candidate,
-          content: truncated
-            ? content +
-              `\n\n[... truncated, original was ${bytes} bytes, cap is ${REPO_INSTRUCTIONS_MAX_BYTES} ...]`
-            : content,
-        };
-        break;
-      } catch {
-        // best-effort
-      }
-    }
+    // 4. Build start config + probe for repo instructions BEFORE writing
+    //    start.json so the runner can include them in its initial WS
+    //    handshake. The supervisor (baked into the template, already
+    //    running in the snapshot) is polling start.json and will exec the
+    //    runner with these env vars.
+    const startConfig = buildStartConfig(input, owner, repo, userLogin);
+    const repoInstructions = await probeRepoInstructions(sbx);
 
     // A4: repoInstructions are NOT baked into start.json — the launcher
     // delivers them out-of-band to the DO (POST /sessions/:id/repo-instructions)
     // so they never appear in the sandbox process env where the agent's
     // own tools (ps / env / cat /opt/control-plane/start.json) could read
-    // them. This keeps the prompt the runner sees clean and the storage
-    // of the instructions inside the trusted control plane.
+    // them.
     await sbx.files.write(START_CONFIG_PATH, JSON.stringify(startConfig));
 
     return { sandboxId: sbx.sandboxId, kill: killOnce, repoInstructions };
