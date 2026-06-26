@@ -226,7 +226,14 @@ function makeServer(w: McpServerWiring): McpServer {
         "(completed/failed/aborted) AND its PR is still open, a fresh " +
         "session is transparently spawned in amend mode to push another " +
         "commit onto the same PR — the new sessionId is returned. If the " +
-        "PR was merged or closed, the call fails with a 410.",
+        "PR was merged or closed, the call fails with a 410. " +
+        "IMPORTANT: when this call spawns a new amend session, the returned " +
+        "sessionId is in `provisioning`/`runner_connecting` state — the " +
+        "runner has NOT yet connected. Subscribe to streamUrl and wait for " +
+        "`session.status_changed -> ready` before calling " +
+        "send_followup_prompt against the new sessionId; otherwise the " +
+        "prompt will be queued behind the spawn's initial task and the two " +
+        "agent.prompt commands may race when the runner finally connects.",
       inputSchema: {
         sessionId: z.string().describe("sessionId returned by start_coding_task."),
         text: z.string().min(1).describe("Plain-English follow-up prompt."),
