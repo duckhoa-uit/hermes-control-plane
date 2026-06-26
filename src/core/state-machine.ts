@@ -46,8 +46,8 @@ export function getValidTransitions(from: SessionStatus): SessionStatus[] {
   return VALID_TRANSITIONS[from] ?? [];
 }
 
-const TERMINAL_STATES: SessionStatus[] = ["completed", "failed", "aborted"];
-const ACTIVE_STATES: SessionStatus[] = [
+const TERMINAL_STATES = new Set<SessionStatus>(["completed", "failed", "aborted"]);
+const ACTIVE_STATES = new Set<SessionStatus>([
   "provisioning",
   "runner_connecting",
   "ready",
@@ -55,12 +55,12 @@ const ACTIVE_STATES: SessionStatus[] = [
   "needs_approval",
   "review_ready",
   "creating_pr",
-];
+]);
 
 export function isTerminal(status: SessionStatus): boolean {
-  return TERMINAL_STATES.includes(status);
+  return TERMINAL_STATES.has(status);
 }
 
 export function isActive(status: SessionStatus): boolean {
-  return ACTIVE_STATES.includes(status);
+  return ACTIVE_STATES.has(status);
 }

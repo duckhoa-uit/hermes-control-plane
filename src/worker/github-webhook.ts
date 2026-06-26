@@ -181,6 +181,92 @@ export async function verifyGithubHmac(args: VerifyArgs): Promise<boolean> {
   return diff === 0;
 }
 
+// --- Per-event parsers ------------------------------------------------------
+// Each handler owns one X-GitHub-Event value. They return null only when the
+// payload is structurally invalid (missing required objects). "We don't want
+// to act on this" returns a kind:"ignored" record so the caller can ack 200.
+
+function parsePullRequest(body: unknown, deliveryId: string): ParsedWebhook | null {
+  const p = body as PullRequestEventPayload;
+  if (!p.pull_request || !p.repository) return null;
+  return {
+    kind: "pull_request",
+    deliveryId,
+    prKey: `${p.repository.full_name}#${p.pull_request.number}`,
+    action: p.action,
+    merged: p.pull_request.merged === true,
+    prUrl: p.pull_request.html_url,
+    senderLogin: p.sender?.login ?? "",
+    repoFullName: p.repository.full_name,
+  };
+}
+
+function parsePullRequestReview(body: unknown, deliveryId: string): ParsedWebhook | null {
+  const p = body as PullRequestReviewEventPayload;
+  if (!p.pull_request || !p.review || !p.repository) return null;
+  // We only dispatch on `submitted` + state `changes_requested`.
+  // `commented` reviews (no state change) and `approved` reviews are
+  // common drive-by interactions — amending on them would spam the PR.
+  if (p.action !== "submitted" || p.review.state !== "changes_requested") {
+    return {
+      kind: "ignored",
+      deliveryId,
+      reason: `pull_request_review.${p.action}/${p.review.state}`,
+    };
+  }
+  return {
+    kind: "review_changes_requested",
+    deliveryId,
+    prKey: `${p.repository.full_name}#${p.pull_request.number}`,
+    prUrl: p.pull_request.html_url,
+    headSha: p.pull_request.head?.sha ?? "",
+    headBranch: p.pull_request.head?.ref ?? "",
+    reviewerLogin: p.review.user?.login ?? "",
+    reviewerType: p.review.user?.type,
+    senderLogin: p.sender?.login ?? "",
+    senderType: p.sender?.type,
+    reviewBody: p.review.body ?? "",
+    reviewId: p.review.id,
+    repoFullName: p.repository.full_name,
+  };
+}
+
+function parseCheckRun(body: unknown, deliveryId: string): ParsedWebhook | null {
+  const p = body as CheckRunEventPayload;
+  if (!p.check_run || !p.repository) return null;
+  if (p.action !== "completed") {
+    return { kind: "ignored", deliveryId, reason: `check_run.${p.action}` };
+  }
+  const conclusion = p.check_run.conclusion;
+  if (conclusion !== "failure" && conclusion !== "timed_out") {
+    return { kind: "ignored", deliveryId, reason: `check_run.${conclusion ?? "null"}` };
+  }
+  // The PR(s) this check_run belongs to. A push to a branch with no
+  // open PR has an empty list — skip those (the check_run will still
+  // arrive but no Hermes session to amend).
+  const prs = p.check_run.pull_requests ?? [];
+  if (prs.length === 0) {
+    return { kind: "ignored", deliveryId, reason: "check_run.no_pr" };
+  }
+  // GitHub Actions only ever ties a check_run to a single PR; take the
+  // first one. (If a sha is shared by multiple PRs, we'd amend whichever
+  // GitHub listed first — corner case, not seen in practice.)
+  const pr = prs[0];
+  return {
+    kind: "check_run_failed",
+    deliveryId,
+    prKey: `${p.repository.full_name}#${pr.number}`,
+    prUrl: `https://github.com/${p.repository.full_name}/pull/${pr.number}`,
+    headSha: p.check_run.head_sha,
+    checkName: p.check_run.name,
+    conclusion,
+    detailsUrl: p.check_run.details_url ?? p.check_run.html_url,
+    senderLogin: p.sender?.login ?? "",
+    senderType: p.sender?.type,
+    repoFullName: p.repository.full_name,
+  };
+}
+
 /** Parse a verified webhook delivery into the small subset we act on.
  *  `eventHeader` is the value of `X-GitHub-Event`; `deliveryHeader` is
  *  `X-GitHub-Delivery`. Both come straight off `request.headers`. */
@@ -201,90 +287,10 @@ export function parseGithubWebhook(
   if (!body || typeof body !== "object") return null;
 
   // GitHub ping (sent when the webhook is first installed). Always ack.
-  if (eventHeader === "ping") {
-    return { kind: "ignored", deliveryId, reason: "ping" };
-  }
-
-  if (eventHeader === "pull_request") {
-    const p = body as PullRequestEventPayload;
-    if (!p.pull_request || !p.repository) return null;
-    return {
-      kind: "pull_request",
-      deliveryId,
-      prKey: `${p.repository.full_name}#${p.pull_request.number}`,
-      action: p.action,
-      merged: p.pull_request.merged === true,
-      prUrl: p.pull_request.html_url,
-      senderLogin: p.sender?.login ?? "",
-      repoFullName: p.repository.full_name,
-    };
-  }
-
-  if (eventHeader === "pull_request_review") {
-    const p = body as PullRequestReviewEventPayload;
-    if (!p.pull_request || !p.review || !p.repository) return null;
-    // We only dispatch on `submitted` + state `changes_requested`.
-    // `commented` reviews (no state change) and `approved` reviews are
-    // common drive-by interactions — amending on them would spam the PR.
-    if (p.action !== "submitted" || p.review.state !== "changes_requested") {
-      return {
-        kind: "ignored",
-        deliveryId,
-        reason: `pull_request_review.${p.action}/${p.review.state}`,
-      };
-    }
-    return {
-      kind: "review_changes_requested",
-      deliveryId,
-      prKey: `${p.repository.full_name}#${p.pull_request.number}`,
-      prUrl: p.pull_request.html_url,
-      headSha: p.pull_request.head?.sha ?? "",
-      headBranch: p.pull_request.head?.ref ?? "",
-      reviewerLogin: p.review.user?.login ?? "",
-      reviewerType: p.review.user?.type,
-      senderLogin: p.sender?.login ?? "",
-      senderType: p.sender?.type,
-      reviewBody: p.review.body ?? "",
-      reviewId: p.review.id,
-      repoFullName: p.repository.full_name,
-    };
-  }
-
-  if (eventHeader === "check_run") {
-    const p = body as CheckRunEventPayload;
-    if (!p.check_run || !p.repository) return null;
-    if (p.action !== "completed") {
-      return { kind: "ignored", deliveryId, reason: `check_run.${p.action}` };
-    }
-    const conclusion = p.check_run.conclusion;
-    if (conclusion !== "failure" && conclusion !== "timed_out") {
-      return { kind: "ignored", deliveryId, reason: `check_run.${conclusion ?? "null"}` };
-    }
-    // The PR(s) this check_run belongs to. A push to a branch with no
-    // open PR has an empty list — skip those (the check_run will still
-    // arrive but no Hermes session to amend).
-    const prs = p.check_run.pull_requests ?? [];
-    if (prs.length === 0) {
-      return { kind: "ignored", deliveryId, reason: "check_run.no_pr" };
-    }
-    // GitHub Actions only ever ties a check_run to a single PR; take the
-    // first one. (If a sha is shared by multiple PRs, we'd amend whichever
-    // GitHub listed first — corner case, not seen in practice.)
-    const pr = prs[0];
-    return {
-      kind: "check_run_failed",
-      deliveryId,
-      prKey: `${p.repository.full_name}#${pr.number}`,
-      prUrl: `https://github.com/${p.repository.full_name}/pull/${pr.number}`,
-      headSha: p.check_run.head_sha,
-      checkName: p.check_run.name,
-      conclusion,
-      detailsUrl: p.check_run.details_url ?? p.check_run.html_url,
-      senderLogin: p.sender?.login ?? "",
-      senderType: p.sender?.type,
-      repoFullName: p.repository.full_name,
-    };
-  }
+  if (eventHeader === "ping") return { kind: "ignored", deliveryId, reason: "ping" };
+  if (eventHeader === "pull_request") return parsePullRequest(body, deliveryId);
+  if (eventHeader === "pull_request_review") return parsePullRequestReview(body, deliveryId);
+  if (eventHeader === "check_run") return parseCheckRun(body, deliveryId);
 
   // Everything else (issue_comment, pull_request_review_comment, push, …)
   // we acknowledge but do not act on. Follow-up is gateway-driven.

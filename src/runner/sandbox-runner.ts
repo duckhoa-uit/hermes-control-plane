@@ -508,80 +508,42 @@ async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
   // `runner.ready_to_publish` over WS.  The DO drives the actual push
   // and `POST /pulls` via the launcher's /publish-pr endpoint — the
   // write-scoped GitHub token never enters the sandbox.
-  //
-  // The legacy in-sandbox publish path was removed in PR #C after
-  // PR #B's flag soaked.  HERMES_PUBLISH_VIA_LAUNCHER is no longer
-  // read here.
   const userLogin = process.env.GITHUB_USER_LOGIN || "";
   const owner = process.env.GITHUB_OWNER || "";
   const repo = process.env.GITHUB_REPO || "";
   const baseBranch = process.env.GITHUB_BASE_BRANCH || "main";
-
-  // Amend mode: launcher passes the existing PR's branch / number / URL via
-  // CONTROL_PLANE_PR_MODE_*. When set, the publish phase tells the launcher
-  // to skip POST /pulls and reuse the existing URL.
-  const amendBranch = process.env.CONTROL_PLANE_PR_MODE_BRANCH || "";
-  const amendNumber = process.env.CONTROL_PLANE_PR_MODE_NUMBER || "";
-  const amendUrl = process.env.CONTROL_PLANE_PR_MODE_URL || "";
-  const amendMode = Boolean(amendBranch && amendNumber && amendUrl);
-
-  const branch = amendMode ? amendBranch : (payload.branch as string) || `hermes/${Date.now()}`;
-  const brSh = branch.replace(/'/g, "'\\''");
-  const fallbackTitle = `Hermes: ${payload.taskDescription ?? "automated change"}`;
-  const fallbackBody = "Automated PR created by hermes-control-plane.";
-  const taskDescription = (payload.taskDescription as string) || "";
 
   if (!owner || !repo) {
     sendError(`Missing GITHUB_OWNER / GITHUB_REPO env (owner=${owner} repo=${repo})`);
     return;
   }
 
+  const amend = readAmendModeFromEnv();
+  const amendMode = amend !== null;
+  const branch = amend?.branch ?? ((payload.branch as string) || `hermes/${Date.now()}`);
+  const taskDescription = (payload.taskDescription as string) || "";
+
   // A2: ask the agent for title + body BEFORE staging. Diff at this point
   // reflects what the agent intended to ship; if `git add -A` later picks
   // up new untracked files, the metadata may be slightly off, but that's
-  // strictly better than a hardcoded body and the cost is one extra
-  // short turn against the same opencode session.
-  let prMeta: PrMetadata | null = null;
-  try {
-    const diffForMeta = await execCmd("git diff");
-    const changedFilesForMeta = (await execCmd("git diff --name-only"))
-      .trim()
-      .split("\n")
-      .filter(Boolean);
-    if (diffForMeta.trim().length > 0 && taskDescription) {
-      prMeta = await generatePrMetadata(taskDescription, changedFilesForMeta, diffForMeta);
-    }
-  } catch (err) {
-    console.error("[runner] PR metadata pre-gen skipped:", (err as Error).message);
-  }
+  // strictly better than a hardcoded body.
+  const prMeta = await generatePrMetaIfPossible(taskDescription);
+  const fallbackTitle = `Hermes: ${payload.taskDescription ?? "automated change"}`;
+  const fallbackBody = "Automated PR created by hermes-control-plane.";
   const title = (payload.title as string) || prMeta?.title || fallbackTitle;
   const body =
     (payload.body as string) || (prMeta ? renderPrBody(prMeta, taskDescription) : fallbackBody);
 
-  // Suppress unused-variable warning when baseBranch is only referenced
-  // by the ahead-count path; we keep it scoped here for readability.
-  void baseBranch;
-
   try {
-    await execStrict(`git add -A`);
-    const stagedDiff = await execCmd(`git diff --cached --name-only`);
-    if (stagedDiff.trim()) {
-      await execStrict(`git commit -m "${title.replace(/"/g, '"')}"`);
-    } else {
-      // Agent already committed during the run. Verify HEAD has something
-      // worth pushing.
-      const cmpBase = amendMode ? `'origin/${brSh}'` : `origin/${baseBranch}`;
-      const aheadCount = (await execCmd(`git rev-list --count ${cmpBase}..HEAD`)).trim();
-      if (aheadCount === "0" || aheadCount === "") {
-        sendError(amendMode ? "No new commits to push" : "No changes staged for PR");
-        return;
-      }
+    const haveCommit = await stageAndCommit(title, branch, baseBranch, amendMode);
+    if (!haveCommit) {
+      sendError(amendMode ? "No new commits to push" : "No changes staged for PR");
+      return;
     }
 
-    // Resolve the headSha so the DO + launcher correlate the publish
-    // call with the runner's exact tip.  The DO replies asynchronously
-    // via pr.created / pr.updated / pr.publish.failed once the
-    // launcher returns.
+    // Resolve the headSha so the DO + launcher correlate the publish call
+    // with the runner's exact tip. The DO replies asynchronously via
+    // pr.created / pr.updated / pr.publish.failed once the launcher returns.
     const headSha = (await execCmd("git rev-parse HEAD")).trim();
     sendEvent("pr.publishing", { branch, headSha, amendMode });
     sendEvent("runner.ready_to_publish", {
@@ -590,8 +552,8 @@ async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
       title,
       body,
       amendMode,
-      amendPrNumber: amendMode ? Number(amendNumber) : undefined,
-      amendPrUrl: amendMode ? amendUrl : undefined,
+      amendPrNumber: amend ? Number(amend.number) : undefined,
+      amendPrUrl: amend?.url,
       ownerLogin: userLogin,
     });
     // We do NOT call sendComplete — the DO synthesises pr.created /
@@ -600,6 +562,54 @@ async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
     const msg = err instanceof Error ? err.message : String(err);
     sendError(`PR creation failed: ${msg}`);
   }
+}
+
+interface AmendMode {
+  branch: string;
+  number: string;
+  url: string;
+}
+
+function readAmendModeFromEnv(): AmendMode | null {
+  const branch = process.env.CONTROL_PLANE_PR_MODE_BRANCH || "";
+  const number = process.env.CONTROL_PLANE_PR_MODE_NUMBER || "";
+  const url = process.env.CONTROL_PLANE_PR_MODE_URL || "";
+  return branch && number && url ? { branch, number, url } : null;
+}
+
+async function generatePrMetaIfPossible(taskDescription: string): Promise<PrMetadata | null> {
+  if (!taskDescription) return null;
+  try {
+    const diff = await execCmd("git diff");
+    if (diff.trim().length === 0) return null;
+    const changedFiles = (await execCmd("git diff --name-only")).trim().split("\n").filter(Boolean);
+    return await generatePrMetadata(taskDescription, changedFiles, diff);
+  } catch (err) {
+    console.error("[runner] PR metadata pre-gen skipped:", (err as Error).message);
+    return null;
+  }
+}
+
+/** Stage + commit if needed. Returns true if HEAD now has something worth
+ *  pushing relative to the comparison base. */
+async function stageAndCommit(
+  title: string,
+  branch: string,
+  baseBranch: string,
+  amendMode: boolean,
+): Promise<boolean> {
+  await execStrict(`git add -A`);
+  const stagedDiff = await execCmd(`git diff --cached --name-only`);
+  if (stagedDiff.trim()) {
+    await execStrict(`git commit -m "${title.replace(/"/g, '"')}"`);
+    return true;
+  }
+  // Agent already committed during the run. Verify HEAD has something
+  // worth pushing.
+  const brSh = branch.replace(/'/g, "'\\''");
+  const cmpBase = amendMode ? `'origin/${brSh}'` : `origin/${baseBranch}`;
+  const aheadCount = (await execCmd(`git rev-list --count ${cmpBase}..HEAD`)).trim();
+  return aheadCount !== "0" && aheadCount !== "";
 }
 
 function attachHandlers(): void {
