@@ -72,6 +72,13 @@ jobs:
       - name: Feature flag audit (dead/stale flag detection)
         run: bun run flags:check
 
+      # AGENTS.md freshness: every `bun run <script>` and markdown link in
+      # AGENTS.md is resolved against package.json + the working tree.
+      # Catches stale instructions (renamed scripts, moved docs) before
+      # they confuse the next autonomous agent that reads the file.
+      - name: AGENTS.md freshness audit
+        run: bun run agents:check
+
   bundle-size:
     name: Worker bundle size budget
     runs-on: ubuntu-latest
