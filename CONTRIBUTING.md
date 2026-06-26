@@ -152,6 +152,42 @@ human policy needed there.
 
 ---
 
+## Observability
+
+The repo has a single shared logger in
+[`src/core/logger.ts`](src/core/logger.ts). It works in both runtimes
+(Cloudflare Worker + Bun launcher) and emits one JSON object per line on
+stdout/stderr so the output is scrapeable by `wrangler tail`,
+`journalctl -o cat | jq`, Datadog Logs, Axiom, etc. without a custom
+shipper.
+
+```ts
+import { createLogger, requestIdFrom } from "@/core/logger";
+
+const requestId = requestIdFrom(request.headers);
+const log = createLogger({ service: "worker", fields: { requestId } });
+
+log.info("session.created", { sessionId, mode });
+log.metric("worker.request", 1, { path, status: 200 });
+```
+
+Guarantees the logger gives you:
+
+| Guarantee | What it does | Why it matters for agents |
+|---|---|---|
+| **Structured (NDJSON)** | One JSON object per line with `ts`, `level`, `msg`, `service`, plus any fields you pass | Agents can grep + jq the logs deterministically instead of regexing a freeform string |
+| **Request-ID propagation** | `requestIdFrom(headers)` extracts `X-Request-Id` (or `cf-ray`) or mints a 16-char hex ID; the Worker echoes it back as `X-Request-Id` on every response | Lets you pivot from a launcher log line to the Worker log line that triggered it (distributed tracing baseline without OpenTelemetry overhead) |
+| **Redaction** | Field names matching `password\|secret\|token\|authorization\|api[-_]?key\|cookie\|webhook[-_]?secret` are auto-replaced; string values matching GitHub PATs, E2B/Z.AI keys, `Bearer …` headers, and long hex blobs are auto-replaced | Best-effort defense in depth so an accidentally-logged secret doesn't leak to the logs bucket. **Not a substitute** for not logging secrets in the first place. |
+| **Metrics envelope** | `log.metric(name, value, tags)` emits a line with `type: "metric"` so the ingestion pipeline can route it to a metrics store separately from human logs | Same `service` / `requestId` correlation as logs; compatible with DogStatsD / Prometheus exposition format |
+
+Conventions:
+- `LOG_LEVEL` env var (`debug` / `info` / `warn` / `error`, default
+  `info`) controls the threshold.
+- Prefer `log.child({ sessionId })` over re-passing the same field on
+  every call.
+- Don't use bare `console.log` in `src/` — it skips the redaction pass
+  and breaks the NDJSON contract.
+
 ## Feature flags
 
 Lightweight env-driven flag system in `src/core/feature-flags.ts`. No
