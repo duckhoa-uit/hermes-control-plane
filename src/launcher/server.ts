@@ -36,7 +36,6 @@ const GITHUB_WRITE_TOKEN = process.env.GITHUB_WRITE_TOKEN;
 // origin remote.  Optional only because launcher unit tests + the
 // offline CLI can run without a real PAT; production launchers should
 // always supply both tokens.
-const GITHUB_READ_TOKEN = process.env.GITHUB_READ_TOKEN;
 const GITHUB_USER_LOGIN = process.env.GITHUB_USER_LOGIN;
 const LAUNCHER_SHARED_SECRET = process.env.LAUNCHER_SHARED_SECRET;
 const MAX_CONCURRENT_SESSIONS = Number(process.env.MAX_CONCURRENT_SESSIONS ?? 10);
@@ -112,7 +111,7 @@ function watchSession(sessionId: string): void {
       if (r.ok) {
         const data = (await r.json()) as { session?: { status: string } };
         const status = data.session?.status ?? "";
-if (status === "review_ready" && !prTriggered && AUTO_PR) {
+        if (status === "review_ready" && !prTriggered && AUTO_PR) {
           prTriggered = true;
           log(`session ${sessionId.slice(0, 8)} review_ready -> trigger create-pr`);
           try {
@@ -125,7 +124,9 @@ if (status === "review_ready" && !prTriggered && AUTO_PR) {
           }
         }
         if (TERMINAL_STATUSES.has(status)) {
-          log(`session ${sessionId.slice(0, 8)} terminal=${status}; killing sandbox ${entry.sandboxId}`);
+          log(
+            `session ${sessionId.slice(0, 8)} terminal=${status}; killing sandbox ${entry.sandboxId}`,
+          );
           await entry.kill();
           activeSessions.delete(sessionId);
           done = true;
@@ -206,18 +207,24 @@ function timingSafeEqualStrings(a: string, b: string): boolean {
   return mismatch === 0;
 }
 
-async function resolveParentAmend(
-  parentSessionId: string,
-): Promise<{
-  ok: true;
-  repoUrl: string;
-  baseBranch: string;
-  prMode: { branch: string; prNumber: number; prUrl: string };
-} | { ok: false; status: number; error: string; reason: string }> {
+async function resolveParentAmend(parentSessionId: string): Promise<
+  | {
+      ok: true;
+      repoUrl: string;
+      baseBranch: string;
+      prMode: { branch: string; prNumber: number; prUrl: string };
+    }
+  | { ok: false; status: number; error: string; reason: string }
+> {
   // 1. Parent session state — needs repoUrl, baseBranch, branch, prUrl.
   const sResp = await fetch(`${WORKER_URL}/sessions/${parentSessionId}`);
   if (sResp.status === 404) {
-    return { ok: false, status: 404, error: "parent session not found", reason: "parentSessionId does not exist" };
+    return {
+      ok: false,
+      status: 404,
+      error: "parent session not found",
+      reason: "parentSessionId does not exist",
+    };
   }
   if (!sResp.ok) {
     return { ok: false, status: 502, error: "worker getState failed", reason: `${sResp.status}` };
@@ -229,31 +236,54 @@ async function resolveParentAmend(
     baseBranch: string | null;
   };
   if (!data.session || !data.repoUrl) {
-    return { ok: false, status: 410, error: "parent session has no repo", reason: "session state is incomplete" };
+    return {
+      ok: false,
+      status: 410,
+      error: "parent session has no repo",
+      reason: "session state is incomplete",
+    };
   }
   const prUrl = data.artifacts?.prUrl;
   if (!prUrl) {
-    return { ok: false, status: 409, error: "parent has no PR yet", reason: "the parent session never reached pr.created — amend mode requires an existing PR" };
+    return {
+      ok: false,
+      status: 409,
+      error: "parent has no PR yet",
+      reason: "the parent session never reached pr.created — amend mode requires an existing PR",
+    };
   }
   // 2. Parse the PR URL into (owner, repo, number) and look up in the index.
   const m = prUrl.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
   if (!m) {
     return { ok: false, status: 500, error: "cannot parse parent PR URL", reason: prUrl };
   }
-  const owner = m[1], repo = m[2], number = Number(m[3]);
+  const owner = m[1],
+    repo = m[2],
+    number = Number(m[3]);
   const prKey = `${owner}/${repo}#${number}`;
   const idxResp = await fetch(`${WORKER_URL}/pr-index?key=${encodeURIComponent(prKey)}`, {
     headers: { "x-hermes-launcher-secret": LAUNCHER_SHARED_SECRET! },
   });
   if (idxResp.status === 404) {
-    return { ok: false, status: 410, error: "PR no longer indexed", reason: "the PR was unregistered (merged or unknown) — start a fresh session instead of amending" };
+    return {
+      ok: false,
+      status: 410,
+      error: "PR no longer indexed",
+      reason:
+        "the PR was unregistered (merged or unknown) — start a fresh session instead of amending",
+    };
   }
   if (!idxResp.ok) {
     return { ok: false, status: 502, error: "PR index lookup failed", reason: `${idxResp.status}` };
   }
   const idx = (await idxResp.json()) as { row: PrIndexRowWire };
   if (idx.row.status !== "open") {
-    return { ok: false, status: 410, error: `PR is ${idx.row.status}`, reason: "amend mode requires the PR to still be open" };
+    return {
+      ok: false,
+      status: 410,
+      error: `PR is ${idx.row.status}`,
+      reason: "amend mode requires the PR to still be open",
+    };
   }
   // The parent's session.branch is NOT reliable as the PR head ref:
   // when the parent is itself an amend session, its branch field was set
@@ -272,10 +302,14 @@ async function resolveParentAmend(
         const pr = (await ghResp.json()) as { head?: { ref?: string } };
         if (pr.head?.ref) headBranch = pr.head.ref;
       } else {
-        log(`resolveParentAmend: GitHub /pulls/${number} ${ghResp.status} — falling back to session.branch=${data.session.branch}`);
+        log(
+          `resolveParentAmend: GitHub /pulls/${number} ${ghResp.status} — falling back to session.branch=${data.session.branch}`,
+        );
       }
     } catch (err) {
-      log(`resolveParentAmend: GitHub /pulls/${number} error: ${(err as Error).message} — falling back to session.branch`);
+      log(
+        `resolveParentAmend: GitHub /pulls/${number} error: ${(err as Error).message} — falling back to session.branch`,
+      );
     }
   }
   return {
@@ -381,14 +415,11 @@ async function handleCreate(req: Request): Promise<Response> {
   //     loses the optional repo-level guidance.
   if (provisioned.repoInstructions) {
     try {
-      const r = await fetch(
-        `${WORKER_URL}/sessions/${session.id}/repo-instructions`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(provisioned.repoInstructions),
-        },
-      );
+      const r = await fetch(`${WORKER_URL}/sessions/${session.id}/repo-instructions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(provisioned.repoInstructions),
+      });
       if (!r.ok) {
         log(
           `repo-instructions POST failed for ${session.id.slice(0, 8)}: ${r.status} ${(await r.text()).slice(0, 200)}`,
@@ -409,7 +440,7 @@ async function handleCreate(req: Request): Promise<Response> {
 
   log(
     `session ${session.id.slice(0, 8)} provisioned sandbox=${provisioned.sandboxId}` +
-    (prMode ? ` amend=${prMode.branch}#${prMode.prNumber}` : ""),
+      (prMode ? ` amend=${prMode.branch}#${prMode.prNumber}` : ""),
   );
 
   return Response.json(
@@ -439,7 +470,10 @@ async function handleDelete(sessionId: string): Promise<Response> {
         headers: { "X-API-Key": E2B_API_KEY! },
       });
       if (r.ok) {
-        const list = (await r.json()) as { sandboxID?: string; metadata?: Record<string, string> }[];
+        const list = (await r.json()) as {
+          sandboxID?: string;
+          metadata?: Record<string, string>;
+        }[];
         for (const sbx of list) {
           if (sbx.metadata?.hermes_session_id === sessionId && sbx.sandboxID) {
             log(`DELETE ${sessionId.slice(0, 8)}: killing untracked sandbox ${sbx.sandboxID}`);
@@ -492,7 +526,8 @@ async function handleResume(sessionId: string): Promise<Response> {
     return Response.json(
       {
         error: "Sandbox not found",
-        reason: "No live or paused sandbox is tagged with this session id. The session may have been explicitly killed or its sandbox sweeped. Start a new session.",
+        reason:
+          "No live or paused sandbox is tagged with this session id. The session may have been explicitly killed or its sandbox sweeped. Start a new session.",
         recoverable: false,
       },
       { status: 410 },
@@ -525,7 +560,6 @@ async function handleResume(sessionId: string): Promise<Response> {
   }
 }
 
-
 async function handleGet(sessionId: string): Promise<Response> {
   const r = await fetch(`${WORKER_URL}/sessions/${sessionId}`);
   return new Response(await r.text(), {
@@ -534,11 +568,7 @@ async function handleGet(sessionId: string): Promise<Response> {
   });
 }
 
-
-async function handlePublishPr(
-  sessionId: string,
-  req: Request,
-): Promise<Response> {
+async function handlePublishPr(sessionId: string, req: Request): Promise<Response> {
   // B1 / PR #C — server-server publish chokepoint. Caller is the Worker
   // DO's handleReadyToPublish(), authenticated by the launcher-secret
   // middleware in main().  The legacy in-sandbox publish path was
@@ -570,10 +600,7 @@ async function handlePublishPr(
     );
   }
   if (!parsed.branch || !parsed.baseBranch || !parsed.repoUrl) {
-    return Response.json(
-      { error: "branch, baseBranch, repoUrl required" },
-      { status: 400 },
-    );
+    return Response.json({ error: "branch, baseBranch, repoUrl required" }, { status: 400 });
   }
   if (!parsed.amendMode && (!parsed.title || !parsed.body)) {
     return Response.json(
@@ -588,8 +615,7 @@ async function handlePublishPr(
       {
         error: "Sandbox not found for session",
         sessionId,
-        reason:
-          "No active or paused sandbox is tagged with this session id; cannot publish.",
+        reason: "No active or paused sandbox is tagged with this session id; cannot publish.",
       },
       { status: 410 },
     );
@@ -612,8 +638,7 @@ async function handlePublishPr(
 
   if (!result.ok) {
     log(
-      `publish-pr ${sessionId.slice(0, 8)} FAILED stage=${result.stage} ` +
-        `msg=${result.message}`,
+      `publish-pr ${sessionId.slice(0, 8)} FAILED stage=${result.stage} ` + `msg=${result.message}`,
     );
     return Response.json(
       {

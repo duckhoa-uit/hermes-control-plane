@@ -113,7 +113,10 @@ describe("renderPrBody", () => {
 
   it("truncates task description to 200 chars in the footer", () => {
     const meta = {
-      title: "x", summary: ["y"], verification: "z", outOfScope: "w",
+      title: "x",
+      summary: ["y"],
+      verification: "z",
+      outOfScope: "w",
     };
     const longTask = "Z".repeat(500);
     const body = renderPrBody(meta, longTask);

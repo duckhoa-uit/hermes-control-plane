@@ -1,0 +1,39 @@
+# Lint + format gate.
+#
+# Runs on every push and PR. Uses oxlint (Rust, ~50-100x faster than ESLint)
+# for the lint signal and Biome (Rust) as the formatter check. Both finish
+# in under a second on this codebase, so we can afford to run them on every
+# event without paths filters.
+name: lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      # oxlint: catches real bugs (no-unused-vars, no-floating-promises in
+      # tsgolint plugin, no-fallthrough, etc.). Fails the job on any error.
+      - name: Lint (oxlint)
+        run: bun run lint
+
+      # biome: formatter check only (linter disabled in biome.json so oxlint
+      # owns lint). Fails if any tracked file is not formatted.
+      - name: Format check (biome)
+        run: bun run format:check

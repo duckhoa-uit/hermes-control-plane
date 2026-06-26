@@ -57,9 +57,19 @@ describe("state-machine", () => {
 
     it("denies archived -> anything", () => {
       const allStates: SessionStatus[] = [
-        "created", "provisioning", "runner_connecting", "ready",
-        "running", "needs_approval", "review_ready", "creating_pr",
-        "completed", "failed", "aborted", "stalled", "archived",
+        "created",
+        "provisioning",
+        "runner_connecting",
+        "ready",
+        "running",
+        "needs_approval",
+        "review_ready",
+        "creating_pr",
+        "completed",
+        "failed",
+        "aborted",
+        "stalled",
+        "archived",
       ];
       for (const s of allStates) {
         expect(canTransition("archived", s)).toBe(false);

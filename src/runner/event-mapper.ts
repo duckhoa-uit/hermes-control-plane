@@ -48,14 +48,27 @@ export function createEventMapper(emit: (e: RunnerEventEmit) => void) {
           } else if (status === "completed") {
             emit({
               eventType: "tool.completed",
-              eventPayload: { callID, tool, output: state.output, title: state.title, metadata: state.metadata },
+              eventPayload: {
+                callID,
+                tool,
+                output: state.output,
+                title: state.title,
+                metadata: state.metadata,
+              },
             });
           } else if (status === "error") {
-            emit({ eventType: "tool.completed", eventPayload: { callID, tool, error: state.error } });
+            emit({
+              eventType: "tool.completed",
+              eventPayload: { callID, tool, error: state.error },
+            });
           }
         } else if (partType === "text") {
           const text = (part.text as string) || "";
-          if (text) emit({ eventType: "agent.message.complete", eventPayload: { text: text.slice(0, 4000) } });
+          if (text)
+            emit({
+              eventType: "agent.message.complete",
+              eventPayload: { text: text.slice(0, 4000) },
+            });
         }
         return;
       }
@@ -83,7 +96,10 @@ export function createEventMapper(emit: (e: RunnerEventEmit) => void) {
 
       case "session.error": {
         const err = (props as { error?: { message?: string; name?: string } }).error;
-        emit({ eventType: "agent.error", eventPayload: { error: err?.message || "unknown", name: err?.name } });
+        emit({
+          eventType: "agent.error",
+          eventPayload: { error: err?.message || "unknown", name: err?.name },
+        });
         return;
       }
 

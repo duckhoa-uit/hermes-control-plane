@@ -179,9 +179,7 @@ function makeServer(w: McpServerWiring): McpServer {
         "session. Use this to poll progress when you can't subscribe to the " +
         "events stream.",
       inputSchema: {
-        sessionId: z
-          .string()
-          .describe("sessionId returned by start_coding_task."),
+        sessionId: z.string().describe("sessionId returned by start_coding_task."),
       },
     },
     async ({ sessionId }) => {
@@ -261,7 +259,9 @@ function makeServer(w: McpServerWiring): McpServer {
       if (!stateResp.ok) {
         return {
           isError: true,
-          content: [{ type: "text", text: `worker ${stateResp.status}: ${await stateResp.text()}` }],
+          content: [
+            { type: "text", text: `worker ${stateResp.status}: ${await stateResp.text()}` },
+          ],
         };
       }
       const state = (await stateResp.json()) as {
@@ -304,7 +304,7 @@ function makeServer(w: McpServerWiring): McpServer {
       // reason if the PR is no longer open / never existed.
       w.log(
         `[mcp] send_followup_prompt: session ${sessionId.slice(0, 8)} is ${status}; ` +
-        `attempting transparent amend re-provision`,
+          `attempting transparent amend re-provision`,
       );
       const provResp = await fetch(`${w.launcherBaseUrl}/sessions`, {
         method: "POST",

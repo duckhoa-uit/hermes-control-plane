@@ -10,7 +10,6 @@
 // ============================================================
 
 import { WebSocket } from "ws";
-import { spawn, type ChildProcess } from "node:child_process";
 
 const BASE = process.argv[2] ?? "http://localhost:8787";
 const WS_BASE = BASE.replace(/^http/, "ws");
@@ -48,14 +47,18 @@ async function http<T = any>(
   path: string,
   body?: unknown,
 ): Promise<{ status: number; body: T }> {
-  const resp = await fetch(`${BASE}${path}`, {
-    method,
-    headers: body ? { "Content-Type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  // Build init incrementally — fetch rejects `body` (even `undefined`) on GET.
+  const init: RequestInit = { method };
+  if (body !== undefined) {
+    init.headers = { "Content-Type": "application/json" };
+    init.body = JSON.stringify(body);
+  }
+  const resp = await fetch(`${BASE}${path}`, init);
   const text = await resp.text();
   let parsed: any = text;
-  try { parsed = text ? JSON.parse(text) : null; } catch {}
+  try {
+    parsed = text ? JSON.parse(text) : null;
+  } catch {}
   return { status: resp.status, body: parsed };
 }
 
@@ -87,7 +90,7 @@ interface FakeRunnerOptions {
   sessionId: string;
   token: string;
   autoCompleteOnPrompt?: boolean; // emit runner.complete with artifacts after a prompt
-  autoPRCreated?: boolean;        // emit pr.created on pr.create command
+  autoPRCreated?: boolean; // emit pr.created on pr.create command
 }
 
 function startFakeRunner(opts: FakeRunnerOptions): {
@@ -117,49 +120,66 @@ function startFakeRunner(opts: FakeRunnerOptions): {
 
   ws.on("message", async (raw: Buffer) => {
     let msg: any;
-    try { msg = JSON.parse(raw.toString()); } catch { return; }
+    try {
+      msg = JSON.parse(raw.toString());
+    } catch {
+      return;
+    }
     if (msg.type !== "command" || !msg.command) return;
 
     const cmd = msg.command;
     commandsReceived.push(cmd);
     // Ack
-    ws.send(JSON.stringify({
-      type: "runner.command_ack",
-      sessionId: opts.sessionId,
-      payload: { commandId: cmd.commandId },
-    }));
+    ws.send(
+      JSON.stringify({
+        type: "runner.command_ack",
+        sessionId: opts.sessionId,
+        payload: { commandId: cmd.commandId },
+      }),
+    );
 
     if (cmd.type === "agent.prompt" && opts.autoCompleteOnPrompt) {
       // Simulate a tiny stream then complete.
-      ws.send(JSON.stringify({
-        type: "runner.event",
-        sessionId: opts.sessionId,
-        payload: { eventType: "agent.message.delta", eventPayload: { text: "working..." } },
-      }));
+      ws.send(
+        JSON.stringify({
+          type: "runner.event",
+          sessionId: opts.sessionId,
+          payload: { eventType: "agent.message.delta", eventPayload: { text: "working..." } },
+        }),
+      );
       await sleep(100);
-      ws.send(JSON.stringify({
-        type: "runner.complete",
-        sessionId: opts.sessionId,
-        payload: {
-          summary: "e2e test summary",
-          diff: "diff --git a/x b/x\n+++ b/x\n@@ +e2e",
-          changedFiles: ["x"],
-          testResult: { passed: true, total: 1, failed: 0, output: "ok" },
-        },
-      }));
+      ws.send(
+        JSON.stringify({
+          type: "runner.complete",
+          sessionId: opts.sessionId,
+          payload: {
+            summary: "e2e test summary",
+            diff: "diff --git a/x b/x\n+++ b/x\n@@ +e2e",
+            changedFiles: ["x"],
+            testResult: { passed: true, total: 1, failed: 0, output: "ok" },
+          },
+        }),
+      );
     }
     if (cmd.type === "pr.create" && opts.autoPRCreated) {
       await sleep(100);
-      ws.send(JSON.stringify({
-        type: "runner.event",
-        sessionId: opts.sessionId,
-        payload: { eventType: "pr.created", eventPayload: { url: "https://github.com/e2e/test/pull/42" } },
-      }));
-      ws.send(JSON.stringify({
-        type: "runner.complete",
-        sessionId: opts.sessionId,
-        payload: { prUrl: "https://github.com/e2e/test/pull/42" },
-      }));
+      ws.send(
+        JSON.stringify({
+          type: "runner.event",
+          sessionId: opts.sessionId,
+          payload: {
+            eventType: "pr.created",
+            eventPayload: { url: "https://github.com/e2e/test/pull/42" },
+          },
+        }),
+      );
+      ws.send(
+        JSON.stringify({
+          type: "runner.complete",
+          sessionId: opts.sessionId,
+          payload: { prUrl: "https://github.com/e2e/test/pull/42" },
+        }),
+      );
     }
     if (cmd.type === "session.shutdown") {
       if (heartbeat) clearInterval(heartbeat);
@@ -171,7 +191,10 @@ function startFakeRunner(opts: FakeRunnerOptions): {
     ws,
     ready,
     commandsReceived,
-    close: () => { if (heartbeat) clearInterval(heartbeat); ws.close(); },
+    close: () => {
+      if (heartbeat) clearInterval(heartbeat);
+      ws.close();
+    },
   };
 }
 
@@ -190,7 +213,9 @@ function subscribeClient(sessionId: string): {
     ws.once("error", reject);
   });
   ws.on("message", (raw: Buffer) => {
-    try { messages.push(JSON.parse(raw.toString())); } catch {}
+    try {
+      messages.push(JSON.parse(raw.toString()));
+    } catch {}
   });
   return { ws, ready, messages, close: () => ws.close() };
 }
@@ -212,7 +237,11 @@ async function scenarioCreateAndGet() {
     // omit repoUrl so provisionSandbox skips (no E2B call)
     profile: { name: "e2e", defaultBranch: "main", model: "test", allowedTools: ["read"] },
   });
-  assert(r.status === 201, "POST /sessions → 201", `got ${r.status}, body=${JSON.stringify(r.body).slice(0,200)}`);
+  assert(
+    r.status === 201,
+    "POST /sessions → 201",
+    `got ${r.status}, body=${JSON.stringify(r.body).slice(0, 200)}`,
+  );
   assert(typeof r.body.id === "string" && r.body.id.length > 0, "response.id is a string");
   assert(r.body.status === "created", "response.status === 'created'", r.body.status);
   assert(typeof r.body.runnerToken === "string", "response.runnerToken present");
@@ -248,7 +277,9 @@ async function scenarioInvalidRunnerToken(sessionId: string) {
 }
 
 async function scenarioHappyPath() {
-  section("Happy path: create → client subs → runner connects → agent runs → review_ready → create-pr → completed");
+  section(
+    "Happy path: create → client subs → runner connects → agent runs → review_ready → create-pr → completed",
+  );
 
   // Create
   const create = await http<any>("POST", "/sessions", {
@@ -276,11 +307,10 @@ async function scenarioHappyPath() {
   pass("runner WS connected with valid token");
 
   // Wait for review_ready (after autoCompleteOnPrompt)
-  const stateReview = await waitForState(
-    sessionId,
-    (s) => s.session?.status === "review_ready",
-    { label: "review_ready", timeoutMs: 8000 },
-  );
+  const stateReview = await waitForState(sessionId, (s) => s.session?.status === "review_ready", {
+    label: "review_ready",
+    timeoutMs: 8000,
+  });
   pass("state reached review_ready", `events=${stateReview.events.length}`);
   assert(stateReview.artifacts?.summary === "e2e test summary", "artifacts.summary persisted");
   assert(stateReview.artifacts?.diff?.includes("e2e"), "artifacts.diff persisted");
@@ -304,11 +334,10 @@ async function scenarioHappyPath() {
   assert(pr.status === 200, "POST /create-pr → 200");
 
   // Wait for completed + prUrl
-  const stateDone = await waitForState(
-    sessionId,
-    (s) => s.session?.status === "completed",
-    { label: "completed", timeoutMs: 6000 },
-  );
+  const stateDone = await waitForState(sessionId, (s) => s.session?.status === "completed", {
+    label: "completed",
+    timeoutMs: 6000,
+  });
   pass("state reached completed");
   assert(
     stateDone.artifacts?.prUrl === "https://github.com/e2e/test/pull/42",
@@ -345,7 +374,11 @@ async function scenarioEventLogPersistAndReplay() {
 
   const replay1 = c1.messages.find((m) => m.type === "replay");
   assert(replay1, "first client got replay frame");
-  assert(replay1.events.length >= 1, "replay has at least session.created", `got ${replay1.events.length}`);
+  assert(
+    replay1.events.length >= 1,
+    "replay has at least session.created",
+    `got ${replay1.events.length}`,
+  );
   const sessionState = c1.messages.find((m) => m.type === "session_state");
   assert(sessionState?.session?.id === sessionId, "session_state frame present with matching id");
 
@@ -378,9 +411,15 @@ async function scenarioPromptQueuedWhenRunnerOffline() {
   const sessionId = create.body.id;
   await sleep(100);
 
-  const r = await http<any>("POST", `/sessions/${sessionId}/prompt`, { text: "follow up while offline" });
+  const r = await http<any>("POST", `/sessions/${sessionId}/prompt`, {
+    text: "follow up while offline",
+  });
   // Either 202 (resume configured) or 409 (no launcher URL). Accept both as valid.
-  assert(r.status === 202 || r.status === 409, "prompt got 202 or 409", `status=${r.status} body=${JSON.stringify(r.body)}`);
+  assert(
+    r.status === 202 || r.status === 409,
+    "prompt got 202 or 409",
+    `status=${r.status} body=${JSON.stringify(r.body)}`,
+  );
   if (r.status === 202) {
     assert(r.body.queued === true, "body.queued === true");
     assert(r.body.recoverable === true, "body.recoverable === true");
@@ -413,7 +452,11 @@ async function scenarioAbort() {
   assert(shutdown, "runner received session.shutdown command");
 
   const state = await http<any>("GET", `/sessions/${sessionId}`);
-  assert(state.body.session.status === "aborted", "session.status === aborted", state.body.session.status);
+  assert(
+    state.body.session.status === "aborted",
+    "session.status === aborted",
+    state.body.session.status,
+  );
 
   runner.close();
 }
@@ -462,7 +505,7 @@ async function main() {
     await scenarioPromptQueuedWhenRunnerOffline();
     await scenarioAbort();
     await scenarioPromptOnTerminal();
-  } catch (e) {
+  } catch {
     // Step-failure already logged; continue to summary.
   }
 

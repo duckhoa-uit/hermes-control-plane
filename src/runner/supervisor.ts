@@ -17,7 +17,10 @@
 
 import { spawn, type ChildProcess } from "child_process";
 import { existsSync, readFileSync } from "fs";
-import { applyZaiAuthForTests as applyZaiAuth, babysitForTests as babysitImpl } from "./supervisor-helpers";
+import {
+  applyZaiAuthForTests as applyZaiAuth,
+  babysitForTests as babysitImpl,
+} from "./supervisor-helpers";
 
 const CONFIG_PATH = "/opt/control-plane/start.json";
 const RUNNER_PATH = "/opt/control-plane/runner.js";
@@ -26,7 +29,6 @@ const OPENCODE_HOST = "127.0.0.1";
 const OPENCODE_PORT = 4096;
 const OPENCODE_READY_LOG = "/var/log/opencode-serve.log";
 const SERVE_READY_TIMEOUT_MS = 120_000;
-const SERVE_READY_LINE = "opencode server listening";
 
 interface StartConfig {
   CONTROL_PLANE_SESSION_ID: string;
@@ -66,7 +68,10 @@ async function spawnOpencodeServe(): Promise<ChildProcess> {
 
   const proc = spawn(
     "bash",
-    ["-c", `exec opencode serve --hostname=${OPENCODE_HOST} --port=${OPENCODE_PORT} > ${OPENCODE_READY_LOG} 2>&1`],
+    [
+      "-c",
+      `exec opencode serve --hostname=${OPENCODE_HOST} --port=${OPENCODE_PORT} > ${OPENCODE_READY_LOG} 2>&1`,
+    ],
     { env: ensurePath({ ...process.env }), stdio: "ignore", detached: false },
   );
 
@@ -93,13 +98,17 @@ async function spawnOpencodeServe(): Promise<ChildProcess> {
 
 function isPortListening(host: string, port: number): Promise<boolean> {
   return new Promise((resolve) => {
-    const { Socket } = require("net") as typeof import("net");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- baked supervisor must be sync-loadable from the snapshot, ESM-only `import { Socket } from "node:net"` breaks pkg-bundling.
+    const net = require("node:net");
+    const Socket = net.Socket;
     const sock = new Socket();
     let done = false;
     const finish = (ok: boolean) => {
       if (done) return;
       done = true;
-      try { sock.destroy(); } catch {}
+      try {
+        sock.destroy();
+      } catch {}
       resolve(ok);
     };
     sock.setTimeout(500);
@@ -117,7 +126,11 @@ async function waitForConfig(): Promise<StartConfig> {
       try {
         const raw = readFileSync(CONFIG_PATH, "utf-8");
         const cfg = JSON.parse(raw) as StartConfig;
-        if (cfg.CONTROL_PLANE_SESSION_ID && cfg.CONTROL_PLANE_RUNNER_TOKEN && cfg.CONTROL_PLANE_WS_URL) {
+        if (
+          cfg.CONTROL_PLANE_SESSION_ID &&
+          cfg.CONTROL_PLANE_RUNNER_TOKEN &&
+          cfg.CONTROL_PLANE_WS_URL
+        ) {
           return cfg;
         }
         log(`config file present but missing required keys; re-polling`);
@@ -136,7 +149,9 @@ async function applyZaiAuthLog(apiKey: string): Promise<void> {
 }
 
 function spawnRunner(cfg: StartConfig): ChildProcess {
-  log(`spawning runner (node ${RUNNER_PATH}) for session ${cfg.CONTROL_PLANE_SESSION_ID.slice(0, 8)}`);
+  log(
+    `spawning runner (node ${RUNNER_PATH}) for session ${cfg.CONTROL_PLANE_SESSION_ID.slice(0, 8)}`,
+  );
   const env: NodeJS.ProcessEnv = ensurePath({ ...process.env });
   for (const [k, v] of Object.entries(cfg)) {
     if (typeof v === "string") env[k] = v;
@@ -152,8 +167,14 @@ function babysit(serve: ChildProcess, runner: ChildProcess): void {
     log(`peer exited; supervisor exiting with code ${code}`);
     process.exit(code ?? 1);
   });
-  serve.on("error", (err) => { log(`serve spawn error: ${err.message}`); process.exit(1); });
-  runner.on("error", (err) => { log(`runner spawn error: ${err.message}`); process.exit(1); });
+  serve.on("error", (err) => {
+    log(`serve spawn error: ${err.message}`);
+    process.exit(1);
+  });
+  runner.on("error", (err) => {
+    log(`runner spawn error: ${err.message}`);
+    process.exit(1);
+  });
 }
 
 async function main(): Promise<void> {

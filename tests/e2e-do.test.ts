@@ -41,7 +41,12 @@ class FakeWebSocket {
 
   serverHandler: {
     onMessage?: (ws: WebSocket, data: string | ArrayBuffer) => void | Promise<void>;
-    onClose?: (ws: WebSocket, code: number, reason: string, wasClean: boolean) => void | Promise<void>;
+    onClose?: (
+      ws: WebSocket,
+      code: number,
+      reason: string,
+      wasClean: boolean,
+    ) => void | Promise<void>;
   } = {};
 
   bind(other: FakeWebSocket) {
@@ -49,7 +54,9 @@ class FakeWebSocket {
     other.peer = this;
   }
 
-  accept() { this.accepted = true; }
+  accept() {
+    this.accepted = true;
+  }
 
   send(data: string | ArrayBuffer) {
     if (!this.peer) return;
@@ -101,18 +108,24 @@ class FakeWebSocket {
     }
   }
   removeEventListener(type: string, l: Listener) {
-    this.listeners[type] = (this.listeners[type] ?? []).filter(x => x !== l);
+    this.listeners[type] = (this.listeners[type] ?? []).filter((x) => x !== l);
   }
 
-  serializeAttachment(v: unknown) { this._attachment = v; }
-  deserializeAttachment() { return this._attachment; }
+  serializeAttachment(v: unknown) {
+    this._attachment = v;
+  }
+  deserializeAttachment() {
+    return this._attachment;
+  }
 
   // Test helper: the side returned to the caller (`client` half) doesn't
   // own the attachment — the DO writes it on the `server` half. Tests that
   // want to inspect attachments should ask the FakeDOState for the server
   // WS via ctx.getWebSockets(). This getter exposes the peer's attachment
   // for ergonomic test assertions.
-  peerAttachment() { return this.peer?._attachment ?? null; }
+  peerAttachment() {
+    return this.peer?._attachment ?? null;
+  }
 }
 
 (globalThis as any).WebSocketPair = class {
@@ -142,9 +155,15 @@ class WSResponse {
     this.headers = new Headers(init?.headers ?? {});
     this.webSocket = (init as any)?.webSocket ?? null;
   }
-  async json() { return typeof this._body === "string" ? JSON.parse(this._body) : this._body; }
-  async text() { return typeof this._body === "string" ? this._body : JSON.stringify(this._body); }
-  get ok() { return this.status >= 200 && this.status < 300; }
+  async json() {
+    return typeof this._body === "string" ? JSON.parse(this._body) : this._body;
+  }
+  async text() {
+    return typeof this._body === "string" ? this._body : JSON.stringify(this._body);
+  }
+  get ok() {
+    return this.status >= 200 && this.status < 300;
+  }
 }
 (globalThis as any).Response = WSResponse;
 
@@ -154,19 +173,31 @@ class FakeStorage {
   kv = new Map<string, unknown>();
   alarmAt: number | null = null;
 
-  async put(key: string, value: unknown): Promise<void> { this.kv.set(key, value); }
-  async get<T>(key: string): Promise<T | undefined> { return this.kv.get(key) as T | undefined; }
-  async delete(key: string): Promise<boolean> { return this.kv.delete(key); }
+  async put(key: string, value: unknown): Promise<void> {
+    this.kv.set(key, value);
+  }
+  async get<T>(key: string): Promise<T | undefined> {
+    return this.kv.get(key) as T | undefined;
+  }
+  async delete(key: string): Promise<boolean> {
+    return this.kv.delete(key);
+  }
   async list<T>(opts?: { prefix?: string }): Promise<Map<string, T>> {
     const out = new Map<string, T>();
     const prefix = opts?.prefix ?? "";
-    const keys = [...this.kv.keys()].filter(k => k.startsWith(prefix)).sort();
+    const keys = [...this.kv.keys()].filter((k) => k.startsWith(prefix)).toSorted();
     for (const k of keys) out.set(k, this.kv.get(k) as T);
     return out;
   }
-  async setAlarm(when: number): Promise<void> { this.alarmAt = when; }
-  async deleteAlarm(): Promise<void> { this.alarmAt = null; }
-  async getAlarm(): Promise<number | null> { return this.alarmAt; }
+  async setAlarm(when: number): Promise<void> {
+    this.alarmAt = when;
+  }
+  async deleteAlarm(): Promise<void> {
+    this.alarmAt = null;
+  }
+  async getAlarm(): Promise<number | null> {
+    return this.alarmAt;
+  }
 }
 
 // ---------- DurableObjectState shim ----------
@@ -182,27 +213,37 @@ class FakeDOState {
     this.id = { toString: () => idStr };
   }
 
-  waitUntil(p: Promise<unknown>): void { this.pending.push(p); }
+  waitUntil(p: Promise<unknown>): void {
+    this.pending.push(p);
+  }
 
-  async blockConcurrencyWhile<T>(fn: () => Promise<T>): Promise<T> { return await fn(); }
+  async blockConcurrencyWhile<T>(fn: () => Promise<T>): Promise<T> {
+    return await fn();
+  }
 
   acceptWebSocket(ws: FakeWebSocket, tags: string[] = []) {
     ws.accept();
     this.sockets.push({ ws, tags });
     // Wire server-side handlers — point them at the DO methods set by the DO.
     ws.serverHandler.onMessage = (s, data) => this._onMessage?.(s, data);
-    ws.serverHandler.onClose = (s, code, reason, wasClean) => this._onClose?.(s, code, reason, wasClean);
+    ws.serverHandler.onClose = (s, code, reason, wasClean) =>
+      this._onClose?.(s, code, reason, wasClean);
   }
   getWebSockets(tag?: string): FakeWebSocket[] {
     return this.sockets
-      .filter(s => !s.ws.closed && (tag === undefined || s.tags.includes(tag)))
-      .map(s => s.ws);
+      .filter((s) => !s.ws.closed && (tag === undefined || s.tags.includes(tag)))
+      .map((s) => s.ws);
   }
 
   // Wired by the test harness once a DO instance exists, so that incoming
   // ws messages are dispatched into the real DO's webSocketMessage / webSocketClose.
   _onMessage?: (ws: WebSocket, data: string | ArrayBuffer) => void | Promise<void>;
-  _onClose?: (ws: WebSocket, code: number, reason: string, wasClean: boolean) => void | Promise<void>;
+  _onClose?: (
+    ws: WebSocket,
+    code: number,
+    reason: string,
+    wasClean: boolean,
+  ) => void | Promise<void>;
 }
 
 // ---------- Mock DurableObjectNamespace (env.SESSION_DO) ----------
@@ -213,18 +254,38 @@ class FakeStub {
   constructor(
     private instance: SessionDurableObject,
     fetchHandler: (req: Request) => Promise<Response>,
-  ) { this.fetchHandler = fetchHandler; }
+  ) {
+    this.fetchHandler = fetchHandler;
+  }
 
-  async fetch(req: Request) { return this.fetchHandler(req); }
+  async fetch(req: Request) {
+    return this.fetchHandler(req);
+  }
   // Proxy RPC methods
-  initSession(...args: any[]) { return (this.instance as any).initSession(...args); }
-  getState() { return (this.instance as any).getState(); }
-  approveRequest(rid: string) { return (this.instance as any).approveRequest(rid); }
-  abortSession() { return (this.instance as any).abortSession(); }
-  createPR() { return (this.instance as any).createPR(); }
-  sendPrompt(text: string) { return (this.instance as any).sendPrompt(text); }
-  ingestPrLifecycleEvent(input: any) { return (this.instance as any).ingestPrLifecycleEvent(input); }
-  appendAutofixEvent(input: any) { return (this.instance as any).appendAutofixEvent(input); }
+  initSession(...args: any[]) {
+    return (this.instance as any).initSession(...args);
+  }
+  getState() {
+    return (this.instance as any).getState();
+  }
+  approveRequest(rid: string) {
+    return (this.instance as any).approveRequest(rid);
+  }
+  abortSession() {
+    return (this.instance as any).abortSession();
+  }
+  createPR() {
+    return (this.instance as any).createPR();
+  }
+  sendPrompt(text: string) {
+    return (this.instance as any).sendPrompt(text);
+  }
+  ingestPrLifecycleEvent(input: any) {
+    return (this.instance as any).ingestPrLifecycleEvent(input);
+  }
+  appendAutofixEvent(input: any) {
+    return (this.instance as any).appendAutofixEvent(input);
+  }
 }
 
 interface FakeEnv {
@@ -242,7 +303,12 @@ interface FakeEnv {
       recordDelivery(prKey: string, deliveryId: string): Promise<boolean>;
       incrementAutofix(prKey: string): Promise<number | null>;
       unregister(prKey: string): Promise<boolean>;
-      tryClaimAmendSlot(prKey: string, headSha: string, sessionId: string, cap: number): Promise<any>;
+      tryClaimAmendSlot(
+        prKey: string,
+        headSha: string,
+        sessionId: string,
+        cap: number,
+      ): Promise<any>;
       transferAmendSlot(prKey: string, newSessionId: string): Promise<void>;
       releaseAmendSlot(prKey: string, sessionId: string): Promise<void>;
       rollbackAmendClaim(prKey: string, sessionId: string): Promise<void>;
@@ -283,7 +349,9 @@ function makeEnv(): FakeEnv {
         const id = `id_${++counter}_${Date.now()}`;
         return { toString: () => id };
       },
-      idFromString(s: string) { return { toString: () => s }; },
+      idFromString(s: string) {
+        return { toString: () => s };
+      },
       get(id: { toString(): string }) {
         const key = id.toString();
         let entry = instances.get(key);
@@ -292,7 +360,8 @@ function makeEnv(): FakeEnv {
           const instance = new (SessionDurableObject as any)(ctx, makeEnv());
           // Wire WS event delivery into the DO's hibernation handlers
           ctx._onMessage = (ws, data) => (instance as any).webSocketMessage(ws, data);
-          ctx._onClose = (ws, code, reason, wasClean) => (instance as any).webSocketClose(ws, code, reason, wasClean);
+          ctx._onClose = (ws, code, reason, wasClean) =>
+            (instance as any).webSocketClose(ws, code, reason, wasClean);
           entry = { instance, ctx };
           instances.set(key, entry);
         }
@@ -300,7 +369,9 @@ function makeEnv(): FakeEnv {
       },
     },
     PR_INDEX_DO: {
-      idFromName(name: string) { return { toString: () => `pr-index:${name}` }; },
+      idFromName(name: string) {
+        return { toString: () => `pr-index:${name}` };
+      },
       get(_id: { toString(): string }) {
         return {
           async register(prKey: string, sessionId: string, ownerLogin: string) {
@@ -405,7 +476,12 @@ const PROFILE: Partial<ProjectProfile> = {
   allowedTools: ["read", "edit"],
 };
 
-beforeEach(() => { instances.clear(); counter = 0; prIndexRegisterCalls.length = 0; prIndexRows.clear(); });
+beforeEach(() => {
+  instances.clear();
+  counter = 0;
+  prIndexRegisterCalls.length = 0;
+  prIndexRows.clear();
+});
 
 // ---------- Tests ----------
 
@@ -424,18 +500,15 @@ describe("E2E: Worker + SessionDurableObject", () => {
     });
     const resp = await worker.fetch(req, env);
     expect(resp.status).toBe(201);
-    const body = await resp.json() as any;
+    const body = (await resp.json()) as any;
     expect(body.id).toBeTruthy();
     expect(body.status).toBe("created");
     expect(body.runnerToken).toMatch(/^.+$/);
 
     // GET /sessions/:id → 200 with session + events array including session.created
-    const stateResp = await worker.fetch(
-      new Request(`https://x/sessions/${body.id}`),
-      env,
-    );
+    const stateResp = await worker.fetch(new Request(`https://x/sessions/${body.id}`), env);
     expect(stateResp.status).toBe(200);
-    const state = await stateResp.json() as any;
+    const state = (await stateResp.json()) as any;
     expect(state.session.status).toBe("created");
     expect(state.events.length).toBeGreaterThan(0);
     expect(state.events[0].type).toBe("session.created");
@@ -451,18 +524,23 @@ describe("E2E: Worker + SessionDurableObject", () => {
   it("runner WS handshake: invalid token → close(4001)", async () => {
     const env = makeEnv() as any;
     // Create session
-    const createResp = await worker.fetch(new Request("https://x/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
-    }), env);
-    const { id } = await createResp.json() as any;
+    const createResp = await worker.fetch(
+      new Request("https://x/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+      }),
+      env,
+    );
+    const { id } = (await createResp.json()) as any;
 
     // Send WS upgrade with wrong token
-    const wsResp = await worker.fetch(new Request(
-      `https://x/sessions/${id}/runner?token=WRONG`,
-      { headers: { Upgrade: "websocket" } },
-    ), env);
+    const wsResp = await worker.fetch(
+      new Request(`https://x/sessions/${id}/runner?token=WRONG`, {
+        headers: { Upgrade: "websocket" },
+      }),
+      env,
+    );
     expect(wsResp.status).toBe(101);
     const ws = (wsResp as any).webSocket as FakeWebSocket;
     expect(ws.closed).toBe(true);
@@ -473,29 +551,34 @@ describe("E2E: Worker + SessionDurableObject", () => {
     const env = makeEnv() as any;
 
     // 1. Create session
-    const createResp = await worker.fetch(new Request("https://x/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId: "p1", taskDescription: "fix bug", profile: PROFILE }),
-    }), env);
-    const created = await createResp.json() as any;
+    const createResp = await worker.fetch(
+      new Request("https://x/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: "p1", taskDescription: "fix bug", profile: PROFILE }),
+      }),
+      env,
+    );
+    const created = (await createResp.json()) as any;
     const { id, runnerToken } = created;
 
     // 2. Client WS subscribes
-    const clientResp = await worker.fetch(new Request(
-      `https://x/sessions/${id}/stream`,
-      { headers: { Upgrade: "websocket" } },
-    ), env);
+    const clientResp = await worker.fetch(
+      new Request(`https://x/sessions/${id}/stream`, { headers: { Upgrade: "websocket" } }),
+      env,
+    );
     expect(clientResp.status).toBe(101);
     const clientWS = (clientResp as any).webSocket as FakeWebSocket;
     const clientEvents: any[] = [];
     clientWS.addEventListener("message", (e: any) => clientEvents.push(JSON.parse(e.data)));
 
     // 3. Runner WS connects with valid token
-    const runnerResp = await worker.fetch(new Request(
-      `https://x/sessions/${id}/runner?token=${runnerToken}`,
-      { headers: { Upgrade: "websocket" } },
-    ), env);
+    const runnerResp = await worker.fetch(
+      new Request(`https://x/sessions/${id}/runner?token=${runnerToken}`, {
+        headers: { Upgrade: "websocket" },
+      }),
+      env,
+    );
     expect(runnerResp.status).toBe(101);
     const runnerWS = (runnerResp as any).webSocket as FakeWebSocket;
     const runnerInbound: any[] = [];
@@ -503,16 +586,22 @@ describe("E2E: Worker + SessionDurableObject", () => {
 
     // Give DO microtasks a chance to flush event broadcast
     await Promise.resolve();
-    await new Promise(r => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 10));
 
     // 4. Runner should have received a `command` for the initial agent.prompt
-    const initialPrompt = runnerInbound.find(m => m.type === "command" && m.command?.type === "agent.prompt");
+    const initialPrompt = runnerInbound.find(
+      (m) => m.type === "command" && m.command?.type === "agent.prompt",
+    );
     expect(initialPrompt).toBeDefined();
     expect(initialPrompt.command.payload.taskDescription).toBe("fix bug");
 
     // 5. Runner streams agent events
     const sendRunner = (payload: any) => runnerWS.send(JSON.stringify(payload));
-    sendRunner({ type: "runner.event", sessionId: id, payload: { eventType: "agent.message.delta", eventPayload: { text: "hi" } } });
+    sendRunner({
+      type: "runner.event",
+      sessionId: id,
+      payload: { eventType: "agent.message.delta", eventPayload: { text: "hi" } },
+    });
     sendRunner({ type: "runner.heartbeat", sessionId: id });
 
     // 6. Runner signals completion (artifacts)
@@ -521,7 +610,7 @@ describe("E2E: Worker + SessionDurableObject", () => {
       sessionId: id,
       payload: { summary: "done", diff: "+x", changedFiles: ["a.ts"] },
     });
-    await new Promise(r => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 10));
 
     // 7. Verify state is review_ready
     const state1 = await env.SESSION_DO.get(env.SESSION_DO.idFromString(id)).getState();
@@ -530,21 +619,24 @@ describe("E2E: Worker + SessionDurableObject", () => {
     expect(state1.artifacts.summary).toBe("done");
 
     // 8. Client should have received broadcast events for the runner events
-    const clientGotAgentMsg = clientEvents.find(m =>
-      m.type === "event" && m.event?.type === "agent.message.delta",
+    const clientGotAgentMsg = clientEvents.find(
+      (m) => m.type === "event" && m.event?.type === "agent.message.delta",
     );
     expect(clientGotAgentMsg).toBeDefined();
 
     // 9. POST /sessions/:id/create-pr → transitions to creating_pr
-    const prResp = await worker.fetch(new Request(
-      `https://x/sessions/${id}/create-pr`, { method: "POST" }
-    ), env);
+    const prResp = await worker.fetch(
+      new Request(`https://x/sessions/${id}/create-pr`, { method: "POST" }),
+      env,
+    );
     expect(prResp.status).toBe(200);
 
-    await new Promise(r => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 10));
 
     // Runner sees pr.create command
-    const prCmd = runnerInbound.find(m => m.type === "command" && m.command?.type === "pr.create");
+    const prCmd = runnerInbound.find(
+      (m) => m.type === "command" && m.command?.type === "pr.create",
+    );
     expect(prCmd).toBeDefined();
 
     // Runner reports pr.created (with ownerLogin → PR_INDEX_DO.register).
@@ -559,30 +651,31 @@ describe("E2E: Worker + SessionDurableObject", () => {
         },
       },
     });
-    await new Promise(r => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 10));
 
     const state2 = await env.SESSION_DO.get(env.SESSION_DO.idFromString(id)).getState();
     expect(state2.session.status).toBe("completed");
     expect(state2.artifacts.prUrl).toBe("https://github.com/x/y/pull/1");
 
     // PR Index DO must have one register() call for this PR.
-    expect(prIndexRegisterCalls).toEqual([
-      { prKey: "x/y#1", sessionId: id, ownerLogin: "alice" },
-    ]);
+    expect(prIndexRegisterCalls).toEqual([{ prKey: "x/y#1", sessionId: id, ownerLogin: "alice" }]);
   });
 
   it("event log persists per-key (storage.list returns events in seq order)", async () => {
     const env = makeEnv() as any;
-    const createResp = await worker.fetch(new Request("https://x/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
-    }), env);
-    const { id } = await createResp.json() as any;
+    const createResp = await worker.fetch(
+      new Request("https://x/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+      }),
+      env,
+    );
+    const { id } = (await createResp.json()) as any;
 
     // Inspect storage directly
     const entry = instances.get(id)!;
-    const evtKeys = [...entry.ctx.storage.kv.keys()].filter(k => k.startsWith("evt:"));
+    const evtKeys = [...entry.ctx.storage.kv.keys()].filter((k) => k.startsWith("evt:"));
     expect(evtKeys.length).toBeGreaterThanOrEqual(1);
     // Zero-padded so lex sort == seq sort
     for (const k of evtKeys) expect(k).toMatch(/^evt:\d{10}$/);
@@ -597,19 +690,24 @@ describe("E2E: Worker + SessionDurableObject", () => {
 
   it("alarm-based heartbeat: setAlarm scheduled on runner connect; alarm() detects stale heartbeat → failed", async () => {
     const env = makeEnv() as any;
-    const createResp = await worker.fetch(new Request("https://x/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
-    }), env);
-    const { id, runnerToken } = await createResp.json() as any;
+    const createResp = await worker.fetch(
+      new Request("https://x/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+      }),
+      env,
+    );
+    const { id, runnerToken } = (await createResp.json()) as any;
 
     // Runner connects → startHeartbeatCheck() called → alarm scheduled
-    await worker.fetch(new Request(
-      `https://x/sessions/${id}/runner?token=${runnerToken}`,
-      { headers: { Upgrade: "websocket" } },
-    ), env);
-    await new Promise(r => setTimeout(r, 5));
+    await worker.fetch(
+      new Request(`https://x/sessions/${id}/runner?token=${runnerToken}`, {
+        headers: { Upgrade: "websocket" },
+      }),
+      env,
+    );
+    await new Promise((r) => setTimeout(r, 5));
 
     const entry = instances.get(id)!;
     expect(entry.ctx.storage.alarmAt).not.toBeNull();
@@ -634,7 +732,9 @@ describe("E2E: Worker + SessionDurableObject", () => {
     const stub2 = env.SESSION_DO.get(id);
 
     const r1 = stub1.initSession({ id: "p1", ...PROFILE, repoUrl: "" } as any, "a", "https://x");
-    const r2 = stub2.initSession({ id: "p1", ...PROFILE, repoUrl: "" } as any, "b", "https://x").catch((e: Error) => e);
+    const r2 = stub2
+      .initSession({ id: "p1", ...PROFILE, repoUrl: "" } as any, "b", "https://x")
+      .catch((e: Error) => e);
 
     const [first, second] = await Promise.all([r1, r2]);
     expect(first.id).toBeTruthy();
@@ -644,42 +744,56 @@ describe("E2E: Worker + SessionDurableObject", () => {
 
   it("sendPrompt with terminal session returns kind:'terminal' (410)", async () => {
     const env = makeEnv() as any;
-    const createResp = await worker.fetch(new Request("https://x/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
-    }), env);
-    const { id } = await createResp.json() as any;
+    const createResp = await worker.fetch(
+      new Request("https://x/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+      }),
+      env,
+    );
+    const { id } = (await createResp.json()) as any;
 
     // Force terminal state
     const inst = instances.get(id)!.instance as any;
     inst.transition("aborted", "test");
 
-    const resp = await worker.fetch(new Request(
-      `https://x/sessions/${id}/prompt`,
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "hi" }) },
-    ), env);
+    const resp = await worker.fetch(
+      new Request(`https://x/sessions/${id}/prompt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "hi" }),
+      }),
+      env,
+    );
     expect(resp.status).toBe(410);
-    const body = await resp.json() as any;
+    const body = (await resp.json()) as any;
     expect(body.recoverable).toBe(false);
   });
 
   it("sendPrompt with no connected runner + launcher URL → kind:'queued' (202) and stores pendingPrompt", async () => {
     const env = makeEnv() as any;
-    const createResp = await worker.fetch(new Request("https://x/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
-    }), env);
-    const { id } = await createResp.json() as any;
+    const createResp = await worker.fetch(
+      new Request("https://x/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+      }),
+      env,
+    );
+    const { id } = (await createResp.json()) as any;
 
     // No runner connected
-    const resp = await worker.fetch(new Request(
-      `https://x/sessions/${id}/prompt`,
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "follow up" }) },
-    ), env);
+    const resp = await worker.fetch(
+      new Request(`https://x/sessions/${id}/prompt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "follow up" }),
+      }),
+      env,
+    );
     expect(resp.status).toBe(202);
-    const body = await resp.json() as any;
+    const body = (await resp.json()) as any;
     expect(body.queued).toBe(true);
     expect(body.recoverable).toBe(true);
 
@@ -692,30 +806,38 @@ describe("E2E: Worker + SessionDurableObject", () => {
 
   it("abort: runner gets session.shutdown command + state → aborted", async () => {
     const env = makeEnv() as any;
-    const createResp = await worker.fetch(new Request("https://x/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
-    }), env);
-    const { id, runnerToken } = await createResp.json() as any;
+    const createResp = await worker.fetch(
+      new Request("https://x/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+      }),
+      env,
+    );
+    const { id, runnerToken } = (await createResp.json()) as any;
 
     // Connect runner so it can receive the shutdown command
-    const runnerResp = await worker.fetch(new Request(
-      `https://x/sessions/${id}/runner?token=${runnerToken}`,
-      { headers: { Upgrade: "websocket" } },
-    ), env);
+    const runnerResp = await worker.fetch(
+      new Request(`https://x/sessions/${id}/runner?token=${runnerToken}`, {
+        headers: { Upgrade: "websocket" },
+      }),
+      env,
+    );
     const runnerWS = (runnerResp as any).webSocket as FakeWebSocket;
     const inbound: any[] = [];
     runnerWS.addEventListener("message", (e: any) => inbound.push(JSON.parse(e.data)));
-    await new Promise(r => setTimeout(r, 5));
+    await new Promise((r) => setTimeout(r, 5));
 
-    const abortResp = await worker.fetch(new Request(
-      `https://x/sessions/${id}/abort`, { method: "POST" }
-    ), env);
+    const abortResp = await worker.fetch(
+      new Request(`https://x/sessions/${id}/abort`, { method: "POST" }),
+      env,
+    );
     expect(abortResp.status).toBe(200);
-    await new Promise(r => setTimeout(r, 5));
+    await new Promise((r) => setTimeout(r, 5));
 
-    const shutdownCmd = inbound.find(m => m.type === "command" && m.command?.type === "session.shutdown");
+    const shutdownCmd = inbound.find(
+      (m) => m.type === "command" && m.command?.type === "session.shutdown",
+    );
     expect(shutdownCmd).toBeDefined();
 
     const state = await env.SESSION_DO.get(env.SESSION_DO.idFromString(id)).getState();
@@ -724,56 +846,64 @@ describe("E2E: Worker + SessionDurableObject", () => {
 
   it("event replay on client reconnect: late client gets full history via type:'replay'", async () => {
     const env = makeEnv() as any;
-    const createResp = await worker.fetch(new Request("https://x/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
-    }), env);
-    const { id } = await createResp.json() as any;
+    const createResp = await worker.fetch(
+      new Request("https://x/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+      }),
+      env,
+    );
+    const { id } = (await createResp.json()) as any;
 
     // Wait so a few events are appended
-    await new Promise(r => setTimeout(r, 5));
+    await new Promise((r) => setTimeout(r, 5));
 
     // Connect client AFTER events exist
-    const clientResp = await worker.fetch(new Request(
-      `https://x/sessions/${id}/stream`,
-      { headers: { Upgrade: "websocket" } },
-    ), env);
+    const clientResp = await worker.fetch(
+      new Request(`https://x/sessions/${id}/stream`, { headers: { Upgrade: "websocket" } }),
+      env,
+    );
     const ws = (clientResp as any).webSocket as FakeWebSocket;
     const inbound: any[] = [];
     ws.addEventListener("message", (e: any) => inbound.push(JSON.parse(e.data)));
-    await new Promise(r => setTimeout(r, 5));
+    await new Promise((r) => setTimeout(r, 5));
 
-    const replay = inbound.find(m => m.type === "replay");
+    const replay = inbound.find((m) => m.type === "replay");
     expect(replay).toBeDefined();
     expect(replay.events.length).toBeGreaterThan(0);
-    const sessionState = inbound.find(m => m.type === "session_state");
+    const sessionState = inbound.find((m) => m.type === "session_state");
     expect(sessionState).toBeDefined();
   });
 
   it("WS attachment: lastSeq stored per-conn so re-broadcast doesn't double-send", async () => {
     const env = makeEnv() as any;
-    const createResp = await worker.fetch(new Request("https://x/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
-    }), env);
-    const { id, runnerToken } = await createResp.json() as any;
+    const createResp = await worker.fetch(
+      new Request("https://x/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+      }),
+      env,
+    );
+    const { id, runnerToken } = (await createResp.json()) as any;
 
     // Connect runner and client
-    const runnerResp = await worker.fetch(new Request(
-      `https://x/sessions/${id}/runner?token=${runnerToken}`,
-      { headers: { Upgrade: "websocket" } },
-    ), env);
+    const runnerResp = await worker.fetch(
+      new Request(`https://x/sessions/${id}/runner?token=${runnerToken}`, {
+        headers: { Upgrade: "websocket" },
+      }),
+      env,
+    );
     const runnerWS = (runnerResp as any).webSocket as FakeWebSocket;
 
-    const clientResp = await worker.fetch(new Request(
-      `https://x/sessions/${id}/stream`,
-      { headers: { Upgrade: "websocket" } },
-    ), env);
+    const clientResp = await worker.fetch(
+      new Request(`https://x/sessions/${id}/stream`, { headers: { Upgrade: "websocket" } }),
+      env,
+    );
     const clientWS = (clientResp as any).webSocket as FakeWebSocket;
 
-    await new Promise(r => setTimeout(r, 5));
+    await new Promise((r) => setTimeout(r, 5));
 
     // Check attachments are populated
     const entry = instances.get(id)!;
@@ -796,21 +926,26 @@ describe("E2E: Worker + SessionDurableObject", () => {
 
   it("approve flow: runner emits approval.requested → POST /approve → runner gets approval.grant", async () => {
     const env = makeEnv() as any;
-    const createResp = await worker.fetch(new Request("https://x/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
-    }), env);
-    const { id, runnerToken } = await createResp.json() as any;
+    const createResp = await worker.fetch(
+      new Request("https://x/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+      }),
+      env,
+    );
+    const { id, runnerToken } = (await createResp.json()) as any;
 
-    const runnerResp = await worker.fetch(new Request(
-      `https://x/sessions/${id}/runner?token=${runnerToken}`,
-      { headers: { Upgrade: "websocket" } },
-    ), env);
+    const runnerResp = await worker.fetch(
+      new Request(`https://x/sessions/${id}/runner?token=${runnerToken}`, {
+        headers: { Upgrade: "websocket" },
+      }),
+      env,
+    );
     const runnerWS = (runnerResp as any).webSocket as FakeWebSocket;
     const inbound: any[] = [];
     runnerWS.addEventListener("message", (e: any) => inbound.push(JSON.parse(e.data)));
-    await new Promise(r => setTimeout(r, 5));
+    await new Promise((r) => setTimeout(r, 5));
 
     // Synthesize an approval request via DO API
     const inst = instances.get(id)!.instance as any;
@@ -821,14 +956,18 @@ describe("E2E: Worker + SessionDurableObject", () => {
     expect(state1.session.status).toBe("needs_approval");
 
     // Approve
-    const approveResp = await worker.fetch(new Request(
-      `https://x/sessions/${id}/approve`,
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requestId }) },
-    ), env);
+    const approveResp = await worker.fetch(
+      new Request(`https://x/sessions/${id}/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ requestId }),
+      }),
+      env,
+    );
     expect(approveResp.status).toBe(200);
-    await new Promise(r => setTimeout(r, 5));
+    await new Promise((r) => setTimeout(r, 5));
 
-    const grant = inbound.find(m => m.type === "command" && m.command?.type === "approval.grant");
+    const grant = inbound.find((m) => m.type === "command" && m.command?.type === "approval.grant");
     expect(grant).toBeDefined();
     expect(grant.command.payload.requestId).toBe(requestId);
 
@@ -923,23 +1062,37 @@ describe("E2E: Worker + SessionDurableObject", () => {
     env.GITHUB_WEBHOOK_SECRET = "supersecret";
 
     // 1. Drive a session to `completed` with a registered PR.
-    const createResp = await worker.fetch(new Request("https://x/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
-    }), env);
-    const { id, runnerToken } = await createResp.json() as any;
+    const createResp = await worker.fetch(
+      new Request("https://x/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+      }),
+      env,
+    );
+    const { id, runnerToken } = (await createResp.json()) as any;
     const wsUrl = `https://x/sessions/${id}/runner?token=${runnerToken}`;
-    const wsResp = await worker.fetch(new Request(wsUrl, { headers: { Upgrade: "websocket" } }), env);
+    const wsResp = await worker.fetch(
+      new Request(wsUrl, { headers: { Upgrade: "websocket" } }),
+      env,
+    );
     const ws = (wsResp as any).webSocket;
     const sendRunner = (m: any) => ws.send(JSON.stringify(m));
 
-    await new Promise(r => setTimeout(r, 5));
-    sendRunner({ type: "runner.event", sessionId: id, payload: { eventType: "agent.done", eventPayload: {} } });
-    sendRunner({ type: "runner.complete", sessionId: id, payload: { summary: "ok", changedFiles: [] } });
-    await new Promise(r => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 5));
+    sendRunner({
+      type: "runner.event",
+      sessionId: id,
+      payload: { eventType: "agent.done", eventPayload: {} },
+    });
+    sendRunner({
+      type: "runner.complete",
+      sessionId: id,
+      payload: { summary: "ok", changedFiles: [] },
+    });
+    await new Promise((r) => setTimeout(r, 10));
     await worker.fetch(new Request(`https://x/sessions/${id}/create-pr`, { method: "POST" }), env);
-    await new Promise(r => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 10));
     sendRunner({
       type: "runner.event",
       sessionId: id,
@@ -948,7 +1101,7 @@ describe("E2E: Worker + SessionDurableObject", () => {
         eventPayload: { url: "https://github.com/o/r/pull/9", ownerLogin: "alice" },
       },
     });
-    await new Promise(r => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 10));
     // Confirm completed + indexed.
     const s1 = await env.SESSION_DO.get(env.SESSION_DO.idFromString(id)).getState();
     expect(s1.session.status).toBe("completed");
@@ -961,27 +1114,42 @@ describe("E2E: Worker + SessionDurableObject", () => {
       pull_request: {
         number: 9,
         html_url: "https://github.com/o/r/pull/9",
-        state: "closed", merged: true, merged_at: "2026-06-26T00:00:00Z",
-        base: { ref: "main" }, head: { ref: "hermes/x" }, user: { login: "alice" },
+        state: "closed",
+        merged: true,
+        merged_at: "2026-06-26T00:00:00Z",
+        base: { ref: "main" },
+        head: { ref: "hermes/x" },
+        user: { login: "alice" },
       },
-      repository: { full_name: "o/r" }, sender: { login: "alice" },
+      repository: { full_name: "o/r" },
+      sender: { login: "alice" },
     };
     const body = JSON.stringify(payload);
     const enc = new TextEncoder();
-    const key = await crypto.subtle.importKey("raw", enc.encode("supersecret"),
-      { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const key = await crypto.subtle.importKey(
+      "raw",
+      enc.encode("supersecret"),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
     const buf = await crypto.subtle.sign("HMAC", key, enc.encode(body));
-    const hex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+    const hex = Array.from(new Uint8Array(buf))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
 
-    const resp = await worker.fetch(new Request("https://x/webhooks/github", {
-      method: "POST",
-      headers: {
-        "x-github-event": "pull_request",
-        "x-github-delivery": "del-merged-1",
-        "x-hub-signature-256": "sha256=" + hex,
-      },
-      body,
-    }), env);
+    const resp = await worker.fetch(
+      new Request("https://x/webhooks/github", {
+        method: "POST",
+        headers: {
+          "x-github-event": "pull_request",
+          "x-github-delivery": "del-merged-1",
+          "x-hub-signature-256": "sha256=" + hex,
+        },
+        body,
+      }),
+      env,
+    );
     expect(resp.status).toBe(200);
     const j = await resp.json();
     expect(j).toMatchObject({ ok: true, kind: "pull_request", archived: true });
@@ -1000,29 +1168,43 @@ describe("E2E: Worker + SessionDurableObject", () => {
     env.GITHUB_WEBHOOK_SECRET = "supersecret";
 
     // Seed the PR index with an open PR for a fresh session.
-    const createResp = await worker.fetch(new Request("https://x/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
-    }), env);
-    const { id, runnerToken } = await createResp.json() as any;
+    const createResp = await worker.fetch(
+      new Request("https://x/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+      }),
+      env,
+    );
+    const { id, runnerToken } = (await createResp.json()) as any;
     const wsUrl = `https://x/sessions/${id}/runner?token=${runnerToken}`;
-    const wsResp = await worker.fetch(new Request(wsUrl, { headers: { Upgrade: "websocket" } }), env);
+    const wsResp = await worker.fetch(
+      new Request(wsUrl, { headers: { Upgrade: "websocket" } }),
+      env,
+    );
     const ws = (wsResp as any).webSocket;
-    await new Promise(r => setTimeout(r, 5));
-    ws.send(JSON.stringify({ type: "runner.complete", sessionId: id, payload: { summary: "ok", changedFiles: [] } }));
-    await new Promise(r => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 5));
+    ws.send(
+      JSON.stringify({
+        type: "runner.complete",
+        sessionId: id,
+        payload: { summary: "ok", changedFiles: [] },
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 10));
     await worker.fetch(new Request(`https://x/sessions/${id}/create-pr`, { method: "POST" }), env);
-    await new Promise(r => setTimeout(r, 10));
-    ws.send(JSON.stringify({
-      type: "runner.event",
-      sessionId: id,
-      payload: {
-        eventType: "pr.created",
-        eventPayload: { url: "https://github.com/o/r/pull/11", ownerLogin: "alice" },
-      },
-    }));
-    await new Promise(r => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 10));
+    ws.send(
+      JSON.stringify({
+        type: "runner.event",
+        sessionId: id,
+        payload: {
+          eventType: "pr.created",
+          eventPayload: { url: "https://github.com/o/r/pull/11", ownerLogin: "alice" },
+        },
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 10));
 
     // pr.closed (NOT merged) → emit one pr.closed, no archive.
     const payload = {
@@ -1031,17 +1213,29 @@ describe("E2E: Worker + SessionDurableObject", () => {
       pull_request: {
         number: 11,
         html_url: "https://github.com/o/r/pull/11",
-        state: "closed", merged: false, merged_at: null,
-        base: { ref: "main" }, head: { ref: "hermes/x" }, user: { login: "alice" },
+        state: "closed",
+        merged: false,
+        merged_at: null,
+        base: { ref: "main" },
+        head: { ref: "hermes/x" },
+        user: { login: "alice" },
       },
-      repository: { full_name: "o/r" }, sender: { login: "alice" },
+      repository: { full_name: "o/r" },
+      sender: { login: "alice" },
     };
     const body = JSON.stringify(payload);
     const enc = new TextEncoder();
-    const key = await crypto.subtle.importKey("raw", enc.encode("supersecret"),
-      { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const key = await crypto.subtle.importKey(
+      "raw",
+      enc.encode("supersecret"),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
     const buf = await crypto.subtle.sign("HMAC", key, enc.encode(body));
-    const hex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+    const hex = Array.from(new Uint8Array(buf))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
     const headers = {
       "x-github-event": "pull_request",
       "x-github-delivery": "del-dup-1",
@@ -1049,12 +1243,18 @@ describe("E2E: Worker + SessionDurableObject", () => {
     };
 
     // First delivery: processed.
-    const r1 = await worker.fetch(new Request("https://x/webhooks/github", { method: "POST", headers, body }), env);
+    const r1 = await worker.fetch(
+      new Request("https://x/webhooks/github", { method: "POST", headers, body }),
+      env,
+    );
     expect(r1.status).toBe(200);
     expect(await r1.json()).toMatchObject({ ok: true, kind: "pull_request", archived: false });
 
     // Second delivery, same delivery id: deduped.
-    const r2 = await worker.fetch(new Request("https://x/webhooks/github", { method: "POST", headers, body }), env);
+    const r2 = await worker.fetch(
+      new Request("https://x/webhooks/github", { method: "POST", headers, body }),
+      env,
+    );
     expect(r2.status).toBe(200);
     expect(await r2.json()).toMatchObject({ ok: true, kind: "duplicate" });
 
@@ -1073,79 +1273,123 @@ describe("E2E: Worker + SessionDurableObject", () => {
     env.GITHUB_WEBHOOK_SECRET = "supersecret";
 
     // Seed a session with a registered PR.
-    const createResp = await worker.fetch(new Request("https://x/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
-    }), env);
-    const { id, runnerToken } = await createResp.json() as any;
+    const createResp = await worker.fetch(
+      new Request("https://x/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+      }),
+      env,
+    );
+    const { id, runnerToken } = (await createResp.json()) as any;
     const wsUrl = `https://x/sessions/${id}/runner?token=${runnerToken}`;
-    const wsResp = await worker.fetch(new Request(wsUrl, { headers: { Upgrade: "websocket" } }), env);
+    const wsResp = await worker.fetch(
+      new Request(wsUrl, { headers: { Upgrade: "websocket" } }),
+      env,
+    );
     const ws = (wsResp as any).webSocket;
-    await new Promise(r => setTimeout(r, 5));
-    ws.send(JSON.stringify({ type: "runner.complete", sessionId: id, payload: { summary: "ok", changedFiles: [] } }));
-    await new Promise(r => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 5));
+    ws.send(
+      JSON.stringify({
+        type: "runner.complete",
+        sessionId: id,
+        payload: { summary: "ok", changedFiles: [] },
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 10));
     await worker.fetch(new Request(`https://x/sessions/${id}/create-pr`, { method: "POST" }), env);
-    await new Promise(r => setTimeout(r, 10));
-    ws.send(JSON.stringify({
-      type: "runner.event",
-      sessionId: id,
-      payload: {
-        eventType: "pr.created",
-        eventPayload: { url: "https://github.com/o/r/pull/19", ownerLogin: "alice" },
-      },
-    }));
-    await new Promise(r => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 10));
+    ws.send(
+      JSON.stringify({
+        type: "runner.event",
+        sessionId: id,
+        payload: {
+          eventType: "pr.created",
+          eventPayload: { url: "https://github.com/o/r/pull/19", ownerLogin: "alice" },
+        },
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 10));
 
     const enc = new TextEncoder();
-    const key = await crypto.subtle.importKey("raw", enc.encode("supersecret"),
-      { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const key = await crypto.subtle.importKey(
+      "raw",
+      enc.encode("supersecret"),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
     const sign = async (body: string) => {
       const buf = await crypto.subtle.sign("HMAC", key, enc.encode(body));
-      return "sha256=" + Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+      return (
+        "sha256=" +
+        Array.from(new Uint8Array(buf))
+          .map((b) => b.toString(16).padStart(2, "0"))
+          .join("")
+      );
     };
 
     // 1. closed-unmerged -> status="closed", row retained.
     const closedBody = JSON.stringify({
-      action: "closed", number: 19,
+      action: "closed",
+      number: 19,
       pull_request: {
-        number: 19, html_url: "https://github.com/o/r/pull/19",
-        state: "closed", merged: false, merged_at: null,
-        base: { ref: "main" }, head: { ref: "hermes/x" }, user: { login: "alice" },
+        number: 19,
+        html_url: "https://github.com/o/r/pull/19",
+        state: "closed",
+        merged: false,
+        merged_at: null,
+        base: { ref: "main" },
+        head: { ref: "hermes/x" },
+        user: { login: "alice" },
       },
-      repository: { full_name: "o/r" }, sender: { login: "alice" },
+      repository: { full_name: "o/r" },
+      sender: { login: "alice" },
     });
-    const r1 = await worker.fetch(new Request("https://x/webhooks/github", {
-      method: "POST",
-      headers: {
-        "x-github-event": "pull_request",
-        "x-github-delivery": "del-reopen-close",
-        "x-hub-signature-256": await sign(closedBody),
-      },
-      body: closedBody,
-    }), env);
+    const r1 = await worker.fetch(
+      new Request("https://x/webhooks/github", {
+        method: "POST",
+        headers: {
+          "x-github-event": "pull_request",
+          "x-github-delivery": "del-reopen-close",
+          "x-hub-signature-256": await sign(closedBody),
+        },
+        body: closedBody,
+      }),
+      env,
+    );
     expect(r1.status).toBe(200);
     expect(prIndexRows.get("o/r#19")?.status).toBe("closed");
 
     // 2. reopened -> status flips back to "open".
     const reopenBody = JSON.stringify({
-      action: "reopened", number: 19,
+      action: "reopened",
+      number: 19,
       pull_request: {
-        number: 19, html_url: "https://github.com/o/r/pull/19",
-        state: "open", merged: false, merged_at: null,
-        base: { ref: "main" }, head: { ref: "hermes/x" }, user: { login: "alice" },
+        number: 19,
+        html_url: "https://github.com/o/r/pull/19",
+        state: "open",
+        merged: false,
+        merged_at: null,
+        base: { ref: "main" },
+        head: { ref: "hermes/x" },
+        user: { login: "alice" },
       },
-      repository: { full_name: "o/r" }, sender: { login: "alice" },
+      repository: { full_name: "o/r" },
+      sender: { login: "alice" },
     });
-    const r2 = await worker.fetch(new Request("https://x/webhooks/github", {
-      method: "POST",
-      headers: {
-        "x-github-event": "pull_request",
-        "x-github-delivery": "del-reopen-open",
-        "x-hub-signature-256": await sign(reopenBody),
-      },
-      body: reopenBody,
-    }), env);
+    const r2 = await worker.fetch(
+      new Request("https://x/webhooks/github", {
+        method: "POST",
+        headers: {
+          "x-github-event": "pull_request",
+          "x-github-delivery": "del-reopen-open",
+          "x-hub-signature-256": await sign(reopenBody),
+        },
+        body: reopenBody,
+      }),
+      env,
+    );
     expect(r2.status).toBe(200);
     const j2 = await r2.json();
     expect(j2).toMatchObject({ ok: true, kind: "pull_request", archived: false });
@@ -1157,50 +1401,81 @@ describe("E2E: Worker + SessionDurableObject", () => {
   it("GET /pr-index?key=…: returns the row registered by onPRCreated", async () => {
     const env = makeEnv() as any;
     env.LAUNCHER_SHARED_SECRET = "launcher-secret";
-    const createResp = await worker.fetch(new Request("https://x/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
-    }), env);
-    const { id, runnerToken } = await createResp.json() as any;
+    const createResp = await worker.fetch(
+      new Request("https://x/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+      }),
+      env,
+    );
+    const { id, runnerToken } = (await createResp.json()) as any;
     const wsUrl = `https://x/sessions/${id}/runner?token=${runnerToken}`;
-    const wsResp = await worker.fetch(new Request(wsUrl, { headers: { Upgrade: "websocket" } }), env);
+    const wsResp = await worker.fetch(
+      new Request(wsUrl, { headers: { Upgrade: "websocket" } }),
+      env,
+    );
     const ws = (wsResp as any).webSocket;
-    await new Promise(r => setTimeout(r, 5));
-    ws.send(JSON.stringify({ type: "runner.complete", sessionId: id, payload: { summary: "ok", changedFiles: [] } }));
-    await new Promise(r => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 5));
+    ws.send(
+      JSON.stringify({
+        type: "runner.complete",
+        sessionId: id,
+        payload: { summary: "ok", changedFiles: [] },
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 10));
     await worker.fetch(new Request(`https://x/sessions/${id}/create-pr`, { method: "POST" }), env);
-    await new Promise(r => setTimeout(r, 10));
-    ws.send(JSON.stringify({
-      type: "runner.event",
-      sessionId: id,
-      payload: { eventType: "pr.created", eventPayload: { url: "https://github.com/o/r/pull/13", ownerLogin: "alice" } },
-    }));
-    await new Promise(r => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 10));
+    ws.send(
+      JSON.stringify({
+        type: "runner.event",
+        sessionId: id,
+        payload: {
+          eventType: "pr.created",
+          eventPayload: { url: "https://github.com/o/r/pull/13", ownerLogin: "alice" },
+        },
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 10));
 
-    const resp = await worker.fetch(new Request("https://x/pr-index?key=" + encodeURIComponent("o/r#13"), {
-      headers: { "x-hermes-launcher-secret": "launcher-secret" },
-    }), env);
+    const resp = await worker.fetch(
+      new Request("https://x/pr-index?key=" + encodeURIComponent("o/r#13"), {
+        headers: { "x-hermes-launcher-secret": "launcher-secret" },
+      }),
+      env,
+    );
     expect(resp.status).toBe(200);
     const { row } = (await resp.json()) as any;
-    expect(row).toMatchObject({ prKey: "o/r#13", sessionId: id, ownerLogin: "alice", status: "open" });
+    expect(row).toMatchObject({
+      prKey: "o/r#13",
+      sessionId: id,
+      ownerLogin: "alice",
+      status: "open",
+    });
   });
 
   it("GET /pr-index missing key -> 400", async () => {
     const env = makeEnv() as any;
     env.LAUNCHER_SHARED_SECRET = "launcher-secret";
-    const resp = await worker.fetch(new Request("https://x/pr-index", {
-      headers: { "x-hermes-launcher-secret": "launcher-secret" },
-    }), env);
+    const resp = await worker.fetch(
+      new Request("https://x/pr-index", {
+        headers: { "x-hermes-launcher-secret": "launcher-secret" },
+      }),
+      env,
+    );
     expect(resp.status).toBe(400);
   });
 
   it("GET /pr-index unknown PR -> 404", async () => {
     const env = makeEnv() as any;
     env.LAUNCHER_SHARED_SECRET = "launcher-secret";
-    const resp = await worker.fetch(new Request("https://x/pr-index?key=o/r%23999", {
-      headers: { "x-hermes-launcher-secret": "launcher-secret" },
-    }), env);
+    const resp = await worker.fetch(
+      new Request("https://x/pr-index?key=o/r%23999", {
+        headers: { "x-hermes-launcher-secret": "launcher-secret" },
+      }),
+      env,
+    );
     expect(resp.status).toBe(404);
   });
 
@@ -1216,9 +1491,12 @@ describe("E2E: Worker + SessionDurableObject", () => {
     env.LAUNCHER_SHARED_SECRET = "launcher-secret";
     const noHeader = await worker.fetch(new Request("https://x/pr-index?key=o/r%23999"), env);
     expect(noHeader.status).toBe(401);
-    const wrong = await worker.fetch(new Request("https://x/pr-index?key=o/r%23999", {
-      headers: { "x-hermes-launcher-secret": "nope" },
-    }), env);
+    const wrong = await worker.fetch(
+      new Request("https://x/pr-index?key=o/r%23999", {
+        headers: { "x-hermes-launcher-secret": "nope" },
+      }),
+      env,
+    );
     expect(wrong.status).toBe(401);
   });
 
@@ -1226,17 +1504,20 @@ describe("E2E: Worker + SessionDurableObject", () => {
 
   it("getState returns repoUrl + baseBranch from the profile", async () => {
     const env = makeEnv() as any;
-    const createResp = await worker.fetch(new Request("https://x/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        projectId: "p1",
-        taskDescription: "t",
-        repoUrl: "https://github.com/o/r",
-        profile: { ...PROFILE, defaultBranch: "develop" },
+    const createResp = await worker.fetch(
+      new Request("https://x/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: "p1",
+          taskDescription: "t",
+          repoUrl: "https://github.com/o/r",
+          profile: { ...PROFILE, defaultBranch: "develop" },
+        }),
       }),
-    }), env);
-    const { id } = await createResp.json() as any;
+      env,
+    );
+    const { id } = (await createResp.json()) as any;
     const getResp = await worker.fetch(new Request(`https://x/sessions/${id}`), env);
     expect(getResp.status).toBe(200);
     const data = (await getResp.json()) as any;
@@ -1249,26 +1530,43 @@ describe("E2E: Worker + SessionDurableObject", () => {
     env.GITHUB_WEBHOOK_SECRET = "supersecret";
 
     // Seed: create session + register PR via pr.created.
-    const createResp = await worker.fetch(new Request("https://x/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
-    }), env);
-    const { id, runnerToken } = await createResp.json() as any;
+    const createResp = await worker.fetch(
+      new Request("https://x/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+      }),
+      env,
+    );
+    const { id, runnerToken } = (await createResp.json()) as any;
     const wsUrl = `https://x/sessions/${id}/runner?token=${runnerToken}`;
-    const wsResp = await worker.fetch(new Request(wsUrl, { headers: { Upgrade: "websocket" } }), env);
+    const wsResp = await worker.fetch(
+      new Request(wsUrl, { headers: { Upgrade: "websocket" } }),
+      env,
+    );
     const ws = (wsResp as any).webSocket;
-    await new Promise(r => setTimeout(r, 5));
-    ws.send(JSON.stringify({ type: "runner.complete", sessionId: id, payload: { summary: "ok", changedFiles: [] } }));
-    await new Promise(r => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 5));
+    ws.send(
+      JSON.stringify({
+        type: "runner.complete",
+        sessionId: id,
+        payload: { summary: "ok", changedFiles: [] },
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 10));
     await worker.fetch(new Request(`https://x/sessions/${id}/create-pr`, { method: "POST" }), env);
-    await new Promise(r => setTimeout(r, 10));
-    ws.send(JSON.stringify({
-      type: "runner.event",
-      sessionId: id,
-      payload: { eventType: "pr.created", eventPayload: { url: "https://github.com/o/r/pull/21", ownerLogin: "alice" } },
-    }));
-    await new Promise(r => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 10));
+    ws.send(
+      JSON.stringify({
+        type: "runner.event",
+        sessionId: id,
+        payload: {
+          eventType: "pr.created",
+          eventPayload: { url: "https://github.com/o/r/pull/21", ownerLogin: "alice" },
+        },
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 10));
 
     // synchronize delivery (NOT closed) — should be acked but produce
     // ZERO pr.closed events and leave index status untouched.
@@ -1278,27 +1576,42 @@ describe("E2E: Worker + SessionDurableObject", () => {
       pull_request: {
         number: 21,
         html_url: "https://github.com/o/r/pull/21",
-        state: "open", merged: false, merged_at: null,
-        base: { ref: "main" }, head: { ref: "hermes/x" }, user: { login: "alice" },
+        state: "open",
+        merged: false,
+        merged_at: null,
+        base: { ref: "main" },
+        head: { ref: "hermes/x" },
+        user: { login: "alice" },
       },
-      repository: { full_name: "o/r" }, sender: { login: "alice" },
+      repository: { full_name: "o/r" },
+      sender: { login: "alice" },
     };
     const body = JSON.stringify(payload);
     const enc = new TextEncoder();
-    const key = await crypto.subtle.importKey("raw", enc.encode("supersecret"),
-      { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const key = await crypto.subtle.importKey(
+      "raw",
+      enc.encode("supersecret"),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
     const buf = await crypto.subtle.sign("HMAC", key, enc.encode(body));
-    const hex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+    const hex = Array.from(new Uint8Array(buf))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
 
-    const resp = await worker.fetch(new Request("https://x/webhooks/github", {
-      method: "POST",
-      headers: {
-        "x-github-event": "pull_request",
-        "x-github-delivery": "del-sync-1",
-        "x-hub-signature-256": "sha256=" + hex,
-      },
-      body,
-    }), env);
+    const resp = await worker.fetch(
+      new Request("https://x/webhooks/github", {
+        method: "POST",
+        headers: {
+          "x-github-event": "pull_request",
+          "x-github-delivery": "del-sync-1",
+          "x-hub-signature-256": "sha256=" + hex,
+        },
+        body,
+      }),
+      env,
+    );
     expect(resp.status).toBe(200);
     const j = await resp.json();
     expect(j).toMatchObject({ ok: true, kind: "pull_request", archived: false });
@@ -1308,7 +1621,9 @@ describe("E2E: Worker + SessionDurableObject", () => {
 
     // Event log has NO pr.closed / pr.merged events.
     const state = await env.SESSION_DO.get(env.SESSION_DO.idFromString(id)).getState();
-    const lifecycle = state.events.filter((e: any) => e.type === "pr.closed" || e.type === "pr.merged");
+    const lifecycle = state.events.filter(
+      (e: any) => e.type === "pr.closed" || e.type === "pr.merged",
+    );
     expect(lifecycle.length).toBe(0);
   });
 
@@ -1322,27 +1637,42 @@ describe("E2E: Worker + SessionDurableObject", () => {
       pull_request: {
         number: 99,
         html_url: "https://github.com/o/r/pull/99",
-        state: "closed", merged: true, merged_at: "2026-06-26T00:00:00Z",
-        base: { ref: "main" }, head: { ref: "feat/x" }, user: { login: "bob" },
+        state: "closed",
+        merged: true,
+        merged_at: "2026-06-26T00:00:00Z",
+        base: { ref: "main" },
+        head: { ref: "feat/x" },
+        user: { login: "bob" },
       },
-      repository: { full_name: "o/r" }, sender: { login: "bob" },
+      repository: { full_name: "o/r" },
+      sender: { login: "bob" },
     };
     const body = JSON.stringify(payload);
     const enc = new TextEncoder();
-    const key = await crypto.subtle.importKey("raw", enc.encode("supersecret"),
-      { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const key = await crypto.subtle.importKey(
+      "raw",
+      enc.encode("supersecret"),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
     const buf = await crypto.subtle.sign("HMAC", key, enc.encode(body));
-    const hex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+    const hex = Array.from(new Uint8Array(buf))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
 
-    const resp = await worker.fetch(new Request("https://x/webhooks/github", {
-      method: "POST",
-      headers: {
-        "x-github-event": "pull_request",
-        "x-github-delivery": "del-unknown",
-        "x-hub-signature-256": "sha256=" + hex,
-      },
-      body,
-    }), env);
+    const resp = await worker.fetch(
+      new Request("https://x/webhooks/github", {
+        method: "POST",
+        headers: {
+          "x-github-event": "pull_request",
+          "x-github-delivery": "del-unknown",
+          "x-hub-signature-256": "sha256=" + hex,
+        },
+        body,
+      }),
+      env,
+    );
     expect(resp.status).toBe(200);
     expect(await resp.json()).toMatchObject({ ok: true, kind: "unknown_pr" });
   });
@@ -1352,52 +1682,85 @@ describe("E2E: Worker + SessionDurableObject", () => {
   // Helper that signs an arbitrary webhook body with the configured
   // secret + builds a Request. Centralizing this keeps the integration
   // tests below readable.
-  async function postWebhook(env: any, event: string, deliveryId: string, payload: unknown): Promise<Response> {
+  async function postWebhook(
+    env: any,
+    event: string,
+    deliveryId: string,
+    payload: unknown,
+  ): Promise<Response> {
     const body = JSON.stringify(payload);
     const enc = new TextEncoder();
     const key = await crypto.subtle.importKey(
-      "raw", enc.encode(env.GITHUB_WEBHOOK_SECRET),
-      { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+      "raw",
+      enc.encode(env.GITHUB_WEBHOOK_SECRET),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
     );
     const buf = await crypto.subtle.sign("HMAC", key, enc.encode(body));
-    const hex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
-    return worker.fetch(new Request("https://x/webhooks/github", {
-      method: "POST",
-      headers: {
-        "x-github-event": event,
-        "x-github-delivery": deliveryId,
-        "x-hub-signature-256": "sha256=" + hex,
-      },
-      body,
-    }), env);
+    const hex = Array.from(new Uint8Array(buf))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    return worker.fetch(
+      new Request("https://x/webhooks/github", {
+        method: "POST",
+        headers: {
+          "x-github-event": event,
+          "x-github-delivery": deliveryId,
+          "x-hub-signature-256": "sha256=" + hex,
+        },
+        body,
+      }),
+      env,
+    );
   }
 
   // Drives a session to `completed` with a registered PR.
   async function seedPr(env: any, prKey: string, prUrl: string): Promise<string> {
-    const createResp = await worker.fetch(new Request("https://x/sessions", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
-    }), env);
-    const { id, runnerToken } = await createResp.json() as any;
+    const createResp = await worker.fetch(
+      new Request("https://x/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+      }),
+      env,
+    );
+    const { id, runnerToken } = (await createResp.json()) as any;
     const wsResp = await worker.fetch(
-      new Request(`https://x/sessions/${id}/runner?token=${runnerToken}`, { headers: { Upgrade: "websocket" } }),
+      new Request(`https://x/sessions/${id}/runner?token=${runnerToken}`, {
+        headers: { Upgrade: "websocket" },
+      }),
       env,
     );
     const ws = (wsResp as any).webSocket;
-    await new Promise(r => setTimeout(r, 5));
-    ws.send(JSON.stringify({ type: "runner.complete", sessionId: id, payload: { summary: "ok", changedFiles: [] } }));
-    await new Promise(r => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 5));
+    ws.send(
+      JSON.stringify({
+        type: "runner.complete",
+        sessionId: id,
+        payload: { summary: "ok", changedFiles: [] },
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 10));
     await worker.fetch(new Request(`https://x/sessions/${id}/create-pr`, { method: "POST" }), env);
-    await new Promise(r => setTimeout(r, 10));
-    ws.send(JSON.stringify({
-      type: "runner.event", sessionId: id,
-      payload: { eventType: "pr.created", eventPayload: { url: prUrl, ownerLogin: "alice" } },
-    }));
-    await new Promise(r => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 10));
+    ws.send(
+      JSON.stringify({
+        type: "runner.event",
+        sessionId: id,
+        payload: { eventType: "pr.created", eventPayload: { url: prUrl, ownerLogin: "alice" } },
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 10));
     return id;
   }
 
-  function reviewChangesPayload(prNumber: number, headSha: string, reviewer: string, body: string | null = "fix the loop") {
+  function reviewChangesPayload(
+    prNumber: number,
+    headSha: string,
+    reviewer: string,
+    body: string | null = "fix the loop",
+  ) {
     return {
       action: "submitted",
       pull_request: {
@@ -1419,12 +1782,20 @@ describe("E2E: Worker + SessionDurableObject", () => {
     };
   }
 
-  function checkRunFailedPayload(prNumber: number, headSha: string, name: string, conclusion: "failure" | "timed_out" = "failure") {
+  function checkRunFailedPayload(
+    prNumber: number,
+    headSha: string,
+    name: string,
+    conclusion: "failure" | "timed_out" = "failure",
+  ) {
     return {
       action: "completed",
       check_run: {
-        id: 1, name, head_sha: headSha,
-        status: "completed", conclusion,
+        id: 1,
+        name,
+        head_sha: headSha,
+        status: "completed",
+        conclusion,
         html_url: "https://github.com/o/r/runs/1",
         details_url: "https://github.com/o/r/actions/runs/1",
         pull_requests: [{ number: prNumber, head: { ref: "hermes/x", sha: headSha } }],
@@ -1466,19 +1837,28 @@ describe("E2E: Worker + SessionDurableObject", () => {
     mockLauncher(async (req) => {
       launcherSecretHeader = req.headers.get("x-hermes-launcher-secret");
       launcherCall = await req.json();
-      return new Response(JSON.stringify({ sessionId: "sess-amend-1", sandboxId: "sbx-1" }), { ...({ status: 201 }), headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify({ sessionId: "sess-amend-1", sandboxId: "sbx-1" }), {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      });
     });
     try {
-      const resp = await postWebhook(env, "pull_request_review", "del-review-1",
-        reviewChangesPayload(42, "sha-1", "reviewer1", "rename foo -> bar"));
+      const resp = await postWebhook(
+        env,
+        "pull_request_review",
+        "del-review-1",
+        reviewChangesPayload(42, "sha-1", "reviewer1", "rename foo -> bar"),
+      );
       expect(resp.status).toBe(200);
-      const body = await resp.json() as any;
+      const body = (await resp.json()) as any;
       expect(body).toMatchObject({
         dispatched: true,
         newSessionId: "sess-amend-1",
         autofixCount: 1,
       });
-    } finally { restoreFetch(); }
+    } finally {
+      restoreFetch();
+    }
 
     // Launcher got the shared secret header so its auth check accepts the call.
     expect(launcherSecretHeader).toBe("test-launcher-secret");
@@ -1510,15 +1890,23 @@ describe("E2E: Worker + SessionDurableObject", () => {
     await seedPr(env, "o/r#43", "https://github.com/o/r/pull/43");
 
     let called = false;
-    mockLauncher(async () => { called = true; return new Response(JSON.stringify({}), { ...({ status: 500 }), headers: { "content-type": "application/json" } }); });
+    mockLauncher(async () => {
+      called = true;
+      return new Response(JSON.stringify({}), {
+        status: 500,
+        headers: { "content-type": "application/json" },
+      });
+    });
     try {
       const approved = reviewChangesPayload(43, "sha-A", "reviewer2", "lgtm");
       (approved.review as any).state = "approved";
       const resp = await postWebhook(env, "pull_request_review", "del-rev-app", approved);
       expect(resp.status).toBe(200);
-      const j = await resp.json() as any;
+      const j = (await resp.json()) as any;
       expect(j).toMatchObject({ kind: "ignored" });
-    } finally { restoreFetch(); }
+    } finally {
+      restoreFetch();
+    }
     expect(called).toBe(false);
     expect(prIndexRows.get("o/r#43")?.inflightSessionId).toBeUndefined();
   });
@@ -1530,13 +1918,25 @@ describe("E2E: Worker + SessionDurableObject", () => {
     const parentId = await seedPr(env, "o/r#44", "https://github.com/o/r/pull/44");
 
     let called = false;
-    mockLauncher(async () => { called = true; return new Response(JSON.stringify({}), { ...({ status: 500 }), headers: { "content-type": "application/json" } }); });
+    mockLauncher(async () => {
+      called = true;
+      return new Response(JSON.stringify({}), {
+        status: 500,
+        headers: { "content-type": "application/json" },
+      });
+    });
     try {
-      const resp = await postWebhook(env, "pull_request_review", "del-rev-self",
-        reviewChangesPayload(44, "sha-self", "alice", "i had second thoughts"));
+      const resp = await postWebhook(
+        env,
+        "pull_request_review",
+        "del-rev-self",
+        reviewChangesPayload(44, "sha-self", "alice", "i had second thoughts"),
+      );
       expect(resp.status).toBe(200);
-      expect((await resp.json() as any).reason).toBe("self_review");
-    } finally { restoreFetch(); }
+      expect(((await resp.json()) as any).reason).toBe("self_review");
+    } finally {
+      restoreFetch();
+    }
     expect(called).toBe(false);
     const state = await env.SESSION_DO.get(env.SESSION_DO.idFromString(parentId)).getState();
     const ev = state.events.find((e: any) => e.type === "pr.autofix.skipped");
@@ -1553,8 +1953,11 @@ describe("E2E: Worker + SessionDurableObject", () => {
     const payload = {
       action: "completed",
       check_run: {
-        id: 1, name: "ci / unit", head_sha: "sha-self-cr",
-        status: "completed", conclusion: "failure",
+        id: 1,
+        name: "ci / unit",
+        head_sha: "sha-self-cr",
+        status: "completed",
+        conclusion: "failure",
         html_url: "https://github.com/o/r/runs/1",
         details_url: "https://github.com/o/r/actions/runs/1",
         pull_requests: [{ number: 53, head: { ref: "hermes/x", sha: "sha-self-cr" } }],
@@ -1563,12 +1966,20 @@ describe("E2E: Worker + SessionDurableObject", () => {
       sender: { login: "alice", type: "User" }, // operator login, User type
     };
     let called = false;
-    mockLauncher(async () => { called = true; return new Response(JSON.stringify({}), { ...({ status: 500 }), headers: { "content-type": "application/json" } }); });
+    mockLauncher(async () => {
+      called = true;
+      return new Response(JSON.stringify({}), {
+        status: 500,
+        headers: { "content-type": "application/json" },
+      });
+    });
     try {
       const resp = await postWebhook(env, "check_run", "del-cr-self", payload);
       expect(resp.status).toBe(200);
-      expect((await resp.json() as any).reason).toBe("self_check_run");
-    } finally { restoreFetch(); }
+      expect(((await resp.json()) as any).reason).toBe("self_check_run");
+    } finally {
+      restoreFetch();
+    }
     expect(called).toBe(false);
     const state = await env.SESSION_DO.get(env.SESSION_DO.idFromString(parentId)).getState();
     const ev = state.events.find((e: any) => e.type === "pr.autofix.skipped");
@@ -1585,8 +1996,11 @@ describe("E2E: Worker + SessionDurableObject", () => {
     const payload = {
       action: "completed",
       check_run: {
-        id: 1, name: "ci / unit", head_sha: "sha-bot",
-        status: "completed", conclusion: "failure",
+        id: 1,
+        name: "ci / unit",
+        head_sha: "sha-bot",
+        status: "completed",
+        conclusion: "failure",
         html_url: "https://github.com/o/r/runs/1",
         details_url: "https://github.com/o/r/actions/runs/1",
         pull_requests: [{ number: 54, head: { ref: "hermes/x", sha: "sha-bot" } }],
@@ -1594,11 +2008,19 @@ describe("E2E: Worker + SessionDurableObject", () => {
       repository: { full_name: "o/r" },
       sender: { login: "alice", type: "Bot" },
     };
-    mockLauncher(async () => new Response(JSON.stringify({ sessionId: "sess-bot", sandboxId: "sbx-b" }), { ...({ status: 201 }), headers: { "content-type": "application/json" } }));
+    mockLauncher(
+      async () =>
+        new Response(JSON.stringify({ sessionId: "sess-bot", sandboxId: "sbx-b" }), {
+          status: 201,
+          headers: { "content-type": "application/json" },
+        }),
+    );
     try {
       const resp = await postWebhook(env, "check_run", "del-bot", payload);
-      expect((await resp.json() as any).dispatched).toBe(true);
-    } finally { restoreFetch(); }
+      expect(((await resp.json()) as any).dispatched).toBe(true);
+    } finally {
+      restoreFetch();
+    }
   });
 
   it("check_run.failure: dispatches with built taskDescription including detailsUrl", async () => {
@@ -1610,14 +2032,23 @@ describe("E2E: Worker + SessionDurableObject", () => {
     let launcherCall: any = null;
     mockLauncher(async (req) => {
       launcherCall = await req.json();
-      return new Response(JSON.stringify({ sessionId: "sess-cr-1", sandboxId: "sbx-2" }), { ...({ status: 201 }), headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify({ sessionId: "sess-cr-1", sandboxId: "sbx-2" }), {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      });
     });
     try {
-      const resp = await postWebhook(env, "check_run", "del-cr-1",
-        checkRunFailedPayload(45, "sha-cr", "ci / unit"));
-      const j = await resp.json() as any;
+      const resp = await postWebhook(
+        env,
+        "check_run",
+        "del-cr-1",
+        checkRunFailedPayload(45, "sha-cr", "ci / unit"),
+      );
+      const j = (await resp.json()) as any;
       expect(j).toMatchObject({ dispatched: true, newSessionId: "sess-cr-1" });
-    } finally { restoreFetch(); }
+    } finally {
+      restoreFetch();
+    }
     expect(launcherCall.parentSessionId).toBe(parentId);
     expect(launcherCall.taskDescription).toContain("ci / unit");
     expect(launcherCall.taskDescription).toContain("https://github.com/o/r/actions/runs/1");
@@ -1635,23 +2066,36 @@ describe("E2E: Worker + SessionDurableObject", () => {
     let n = 0;
     mockLauncher(async () => {
       n++;
-      return new Response(JSON.stringify({ sessionId: `sess-cap-${n}`, sandboxId: `sbx-${n}` }), { ...({ status: 201 }), headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify({ sessionId: `sess-cap-${n}`, sandboxId: `sbx-${n}` }), {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      });
     });
     try {
       for (let i = 1; i <= 3; i++) {
-        const resp = await postWebhook(env, "pull_request_review", `del-cap-${i}`,
-          reviewChangesPayload(46, `sha-cap-${i}`, "rev"));
-        const j = await resp.json() as any;
+        const resp = await postWebhook(
+          env,
+          "pull_request_review",
+          `del-cap-${i}`,
+          reviewChangesPayload(46, `sha-cap-${i}`, "rev"),
+        );
+        const j = (await resp.json()) as any;
         expect(j.dispatched).toBe(true);
         // simulate spawned session reaching terminal so the next claim can succeed
         prIndexRows.get("o/r#46")!.inflightAmendStartedAt = undefined;
         prIndexRows.get("o/r#46")!.inflightSessionId = undefined;
       }
-      const resp = await postWebhook(env, "pull_request_review", "del-cap-4",
-        reviewChangesPayload(46, "sha-cap-4", "rev"));
-      const j = await resp.json() as any;
+      const resp = await postWebhook(
+        env,
+        "pull_request_review",
+        "del-cap-4",
+        reviewChangesPayload(46, "sha-cap-4", "rev"),
+      );
+      const j = (await resp.json()) as any;
       expect(j).toMatchObject({ dispatched: false, reason: "cap_exceeded" });
-    } finally { restoreFetch(); }
+    } finally {
+      restoreFetch();
+    }
     expect(n).toBe(3);
     const state = await env.SESSION_DO.get(env.SESSION_DO.idFromString(parentId)).getState();
     const triggered = state.events.filter((e: any) => e.type === "pr.autofix.triggered");
@@ -1667,19 +2111,35 @@ describe("E2E: Worker + SessionDurableObject", () => {
     env.LAUNCHER_URL = "http://launcher.test";
     await seedPr(env, "o/r#47", "https://github.com/o/r/pull/47");
 
-    mockLauncher(async () => new Response(JSON.stringify({ sessionId: "sess-dup-1", sandboxId: "sbx-d" }), { ...({ status: 201 }), headers: { "content-type": "application/json" } }));
+    mockLauncher(
+      async () =>
+        new Response(JSON.stringify({ sessionId: "sess-dup-1", sandboxId: "sbx-d" }), {
+          status: 201,
+          headers: { "content-type": "application/json" },
+        }),
+    );
     try {
-      const r1 = await postWebhook(env, "pull_request_review", "del-dup-1",
-        reviewChangesPayload(47, "sha-X", "rev"));
-      expect((await r1.json() as any).dispatched).toBe(true);
+      const r1 = await postWebhook(
+        env,
+        "pull_request_review",
+        "del-dup-1",
+        reviewChangesPayload(47, "sha-X", "rev"),
+      );
+      expect(((await r1.json()) as any).dispatched).toBe(true);
       // Pretend the first amend finished, releasing the slot.
       prIndexRows.get("o/r#47")!.inflightAmendStartedAt = undefined;
       prIndexRows.get("o/r#47")!.inflightSessionId = undefined;
       // Same head sha (e.g. reviewer re-submits): refused.
-      const r2 = await postWebhook(env, "pull_request_review", "del-dup-2",
-        reviewChangesPayload(47, "sha-X", "rev"));
+      const r2 = await postWebhook(
+        env,
+        "pull_request_review",
+        "del-dup-2",
+        reviewChangesPayload(47, "sha-X", "rev"),
+      );
       expect(await r2.json()).toMatchObject({ dispatched: false, reason: "duplicate_sha" });
-    } finally { restoreFetch(); }
+    } finally {
+      restoreFetch();
+    }
   });
 
   it("inflight: concurrent triggers — second is refused while first is running", async () => {
@@ -1688,16 +2148,32 @@ describe("E2E: Worker + SessionDurableObject", () => {
     env.LAUNCHER_URL = "http://launcher.test";
     await seedPr(env, "o/r#48", "https://github.com/o/r/pull/48");
 
-    mockLauncher(async () => new Response(JSON.stringify({ sessionId: "sess-inf-1", sandboxId: "sbx-i" }), { ...({ status: 201 }), headers: { "content-type": "application/json" } }));
+    mockLauncher(
+      async () =>
+        new Response(JSON.stringify({ sessionId: "sess-inf-1", sandboxId: "sbx-i" }), {
+          status: 201,
+          headers: { "content-type": "application/json" },
+        }),
+    );
     try {
-      const r1 = await postWebhook(env, "pull_request_review", "del-inf-1",
-        reviewChangesPayload(48, "sha-A", "rev"));
-      expect((await r1.json() as any).dispatched).toBe(true);
+      const r1 = await postWebhook(
+        env,
+        "pull_request_review",
+        "del-inf-1",
+        reviewChangesPayload(48, "sha-A", "rev"),
+      );
+      expect(((await r1.json()) as any).dispatched).toBe(true);
       // First still inflight (we did NOT clear it). Second must be refused.
-      const r2 = await postWebhook(env, "check_run", "del-inf-2",
-        checkRunFailedPayload(48, "sha-B", "ci"));
+      const r2 = await postWebhook(
+        env,
+        "check_run",
+        "del-inf-2",
+        checkRunFailedPayload(48, "sha-B", "ci"),
+      );
       expect(await r2.json()).toMatchObject({ dispatched: false, reason: "inflight" });
-    } finally { restoreFetch(); }
+    } finally {
+      restoreFetch();
+    }
   });
 
   it("launcher unreachable: slot is released so next trigger can retry", async () => {
@@ -1709,21 +2185,38 @@ describe("E2E: Worker + SessionDurableObject", () => {
     let callCount = 0;
     mockLauncher(async () => {
       callCount++;
-      if (callCount === 1) return new Response(JSON.stringify({ error: "boom" }), { ...({ status: 500 }), headers: { "content-type": "application/json" } });
-      return new Response(JSON.stringify({ sessionId: "sess-r-1", sandboxId: "sbx-r" }), { ...({ status: 201 }), headers: { "content-type": "application/json" } });
+      if (callCount === 1)
+        return new Response(JSON.stringify({ error: "boom" }), {
+          status: 500,
+          headers: { "content-type": "application/json" },
+        });
+      return new Response(JSON.stringify({ sessionId: "sess-r-1", sandboxId: "sbx-r" }), {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      });
     });
     try {
-      const r1 = await postWebhook(env, "pull_request_review", "del-recover-1",
-        reviewChangesPayload(49, "sha-A", "rev"));
+      const r1 = await postWebhook(
+        env,
+        "pull_request_review",
+        "del-recover-1",
+        reviewChangesPayload(49, "sha-A", "rev"),
+      );
       expect(await r1.json()).toMatchObject({ dispatched: false, reason: "launcher_500" });
       // Rollback must have cleared autofixCount + lastAmendedSha so a
       // retry on the SAME sha is allowed.
       expect(prIndexRows.get("o/r#49")?.autofixCount).toBe(0);
       expect(prIndexRows.get("o/r#49")?.lastAmendedSha).toBeUndefined();
-      const r2 = await postWebhook(env, "pull_request_review", "del-recover-2",
-        reviewChangesPayload(49, "sha-A", "rev"));
-      expect((await r2.json() as any).dispatched).toBe(true);
-    } finally { restoreFetch(); }
+      const r2 = await postWebhook(
+        env,
+        "pull_request_review",
+        "del-recover-2",
+        reviewChangesPayload(49, "sha-A", "rev"),
+      );
+      expect(((await r2.json()) as any).dispatched).toBe(true);
+    } finally {
+      restoreFetch();
+    }
     expect(callCount).toBe(2);
   });
 
@@ -1735,13 +2228,24 @@ describe("E2E: Worker + SessionDurableObject", () => {
 
     // Launcher returns 200 OK but the body has no sessionId — could be a
     // misconfigured launcher, a proxy injecting a static page, etc.
-    mockLauncher(async () => new Response(JSON.stringify({ ok: true }), {
-      ...({ status: 200 }), headers: { "content-type": "application/json" },
-    }));
+    mockLauncher(
+      async () =>
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    );
     try {
-      const r1 = await postWebhook(env, "pull_request_review", "del-nosess-1",
-        reviewChangesPayload(52, "sha-N", "rev"));
-      expect(await r1.json()).toMatchObject({ dispatched: false, reason: "launcher_no_session_id" });
+      const r1 = await postWebhook(
+        env,
+        "pull_request_review",
+        "del-nosess-1",
+        reviewChangesPayload(52, "sha-N", "rev"),
+      );
+      expect(await r1.json()).toMatchObject({
+        dispatched: false,
+        reason: "launcher_no_session_id",
+      });
       // Slot must be fully released (no inflight, autofixCount rolled back,
       // lastAmendedSha cleared) so a retry on the same sha is allowed.
       const row = prIndexRows.get("o/r#52");
@@ -1749,18 +2253,30 @@ describe("E2E: Worker + SessionDurableObject", () => {
       expect(row?.inflightSessionId).toBeUndefined();
       expect(row?.autofixCount).toBe(0);
       expect(row?.lastAmendedSha).toBeUndefined();
-    } finally { restoreFetch(); }
+    } finally {
+      restoreFetch();
+    }
 
     // Second attempt with a real sessionId succeeds (proves the slot is
     // fully reclaimable after the no-sessionId rollback).
-    mockLauncher(async () => new Response(JSON.stringify({ sessionId: "sess-recover", sandboxId: "sbx" }), {
-      ...({ status: 201 }), headers: { "content-type": "application/json" },
-    }));
+    mockLauncher(
+      async () =>
+        new Response(JSON.stringify({ sessionId: "sess-recover", sandboxId: "sbx" }), {
+          status: 201,
+          headers: { "content-type": "application/json" },
+        }),
+    );
     try {
-      const r2 = await postWebhook(env, "pull_request_review", "del-nosess-2",
-        reviewChangesPayload(52, "sha-N", "rev"));
-      expect((await r2.json() as any).dispatched).toBe(true);
-    } finally { restoreFetch(); }
+      const r2 = await postWebhook(
+        env,
+        "pull_request_review",
+        "del-nosess-2",
+        reviewChangesPayload(52, "sha-N", "rev"),
+      );
+      expect(((await r2.json()) as any).dispatched).toBe(true);
+    } finally {
+      restoreFetch();
+    }
   });
 
   it("LAUNCHER_URL unset: skip with reason=launcher_not_configured", async () => {
@@ -1768,9 +2284,16 @@ describe("E2E: Worker + SessionDurableObject", () => {
     env.GITHUB_WEBHOOK_SECRET = "supersecret";
     delete env.LAUNCHER_URL;
     const parentId = await seedPr(env, "o/r#50", "https://github.com/o/r/pull/50");
-    const resp = await postWebhook(env, "pull_request_review", "del-no-launch",
-      reviewChangesPayload(50, "sha-N", "rev"));
-    expect(await resp.json()).toMatchObject({ dispatched: false, reason: "launcher_not_configured" });
+    const resp = await postWebhook(
+      env,
+      "pull_request_review",
+      "del-no-launch",
+      reviewChangesPayload(50, "sha-N", "rev"),
+    );
+    expect(await resp.json()).toMatchObject({
+      dispatched: false,
+      reason: "launcher_not_configured",
+    });
     const state = await env.SESSION_DO.get(env.SESSION_DO.idFromString(parentId)).getState();
     const skipped = state.events.find((e: any) => e.type === "pr.autofix.skipped");
     expect(skipped.payload.skipReason).toBe("launcher_not_configured");
@@ -1782,16 +2305,32 @@ describe("E2E: Worker + SessionDurableObject", () => {
     env.LAUNCHER_URL = "http://launcher.test";
     env.AUTOFIX_CAP_PER_PR = "1";
     await seedPr(env, "o/r#51", "https://github.com/o/r/pull/51");
-    mockLauncher(async () => new Response(JSON.stringify({ sessionId: "sess-x", sandboxId: "sbx-x" }), { ...({ status: 201 }), headers: { "content-type": "application/json" } }));
+    mockLauncher(
+      async () =>
+        new Response(JSON.stringify({ sessionId: "sess-x", sandboxId: "sbx-x" }), {
+          status: 201,
+          headers: { "content-type": "application/json" },
+        }),
+    );
     try {
-      const r1 = await postWebhook(env, "pull_request_review", "del-cap1-1",
-        reviewChangesPayload(51, "sha-1", "rev"));
-      expect((await r1.json() as any).dispatched).toBe(true);
+      const r1 = await postWebhook(
+        env,
+        "pull_request_review",
+        "del-cap1-1",
+        reviewChangesPayload(51, "sha-1", "rev"),
+      );
+      expect(((await r1.json()) as any).dispatched).toBe(true);
       prIndexRows.get("o/r#51")!.inflightAmendStartedAt = undefined;
       prIndexRows.get("o/r#51")!.inflightSessionId = undefined;
-      const r2 = await postWebhook(env, "pull_request_review", "del-cap1-2",
-        reviewChangesPayload(51, "sha-2", "rev"));
+      const r2 = await postWebhook(
+        env,
+        "pull_request_review",
+        "del-cap1-2",
+        reviewChangesPayload(51, "sha-2", "rev"),
+      );
       expect(await r2.json()).toMatchObject({ dispatched: false, reason: "cap_exceeded" });
-    } finally { restoreFetch(); }
+    } finally {
+      restoreFetch();
+    }
   });
 });

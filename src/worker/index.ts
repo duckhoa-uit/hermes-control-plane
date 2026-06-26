@@ -4,16 +4,10 @@
 // ============================================================
 
 import { SessionDurableObject } from "./session-do";
-import { PrIndexDurableObject } from "./pr-index-do";
+import { PrIndexDurableObject, getPrIndexStub } from "./pr-index-do";
 import { verifyGithubHmac, parseGithubWebhook } from "./github-webhook";
-import { getPrIndexStub } from "./pr-index-do";
 import type { PromptResult } from "./session-do";
-import type {
-  ProjectProfile,
-  Session,
-  HermesEvent,
-  SessionArtifacts,
-} from "../core/types";
+import type { ProjectProfile, Session, HermesEvent, SessionArtifacts } from "../core/types";
 
 // RPC contract surface — explicit interface so TS does not have to walk the
 // full DO class (whose return shapes contain Record<string, unknown> which
@@ -161,10 +155,9 @@ export default {
 
       // ---- Health ----
       if (path === "/health" || path === "/") {
-        return new Response(
-          JSON.stringify({ status: "ok", service: "hermes-control-plane" }),
-          { headers: CORS_HEADERS },
-        );
+        return new Response(JSON.stringify({ status: "ok", service: "hermes-control-plane" }), {
+          headers: CORS_HEADERS,
+        });
       }
 
       // ---- PR index lookup ----
@@ -179,32 +172,32 @@ export default {
       // (503) if the secret is unset on the Worker.
       if (path === "/pr-index" && request.method === "GET") {
         if (!env.LAUNCHER_SHARED_SECRET) {
-          return new Response(
-            JSON.stringify({ error: "launcher secret not configured" }),
-            { status: 503, headers: CORS_HEADERS },
-          );
+          return new Response(JSON.stringify({ error: "launcher secret not configured" }), {
+            status: 503,
+            headers: CORS_HEADERS,
+          });
         }
         const provided = request.headers.get("x-hermes-launcher-secret") ?? "";
         if (!timingSafeEqualStrings(provided, env.LAUNCHER_SHARED_SECRET)) {
-          return new Response(
-            JSON.stringify({ error: "unauthorized" }),
-            { status: 401, headers: CORS_HEADERS },
-          );
+          return new Response(JSON.stringify({ error: "unauthorized" }), {
+            status: 401,
+            headers: CORS_HEADERS,
+          });
         }
         const key = url.searchParams.get("key");
         if (!key) {
-          return new Response(
-            JSON.stringify({ error: "missing ?key=" }),
-            { status: 400, headers: CORS_HEADERS },
-          );
+          return new Response(JSON.stringify({ error: "missing ?key=" }), {
+            status: 400,
+            headers: CORS_HEADERS,
+          });
         }
         const stub = getPrIndexStub(env);
         const row = await asPrIndex(stub).lookup(key);
         if (!row) {
-          return new Response(
-            JSON.stringify({ error: "not found", key }),
-            { status: 404, headers: CORS_HEADERS },
-          );
+          return new Response(JSON.stringify({ error: "not found", key }), {
+            status: 404,
+            headers: CORS_HEADERS,
+          });
         }
         return new Response(JSON.stringify({ row }), { headers: CORS_HEADERS });
       }
@@ -222,10 +215,10 @@ export default {
         const rawBody = await request.text();
         if (!env.GITHUB_WEBHOOK_SECRET) {
           // Fail closed on misconfig.
-          return new Response(
-            JSON.stringify({ error: "webhook secret not configured" }),
-            { status: 503, headers: CORS_HEADERS },
-          );
+          return new Response(JSON.stringify({ error: "webhook secret not configured" }), {
+            status: 503,
+            headers: CORS_HEADERS,
+          });
         }
         const verified = await verifyGithubHmac({
           rawBody,
@@ -233,10 +226,10 @@ export default {
           secret: env.GITHUB_WEBHOOK_SECRET,
         });
         if (!verified) {
-          return new Response(
-            JSON.stringify({ error: "invalid signature" }),
-            { status: 401, headers: CORS_HEADERS },
-          );
+          return new Response(JSON.stringify({ error: "invalid signature" }), {
+            status: 401,
+            headers: CORS_HEADERS,
+          });
         }
         const parsed = parseGithubWebhook(
           request.headers.get("x-github-event"),
@@ -244,17 +237,17 @@ export default {
           rawBody,
         );
         if (!parsed) {
-          return new Response(
-            JSON.stringify({ error: "unparseable webhook payload" }),
-            { status: 400, headers: CORS_HEADERS },
-          );
+          return new Response(JSON.stringify({ error: "unparseable webhook payload" }), {
+            status: 400,
+            headers: CORS_HEADERS,
+          });
         }
         if (parsed.kind === "ignored") {
           // ping or any event we don't act on. Always 200 so GitHub
           // marks the delivery successful and doesn't retry.
           console.log(
             `[webhook] ignored event=${request.headers.get("x-github-event")} ` +
-            `delivery=${parsed.deliveryId.slice(0, 8)} reason=${parsed.reason}`,
+              `delivery=${parsed.deliveryId.slice(0, 8)} reason=${parsed.reason}`,
           );
           return new Response(
             JSON.stringify({ ok: true, kind: "ignored", reason: parsed.reason }),
@@ -271,22 +264,22 @@ export default {
           // was unregistered). Ack so GitHub doesn't retry.
           console.log(
             `[webhook] pull_request pr=${parsed.prKey} unknown to index ` +
-            `(not a Hermes PR or already unregistered); acking`,
+              `(not a Hermes PR or already unregistered); acking`,
           );
-          return new Response(
-            JSON.stringify({ ok: true, kind: "unknown_pr" }),
-            { status: 200, headers: CORS_HEADERS },
-          );
+          return new Response(JSON.stringify({ ok: true, kind: "unknown_pr" }), {
+            status: 200,
+            headers: CORS_HEADERS,
+          });
         }
         const novel = await prIndex.recordDelivery(parsed.prKey, parsed.deliveryId);
         if (!novel) {
           console.log(
             `[webhook] duplicate delivery=${parsed.deliveryId.slice(0, 8)} pr=${parsed.prKey}; ack`,
           );
-          return new Response(
-            JSON.stringify({ ok: true, kind: "duplicate" }),
-            { status: 200, headers: CORS_HEADERS },
-          );
+          return new Response(JSON.stringify({ ok: true, kind: "duplicate" }), {
+            status: 200,
+            headers: CORS_HEADERS,
+          });
         }
 
         // Branch on the parsed kind.
@@ -323,7 +316,7 @@ export default {
             } catch (err) {
               console.error(
                 `[webhook] SESSION_DO.ingestPrLifecycleEvent failed for ${row.sessionId}: ` +
-                `${(err as Error).message}`,
+                  `${(err as Error).message}`,
               );
               // Don't 5xx — we already updated the index row and dedup'd the
               // delivery. GitHub retrying won't fix a missing/corrupt DO.
@@ -339,7 +332,7 @@ export default {
 
           console.log(
             `[webhook] pull_request pr=${parsed.prKey} action=${parsed.action} ` +
-            `merged=${parsed.merged} session=${row.sessionId.slice(0, 8)} archived=${archived}`,
+              `merged=${parsed.merged} session=${row.sessionId.slice(0, 8)} archived=${archived}`,
           );
           return new Response(
             JSON.stringify({
@@ -359,9 +352,7 @@ export default {
         // terminal (see SessionDurableObject.transition).
         const launcherUrl = env.LAUNCHER_URL;
         if (!launcherUrl) {
-          console.warn(
-            `[webhook] ${parsed.kind} pr=${parsed.prKey}: skipped (LAUNCHER_URL unset)`,
-          );
+          console.warn(`[webhook] ${parsed.kind} pr=${parsed.prKey}: skipped (LAUNCHER_URL unset)`);
           try {
             const stub = env.SESSION_DO.get(env.SESSION_DO.idFromString(row.sessionId));
             await asRpc(stub).appendAutofixEvent({
@@ -378,7 +369,12 @@ export default {
             console.error(`[webhook] appendAutofixEvent (skip) failed: ${(err as Error).message}`);
           }
           return new Response(
-            JSON.stringify({ ok: true, kind: parsed.kind, dispatched: false, reason: "launcher_not_configured" }),
+            JSON.stringify({
+              ok: true,
+              kind: parsed.kind,
+              dispatched: false,
+              reason: "launcher_not_configured",
+            }),
             { status: 200, headers: CORS_HEADERS },
           );
         }
@@ -414,7 +410,12 @@ export default {
             });
           } catch {}
           return new Response(
-            JSON.stringify({ ok: true, kind: parsed.kind, dispatched: false, reason: "self_review" }),
+            JSON.stringify({
+              ok: true,
+              kind: parsed.kind,
+              dispatched: false,
+              reason: "self_review",
+            }),
             { status: 200, headers: CORS_HEADERS },
           );
         }
@@ -423,7 +424,9 @@ export default {
           parsed.senderType === "User" &&
           parsed.senderLogin === row.ownerLogin
         ) {
-          console.log(`[webhook] self-check_run on pr=${parsed.prKey} sender=${parsed.senderLogin}; skip`);
+          console.log(
+            `[webhook] self-check_run on pr=${parsed.prKey} sender=${parsed.senderLogin}; skip`,
+          );
           try {
             const stub = env.SESSION_DO.get(env.SESSION_DO.idFromString(row.sessionId));
             await asRpc(stub).appendAutofixEvent({
@@ -437,7 +440,12 @@ export default {
             });
           } catch {}
           return new Response(
-            JSON.stringify({ ok: true, kind: parsed.kind, dispatched: false, reason: "self_check_run" }),
+            JSON.stringify({
+              ok: true,
+              kind: parsed.kind,
+              dispatched: false,
+              reason: "self_check_run",
+            }),
             { status: 200, headers: CORS_HEADERS },
           );
         }
@@ -456,9 +464,7 @@ export default {
           cap,
         );
         if (!claim.ok) {
-          console.log(
-            `[webhook] ${parsed.kind} pr=${parsed.prKey} skip reason=${claim.reason}`,
-          );
+          console.log(`[webhook] ${parsed.kind} pr=${parsed.prKey} skip reason=${claim.reason}`);
           try {
             const stub = env.SESSION_DO.get(env.SESSION_DO.idFromString(row.sessionId));
             await asRpc(stub).appendAutofixEvent({
@@ -473,7 +479,12 @@ export default {
             });
           } catch {}
           return new Response(
-            JSON.stringify({ ok: true, kind: parsed.kind, dispatched: false, reason: claim.reason }),
+            JSON.stringify({
+              ok: true,
+              kind: parsed.kind,
+              dispatched: false,
+              reason: claim.reason,
+            }),
             { status: 200, headers: CORS_HEADERS },
           );
         }
@@ -482,7 +493,8 @@ export default {
         let taskDescription: string;
         if (parsed.kind === "review_changes_requested") {
           const reviewer = parsed.reviewerLogin || "(unknown)";
-          const body = parsed.reviewBody?.trim() || "(no body — reviewer used inline comments only)";
+          const body =
+            parsed.reviewBody?.trim() || "(no body — reviewer used inline comments only)";
           taskDescription =
             `PR reviewer @${reviewer} requested changes on PR #${parsed.prKey.split("#")[1]} ` +
             `(${parsed.prUrl}).
@@ -515,25 +527,26 @@ Logs / details: ${parsed.detailsUrl}
               "x-hermes-launcher-secret": env.LAUNCHER_SHARED_SECRET ?? "",
             },
             body: JSON.stringify({
-            parentSessionId: row.sessionId,
-            taskDescription,
-            // A5: structured trigger metadata so the runner can pick a
-            // preamble tailored to the failure class (review feedback vs
-            // CI fail). Backwards-compatible: launchers on the old shape
-            // simply ignore these fields.
-            amendTrigger: parsed.kind === "review_changes_requested"
-              ? {
-                  kind: "review_changes_requested",
-                  reviewerLogin: parsed.reviewerLogin,
-                  reviewBody: (parsed.reviewBody || "").slice(0, 4096),
-                }
-              : {
-                  kind: "ci_failure",
-                  checkName: parsed.checkName,
-                  detailsUrl: parsed.detailsUrl,
-                  conclusion: (parsed as { conclusion?: string }).conclusion ?? "failure",
-                },
-          }),
+              parentSessionId: row.sessionId,
+              taskDescription,
+              // A5: structured trigger metadata so the runner can pick a
+              // preamble tailored to the failure class (review feedback vs
+              // CI fail). Backwards-compatible: launchers on the old shape
+              // simply ignore these fields.
+              amendTrigger:
+                parsed.kind === "review_changes_requested"
+                  ? {
+                      kind: "review_changes_requested",
+                      reviewerLogin: parsed.reviewerLogin,
+                      reviewBody: (parsed.reviewBody || "").slice(0, 4096),
+                    }
+                  : {
+                      kind: "ci_failure",
+                      checkName: parsed.checkName,
+                      detailsUrl: parsed.detailsUrl,
+                      conclusion: (parsed as { conclusion?: string }).conclusion ?? "failure",
+                    },
+            }),
           });
           if (!r.ok) {
             const txt = await r.text().catch(() => "");
@@ -552,7 +565,12 @@ Logs / details: ${parsed.detailsUrl}
               });
             } catch {}
             return new Response(
-              JSON.stringify({ ok: true, kind: parsed.kind, dispatched: false, reason: `launcher_${r.status}` }),
+              JSON.stringify({
+                ok: true,
+                kind: parsed.kind,
+                dispatched: false,
+                reason: `launcher_${r.status}`,
+              }),
               { status: 200, headers: CORS_HEADERS },
             );
           }
@@ -580,7 +598,12 @@ Logs / details: ${parsed.detailsUrl}
               });
             } catch {}
             return new Response(
-              JSON.stringify({ ok: true, kind: parsed.kind, dispatched: false, reason: "launcher_no_session_id" }),
+              JSON.stringify({
+                ok: true,
+                kind: parsed.kind,
+                dispatched: false,
+                reason: "launcher_no_session_id",
+              }),
               { status: 200, headers: CORS_HEADERS },
             );
           }
@@ -593,7 +616,12 @@ Logs / details: ${parsed.detailsUrl}
           );
           await prIndex.rollbackAmendClaim(parsed.prKey, row.sessionId);
           return new Response(
-            JSON.stringify({ ok: true, kind: parsed.kind, dispatched: false, reason: "launcher_unreachable" }),
+            JSON.stringify({
+              ok: true,
+              kind: parsed.kind,
+              dispatched: false,
+              reason: "launcher_unreachable",
+            }),
             { status: 200, headers: CORS_HEADERS },
           );
         }
@@ -658,7 +686,7 @@ Logs / details: ${parsed.detailsUrl}
           id: body.projectId,
           repoUrl: body.repoUrl ?? DEFAULT_PROFILE.repoUrl,
           env: {
-            ...(body.profile?.env ?? {}),
+            ...body.profile?.env,
           },
         };
 
@@ -673,7 +701,13 @@ Logs / details: ${parsed.detailsUrl}
         // when the client hits the deployed Worker directly.
         const controlBaseUrl = env.WORKER_URL?.replace(/\/$/, "") ?? url.origin;
 
-        const session = await asRpc(stub).initSession(profile, body.taskDescription, controlBaseUrl, body.amendPrUrl, body.branchSuffix);
+        const session = await asRpc(stub).initSession(
+          profile,
+          body.taskDescription,
+          controlBaseUrl,
+          body.amendPrUrl,
+          body.branchSuffix,
+        );
 
         return new Response(JSON.stringify(session), {
           status: 201,
@@ -693,9 +727,13 @@ Logs / details: ${parsed.detailsUrl}
         const id = env.SESSION_DO.idFromString(sessionId);
         const stub = env.SESSION_DO.get(id);
 
-        console.log(`[worker] WS upgrade: type=${wsType} sessionId=${sessionId.slice(0,8)}... calling stub.fetch`);
+        console.log(
+          `[worker] WS upgrade: type=${wsType} sessionId=${sessionId.slice(0, 8)}... calling stub.fetch`,
+        );
         const wsResp = await stub.fetch(request);
-        console.log(`[worker] WS response status: ${wsResp.status} webSocket: ${!!wsResp.webSocket}`);
+        console.log(
+          `[worker] WS response status: ${wsResp.status} webSocket: ${!!wsResp.webSocket}`,
+        );
         return wsResp;
       }
 
@@ -707,20 +745,20 @@ Logs / details: ${parsed.detailsUrl}
         try {
           id = env.SESSION_DO.idFromString(sessionId);
         } catch {
-          return new Response(
-            JSON.stringify({ error: "session not found" }),
-            { status: 404, headers: CORS_HEADERS },
-          );
+          return new Response(JSON.stringify({ error: "session not found" }), {
+            status: 404,
+            headers: CORS_HEADERS,
+          });
         }
         const stub = env.SESSION_DO.get(id);
 
         const data = await asRpc(stub).getState();
         // DO auto-instantiates empty; treat a missing session as 404.
         if (!data.session) {
-          return new Response(
-            JSON.stringify({ error: "session not found" }),
-            { status: 404, headers: CORS_HEADERS },
-          );
+          return new Response(JSON.stringify({ error: "session not found" }), {
+            status: 404,
+            headers: CORS_HEADERS,
+          });
         }
 
         return new Response(JSON.stringify(data), { headers: CORS_HEADERS });
@@ -793,10 +831,10 @@ Logs / details: ${parsed.detailsUrl}
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
-      return new Response(
-        JSON.stringify({ error: message }),
-        { status: 500, headers: CORS_HEADERS },
-      );
+      return new Response(JSON.stringify({ error: message }), {
+        status: 500,
+        headers: CORS_HEADERS,
+      });
     }
   },
 };

@@ -69,7 +69,9 @@ export class MockSandboxProvider implements SandboxProvider {
     const sbx = this.sandboxes.get(handle.sandboxId);
     if (sbx) {
       sbx.status = "stopped";
-      console.log(`[mock-sandbox] Destroyed sandbox ${handle.sandboxId} (ran ${sbx.commands.length} commands)`);
+      console.log(
+        `[mock-sandbox] Destroyed sandbox ${handle.sandboxId} (ran ${sbx.commands.length} commands)`,
+      );
     }
     this.sandboxes.delete(handle.sandboxId);
   }

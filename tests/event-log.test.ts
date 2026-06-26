@@ -54,10 +54,10 @@ describe("event-log", () => {
   });
 
   it("getSince returns events after seq", () => {
-    log.append("sess1", "session.created", "system");  // seq 0
-    log.append("sess1", "sandbox.provisioning", "system");  // seq 1
-    log.append("sess1", "runner.connected", "runner");  // seq 2
-    log.append("sess1", "agent.started", "system");  // seq 3
+    log.append("sess1", "session.created", "system"); // seq 0
+    log.append("sess1", "sandbox.provisioning", "system"); // seq 1
+    log.append("sess1", "runner.connected", "runner"); // seq 2
+    log.append("sess1", "agent.started", "system"); // seq 3
 
     const since1 = log.getSince(1);
     expect(since1.length).toBe(2);

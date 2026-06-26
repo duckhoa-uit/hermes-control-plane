@@ -55,17 +55,34 @@ describe("M5 — state machine still allows the rebind+drain path", () => {
 });
 
 describe("M5 — /prompt response shapes", () => {
-  type PromptOk = { ok: true; queued: true; status: SessionStatus; reason: string; recoverable: true };
+  type PromptOk = {
+    ok: true;
+    queued: true;
+    status: SessionStatus;
+    reason: string;
+    recoverable: true;
+  };
   type PromptQueued = PromptOk;
-  type PromptRunnerGone = { error: string; status: SessionStatus | undefined; reason: string; recoverable: false };
-  type PromptSessionEnded = { error: string; status: SessionStatus; reason: string; recoverable: false };
+  type PromptRunnerGone = {
+    error: string;
+    status: SessionStatus | undefined;
+    reason: string;
+    recoverable: false;
+  };
+  type PromptSessionEnded = {
+    error: string;
+    status: SessionStatus;
+    reason: string;
+    recoverable: false;
+  };
 
   it("202 body has recoverable:true and queued:true", () => {
     const body: PromptQueued = {
       ok: true,
       queued: true,
       status: "review_ready",
-      reason: "Sandbox is paused; resume initiated. The follow-up prompt will be delivered as soon as the runner reconnects (usually < 5 s).",
+      reason:
+        "Sandbox is paused; resume initiated. The follow-up prompt will be delivered as soon as the runner reconnects (usually < 5 s).",
       recoverable: true,
     };
     expect(body.recoverable).toBe(true);
@@ -88,7 +105,8 @@ describe("M5 — /prompt response shapes", () => {
     const body: PromptSessionEnded = {
       error: "Session ended",
       status: "failed",
-      reason: "The session reached a terminal state and its sandbox has been torn down. Start a new session to continue the work; the previous diff and PR (if any) are preserved in the session record.",
+      reason:
+        "The session reached a terminal state and its sandbox has been torn down. Start a new session to continue the work; the previous diff and PR (if any) are preserved in the session record.",
       recoverable: false,
     };
     expect(body.recoverable).toBe(false);

@@ -24,9 +24,13 @@ export function babysitForTests(
     if (firstChildFired) return;
     firstChildFired = true;
     const resolvedCode = code ?? (sig ? 130 : 1);
-    try { peer.kill("SIGTERM"); } catch {}
+    try {
+      peer.kill("SIGTERM");
+    } catch {}
     const hard = setTimeout(() => {
-      try { peer.kill("SIGKILL"); } catch {}
+      try {
+        peer.kill("SIGKILL");
+      } catch {}
       callExit(resolvedCode);
     }, hardKillAfterMs);
     peer.on("exit", () => {
@@ -39,7 +43,10 @@ export function babysitForTests(
 }
 
 /** Issue PUT /auth/{providerID} against the local opencode serve. */
-export type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; body: string }) => Promise<{ ok: boolean; status: number; text: () => Promise<string> }>;
+export type FetchLike = (
+  url: string,
+  init: { method: string; headers: Record<string, string>; body: string },
+) => Promise<{ ok: boolean; status: number; text: () => Promise<string> }>;
 
 export async function applyZaiAuthForTests(
   baseUrl: string,

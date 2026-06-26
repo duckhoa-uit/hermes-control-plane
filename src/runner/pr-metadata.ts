@@ -30,7 +30,10 @@ export function parsePrMetadata(raw: string): PrMetadata | null {
   }
   const title = typeof obj.title === "string" ? obj.title.trim() : "";
   const summary = Array.isArray(obj.summary)
-    ? obj.summary.filter((x): x is string => typeof x === "string").map((x) => x.trim()).filter(Boolean)
+    ? obj.summary
+        .filter((x): x is string => typeof x === "string")
+        .map((x) => x.trim())
+        .filter(Boolean)
     : [];
   const verification = typeof obj.verification === "string" ? obj.verification.trim() : "";
   const outOfScope = typeof obj.outOfScope === "string" ? obj.outOfScope.trim() : "";

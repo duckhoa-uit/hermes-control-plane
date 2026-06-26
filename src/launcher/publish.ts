@@ -24,16 +24,16 @@ const REPO_DIR = "/home/user/repo";
 export interface PublishInput {
   sandboxId: string;
   e2bApiKey: string;
-  writeToken: string;        // GITHUB_WRITE_TOKEN — argv only
+  writeToken: string; // GITHUB_WRITE_TOKEN — argv only
   repoUrl: string;
   branch: string;
   baseBranch: string;
   title: string;
   body: string;
-  amendMode: boolean;        // when true, skip POST /pulls; existing PR
+  amendMode: boolean; // when true, skip POST /pulls; existing PR
   amendPrNumber?: number;
   amendPrUrl?: string;
-  ownerLogin?: string;       // for the returned event payload only
+  ownerLogin?: string; // for the returned event payload only
 }
 
 export interface PublishResult {
@@ -41,7 +41,7 @@ export interface PublishResult {
   prUrl: string;
   prNumber: number;
   branch: string;
-  pushOutput: string;        // tail of stderr/stdout for observability
+  pushOutput: string; // tail of stderr/stdout for observability
   amendMode: boolean;
   ownerLogin?: string;
 }
@@ -49,14 +49,12 @@ export interface PublishResult {
 export interface PublishError {
   ok: false;
   stage: "connect" | "push" | "pulls_post";
-  status?: number;           // HTTP for pulls_post
+  status?: number; // HTTP for pulls_post
   message: string;
   detail?: string;
 }
 
-export async function publishPr(
-  input: PublishInput,
-): Promise<PublishResult | PublishError> {
+export async function publishPr(input: PublishInput): Promise<PublishResult | PublishError> {
   const { owner, repo } = parseRepoUrl(input.repoUrl);
 
   // 1. Connect to the existing sandbox. We never spawn here — provision
@@ -125,8 +123,7 @@ export async function publishPr(
       return {
         ok: false,
         stage: "pulls_post",
-        message:
-          "amend mode requires amendPrUrl + amendPrNumber",
+        message: "amend mode requires amendPrUrl + amendPrNumber",
       };
     }
     return {
@@ -143,24 +140,21 @@ export async function publishPr(
   // 4. Open the PR via REST. WriteToken is the operator's PAT (P1.1
   //    single-user OAuth) so PR `author` = real user, same as today's
   //    in-sandbox path.
-  const prResp = await fetch(
-    `https://api.github.com/repos/${owner}/${repo}/pulls`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${input.writeToken}`,
-        Accept: "application/vnd.github+json",
-        "Content-Type": "application/json",
-        "User-Agent": "hermes-control-plane",
-      },
-      body: JSON.stringify({
-        title: input.title,
-        head: input.branch,
-        base: input.baseBranch,
-        body: input.body,
-      }),
+  const prResp = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${input.writeToken}`,
+      Accept: "application/vnd.github+json",
+      "Content-Type": "application/json",
+      "User-Agent": "hermes-control-plane",
     },
-  );
+    body: JSON.stringify({
+      title: input.title,
+      head: input.branch,
+      base: input.baseBranch,
+      body: input.body,
+    }),
+  });
   if (!prResp.ok) {
     const errBody = await prResp.text();
     return {

@@ -23,7 +23,7 @@
     { "tag": "v2", "new_sqlite_classes": ["PrIndexDurableObject"] }
   ],
   "vars": {
-    "E2B_TEMPLATE": "control-plane-runner",
+    "E2B_TEMPLATE": "control-plane-runner"
     // LAUNCHER_URL is set via `wrangler secret put` in prod
     // (Cloudflare Tunnel URL of the VPS launcher). For `wrangler dev`, set
     // it inline in .dev.vars instead.

@@ -24,7 +24,7 @@ async function main() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ projectId, taskDescription, repoUrl }),
       });
-      const data = await r.json() as { id?: string; status?: string };
+      const data = (await r.json()) as { id?: string; status?: string };
       console.log("Created session:", JSON.stringify(data, null, 2));
       console.log(`\nSession ID: ${data.id ?? "unknown"}`);
       console.log(`Status: ${data.status ?? "unknown"}`);
@@ -38,7 +38,7 @@ async function main() {
         process.exit(1);
       }
       const r = await fetch(`${BASE_URL}/sessions/${sessionId}`);
-      const data = await r.json() as { id?: string; status?: string };
+      const data = (await r.json()) as { id?: string; status?: string };
       console.log(JSON.stringify(data, null, 2));
       break;
     }
@@ -105,7 +105,9 @@ async function main() {
           }
         } else if (msg.type === "event") {
           const ev = msg.event;
-          console.log(`  [${ev.seq}] ${ev.type} (${ev.source}) ${JSON.stringify(ev.payload).slice(0, 80)}`);
+          console.log(
+            `  [${ev.seq}] ${ev.type} (${ev.source}) ${JSON.stringify(ev.payload).slice(0, 80)}`,
+          );
         } else if (msg.type === "session_state") {
           console.log(`[state] ${msg.session.status} (branch: ${msg.session.branch})`);
         }

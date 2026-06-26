@@ -114,12 +114,12 @@ export type HermesEventType =
   | "system.retrying"
   | "agent.usage"
   // PR #A:
-  | "repo.instructions.loaded"  // A4 — AGENTS.md / CLAUDE.md / CONVENTIONS.md
-  | "agent.pr_metadata"         // A2 — agent-authored PR title/body parsed OK
+  | "repo.instructions.loaded" // A4 — AGENTS.md / CLAUDE.md / CONVENTIONS.md
+  | "agent.pr_metadata" // A2 — agent-authored PR title/body parsed OK
   // PR #B (publish-via-launcher):
-  | "runner.ready_to_publish"   // B2 — runner finished local prep; DO drives publish
-  | "pr.publishing"             // B2 — DO has dispatched publish to launcher
-  | "pr.publish.failed";        // B2 — launcher publish failed (push or REST)
+  | "runner.ready_to_publish" // B2 — runner finished local prep; DO drives publish
+  | "pr.publishing" // B2 — DO has dispatched publish to launcher
+  | "pr.publish.failed"; // B2 — launcher publish failed (push or REST)
 
 // ---- Runner Commands (control plane -> runner) ----
 

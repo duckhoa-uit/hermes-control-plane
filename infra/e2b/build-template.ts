@@ -126,7 +126,9 @@ async function buildTemplate(): Promise<void> {
   const idFile = resolve(OUT_DIR, "template-id.txt");
   writeFileSync(idFile, (info as { templateId: string }).templateId);
   console.log(`[build] template id written to ${idFile}`);
-  console.log(`[build] set E2B_TEMPLATE = ${(info as { templateId: string }).templateId} (or '${TEMPLATE_NAME}') in wrangler.toml / .dev.vars`);
+  console.log(
+    `[build] set E2B_TEMPLATE = ${(info as { templateId: string }).templateId} (or '${TEMPLATE_NAME}') in wrangler.toml / .dev.vars`,
+  );
 }
 
 buildTemplate().catch((err) => {

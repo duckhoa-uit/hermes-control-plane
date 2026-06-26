@@ -125,16 +125,16 @@ describe("provisionSession", () => {
     // cmdRun calls: [0]=clone, [1]=git config + fetch + checkout combo.
     const setupCall = cmdRun.mock.calls[1] as [string, unknown];
     const setupCmd = setupCall[0];
-    expect(setupCmd).toContain("git fetch --depth 50 origin '+refs/heads/hermes/abcd1234:refs/remotes/origin/hermes/abcd1234'");
+    expect(setupCmd).toContain(
+      "git fetch --depth 50 origin '+refs/heads/hermes/abcd1234:refs/remotes/origin/hermes/abcd1234'",
+    );
     expect(setupCmd).toContain("git checkout -B 'hermes/abcd1234' 'origin/hermes/abcd1234'");
     expect(setupCmd).not.toContain("hermes/ss_amend");
     // start.json must carry the amend env vars.
     const cfg = JSON.parse(filesWrite.mock.calls[0][1] as string);
     expect(cfg.CONTROL_PLANE_PR_MODE_BRANCH).toBe("hermes/abcd1234");
     expect(cfg.CONTROL_PLANE_PR_MODE_NUMBER).toBe("42");
-    expect(cfg.CONTROL_PLANE_PR_MODE_URL).toBe(
-      "https://github.com/test/repo/pull/42",
-    );
+    expect(cfg.CONTROL_PLANE_PR_MODE_URL).toBe("https://github.com/test/repo/pull/42");
   });
 
   it("fresh mode (no prMode): creates hermes/<session-tail> branch and no amend env vars", async () => {
@@ -292,7 +292,7 @@ describe("provisionSession", () => {
     });
     // First call is the clone, second is the setup chain that includes
     // `git remote set-url origin '<url>'`.  Match against the joined cmd.
-    const calls = cmdRun.mock.calls.map((c) => (c[0] as string));
+    const calls = cmdRun.mock.calls.map((c) => c[0] as string);
     const setupCmd = calls.find((c) => c.includes("git remote set-url origin"));
     expect(setupCmd).toBeDefined();
     expect(setupCmd).toContain("ghp_readyyy");
@@ -311,7 +311,7 @@ describe("provisionSession", () => {
       // No githubReadToken supplied (legacy setup).
       githubUserLogin: "alice",
     });
-    const calls = cmdRun.mock.calls.map((c) => (c[0] as string));
+    const calls = cmdRun.mock.calls.map((c) => c[0] as string);
     const setupCmd = calls.find((c) => c.includes("git remote set-url origin"));
     expect(setupCmd).toBeDefined();
     expect(setupCmd).toContain("ghp_write_only");

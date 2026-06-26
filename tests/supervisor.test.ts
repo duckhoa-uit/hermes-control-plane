@@ -39,7 +39,9 @@ describe("supervisor babysit semantics", () => {
     const a = new FakeChild();
     const b = new FakeChild();
     const exitCode: { value: number | null } = { value: null };
-    babysitForTests(a as never, b as never, (c) => { exitCode.value = c; });
+    babysitForTests(a as never, b as never, (c) => {
+      exitCode.value = c;
+    });
 
     a.die(7);
     // Wait two macrotask ticks for the chain (exit -> kill -> peer exit).
@@ -53,7 +55,9 @@ describe("supervisor babysit semantics", () => {
     const serve = new FakeChild();
     const runner = new FakeChild();
     const exitCode: { value: number | null } = { value: null };
-    babysitForTests(serve as never, runner as never, (c) => { exitCode.value = c; });
+    babysitForTests(serve as never, runner as never, (c) => {
+      exitCode.value = c;
+    });
 
     runner.die(0);
     await new Promise((r) => setTimeout(r, 20));
@@ -66,7 +70,9 @@ describe("supervisor babysit semantics", () => {
     const a = new FakeChild();
     const b = new FakeChild();
     const exits: Array<number | null> = [];
-    babysitForTests(a as never, b as never, (c) => { exits.push(c); });
+    babysitForTests(a as never, b as never, (c) => {
+      exits.push(c);
+    });
 
     a.die(3);
     b.die(99);
@@ -93,6 +99,8 @@ describe("supervisor auth.set", () => {
   it("throws when the server returns non-2xx", async () => {
     const { applyZaiAuthForTests } = await import("../src/runner/supervisor-helpers");
     const fakeFetch = async () => new Response("nope", { status: 500 });
-    await expect(applyZaiAuthForTests("http://x", "k", fakeFetch)).rejects.toThrow(/auth\.set failed/);
+    await expect(applyZaiAuthForTests("http://x", "k", fakeFetch)).rejects.toThrow(
+      /auth\.set failed/,
+    );
   });
 });

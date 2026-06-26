@@ -19,8 +19,7 @@ console.log(`[fake-runner] Connecting to ${CONTROL_WS_URL} for session ${SESSION
 
 // Runner connects to /sessions/:id/runner?token=<token>
 // Convert http(s):// to ws(s):// for WebSocket
-const wsBaseUrl = CONTROL_WS_URL
-  .replace(/^http:\/\//, "ws://")
+const wsBaseUrl = CONTROL_WS_URL.replace(/^http:\/\//, "ws://")
   .replace(/^https:\/\//, "wss://")
   .replace(/\/$/, "");
 const url = new URL(`${wsBaseUrl}/sessions/${SESSION_ID}/runner`);
@@ -44,7 +43,10 @@ ws.on("message", async (data: Buffer) => {
   const raw = data.toString();
   console.log(`[fake-runner] << ${raw.slice(0, 150)}`);
 
-  let msg: { type: string; command?: { commandId: string; type: string; payload: Record<string, unknown> } };
+  let msg: {
+    type: string;
+    command?: { commandId: string; type: string; payload: Record<string, unknown> };
+  };
   try {
     msg = JSON.parse(raw);
   } catch {
@@ -68,11 +70,13 @@ ws.on("message", async (data: Buffer) => {
   console.log(`[fake-runner] Received command: ${cmd.type} (${cmd.commandId})`);
 
   // Ack command
-  ws.send(JSON.stringify({
-    type: "runner.command_ack",
-    sessionId: SESSION_ID,
-    payload: { commandId: cmd.commandId },
-  }));
+  ws.send(
+    JSON.stringify({
+      type: "runner.command_ack",
+      sessionId: SESSION_ID,
+      payload: { commandId: cmd.commandId },
+    }),
+  );
 
   // Handle command types
   switch (cmd.type) {
@@ -93,26 +97,30 @@ ws.on("message", async (data: Buffer) => {
 
       // Send events with small delay
       for (const ev of events) {
-        ws.send(JSON.stringify({
-          type: "runner.event",
-          sessionId: SESSION_ID,
-          payload: { eventType: ev.type, eventPayload: ev.payload },
-        }));
+        ws.send(
+          JSON.stringify({
+            type: "runner.event",
+            sessionId: SESSION_ID,
+            payload: { eventType: ev.type, eventPayload: ev.payload },
+          }),
+        );
         await sleep(200);
       }
 
       // Simulate completion
       await sleep(500);
-      ws.send(JSON.stringify({
-        type: "runner.complete",
-        sessionId: SESSION_ID,
-        payload: {
-          summary: `Completed task: ${task}`,
-          diff: "diff --git a/src/index.ts b/src/index.ts\n--- a/src/index.ts\n+++ b/src/index.ts\n@@ -1,3 +1,5 @@\n+// Fixed by Hermes\n+console.log('hello');\n",
-          changedFiles: ["src/index.ts"],
-          testResult: { passed: true, total: 3, failed: 0, output: "3 tests passed" },
-        },
-      }));
+      ws.send(
+        JSON.stringify({
+          type: "runner.complete",
+          sessionId: SESSION_ID,
+          payload: {
+            summary: `Completed task: ${task}`,
+            diff: "diff --git a/src/index.ts b/src/index.ts\n--- a/src/index.ts\n+++ b/src/index.ts\n@@ -1,3 +1,5 @@\n+// Fixed by Hermes\n+console.log('hello');\n",
+            changedFiles: ["src/index.ts"],
+            testResult: { passed: true, total: 3, failed: 0, output: "3 tests passed" },
+          },
+        }),
+      );
 
       console.log("[fake-runner] Task completed, sent artifacts");
       break;
@@ -121,17 +129,24 @@ ws.on("message", async (data: Buffer) => {
     case "pr.create": {
       await sleep(300);
       // Simulate PR creation
-      ws.send(JSON.stringify({
-        type: "runner.event",
-        sessionId: SESSION_ID,
-        payload: { eventType: "pr.created", eventPayload: { url: "https://github.com/test/repo/pull/1" } },
-      }));
+      ws.send(
+        JSON.stringify({
+          type: "runner.event",
+          sessionId: SESSION_ID,
+          payload: {
+            eventType: "pr.created",
+            eventPayload: { url: "https://github.com/test/repo/pull/1" },
+          },
+        }),
+      );
 
-      ws.send(JSON.stringify({
-        type: "runner.complete",
-        sessionId: SESSION_ID,
-        payload: { prUrl: "https://github.com/test/repo/pull/1" },
-      }));
+      ws.send(
+        JSON.stringify({
+          type: "runner.complete",
+          sessionId: SESSION_ID,
+          payload: { prUrl: "https://github.com/test/repo/pull/1" },
+        }),
+      );
 
       console.log("[fake-runner] PR created (simulated)");
       break;

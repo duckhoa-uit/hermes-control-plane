@@ -49,12 +49,14 @@ const baseInput = {
 
 describe("publishPr (B1)", () => {
   it("fresh PR: pushes via temp 'hermes-publish' remote with token in URL, then opens PR via REST", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
-        JSON.stringify({ html_url: "https://github.com/test/repo/pull/77", number: 77 }),
-        { status: 201 },
-      ),
-    );
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ html_url: "https://github.com/test/repo/pull/77", number: 77 }),
+          { status: 201 },
+        ),
+      );
     const result = await publishPr({ ...baseInput });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unexpected");
@@ -76,9 +78,7 @@ describe("publishPr (B1)", () => {
     );
 
     // Env is passed via commands.run options.
-    expect((opts.envs as Record<string, string>).GITHUB_WRITE_TOKEN).toBe(
-      baseInput.writeToken,
-    );
+    expect((opts.envs as Record<string, string>).GITHUB_WRITE_TOKEN).toBe(baseInput.writeToken);
 
     // The chain MUST NOT touch .git/config (would persist the token).
     expect(pushCmd).not.toContain("git config");
@@ -137,12 +137,14 @@ describe("publishPr (B1)", () => {
   });
 
   it("REST POST 4xx: returns typed error with stage='pulls_post' and detail", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
-        JSON.stringify({ message: "Validation failed", errors: [{ resource: "PullRequest" }] }),
-        { status: 422 },
-      ),
-    );
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ message: "Validation failed", errors: [{ resource: "PullRequest" }] }),
+          { status: 422 },
+        ),
+      );
     const result = await publishPr({ ...baseInput });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unexpected");

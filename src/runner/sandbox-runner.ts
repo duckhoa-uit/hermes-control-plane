@@ -53,12 +53,13 @@ const ALLOW_ALL_TOOLS: Record<string, boolean> = {
 };
 
 if (!SESSION_ID || !RUNNER_TOKEN || !CONTROL_WS) {
-  console.error("Missing required env vars (CONTROL_PLANE_SESSION_ID, CONTROL_PLANE_RUNNER_TOKEN, CONTROL_PLANE_WS_URL)");
+  console.error(
+    "Missing required env vars (CONTROL_PLANE_SESSION_ID, CONTROL_PLANE_RUNNER_TOKEN, CONTROL_PLANE_WS_URL)",
+  );
   process.exit(1);
 }
 
-const wsBaseUrl = CONTROL_WS
-  .replace(/^http:\/\//, "ws://")
+const wsBaseUrl = CONTROL_WS.replace(/^http:\/\//, "ws://")
   .replace(/^https:\/\//, "wss://")
   .replace(/\/$/, "");
 const wsUrl = wsBaseUrl + "/sessions/" + SESSION_ID + "/runner?token=" + RUNNER_TOKEN;
@@ -83,11 +84,17 @@ function refreshWsUrl(): string {
   // Re-read start.json so a rotated runner token (post-resume) is used.
   try {
     if (fsExistsSync("/opt/control-plane/start.json")) {
-      const cfg = JSON.parse(fsReadFileSync("/opt/control-plane/start.json", "utf-8")) as Record<string, string>;
+      const cfg = JSON.parse(fsReadFileSync("/opt/control-plane/start.json", "utf-8")) as Record<
+        string,
+        string
+      >;
       const tok = cfg.CONTROL_PLANE_RUNNER_TOKEN;
       const cws = cfg.CONTROL_PLANE_WS_URL;
       if (tok && cws) {
-        const base = cws.replace(/^http:\/\//, "ws://").replace(/^https:\/\//, "wss://").replace(/\/$/, "");
+        const base = cws
+          .replace(/^http:\/\//, "ws://")
+          .replace(/^https:\/\//, "wss://")
+          .replace(/\/$/, "");
         return `${base}/sessions/${SESSION_ID}/runner?token=${tok}`;
       }
     }
@@ -109,9 +116,18 @@ async function reconnect(): Promise<void> {
     try {
       const next = new WebSocket(url);
       const ok = await new Promise<boolean>((resolve) => {
-        const onOpen = () => { cleanup(); resolve(true); };
-        const onErr = () => { cleanup(); resolve(false); };
-        const onClose = () => { cleanup(); resolve(false); };
+        const onOpen = () => {
+          cleanup();
+          resolve(true);
+        };
+        const onErr = () => {
+          cleanup();
+          resolve(false);
+        };
+        const onClose = () => {
+          cleanup();
+          resolve(false);
+        };
         const cleanup = () => {
           next.off("open", onOpen);
           next.off("error", onErr);
@@ -122,7 +138,9 @@ async function reconnect(): Promise<void> {
         next.on("close", onClose);
       });
       if (ok) {
-        console.log(`[runner] reconnect succeeded on attempt ${attempt} (${Date.now() - startedAt}ms)`);
+        console.log(
+          `[runner] reconnect succeeded on attempt ${attempt} (${Date.now() - startedAt}ms)`,
+        );
         ws = next;
         attachHandlers();
         reconnecting = false;
@@ -142,21 +160,26 @@ let opencodeSessionId: string | null = null;
 let sseAbort: AbortController | null = null;
 // Track the *opencode* turn currently in flight, so SSE events outside it
 // can be ignored (e.g. plugin.added bursts on first boot).
-// We accumulate the most recent text/tool part state so we can emit
-// transition events without re-sending payloads.
-const seenToolCalls = new Set<string>();
 // Sum tokens across turns; emitted as artifacts.usage at terminal.
 const usageRollup: {
-  input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number; total: number; cost: number;
+  input: number;
+  output: number;
+  reasoning: number;
+  cacheRead: number;
+  cacheWrite: number;
+  total: number;
+  cost: number;
 } = { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0 };
 
 function sendEvent(eventType: string, eventPayload: Record<string, unknown>): void {
   if (ws.readyState !== 1) return;
-  ws.send(JSON.stringify({
-    type: "runner.event",
-    sessionId: SESSION_ID,
-    payload: { eventType, eventPayload },
-  }));
+  ws.send(
+    JSON.stringify({
+      type: "runner.event",
+      sessionId: SESSION_ID,
+      payload: { eventType, eventPayload },
+    }),
+  );
 }
 
 function sendComplete(payload: Record<string, unknown>): void {
@@ -213,7 +236,10 @@ async function startSseSubscriber(): Promise<void> {
           for (const line of frame.split("\n")) {
             if (!line.startsWith("data:")) continue;
             try {
-              const obj = JSON.parse(line.slice(5).trim()) as { type: string; properties?: Record<string, unknown> };
+              const obj = JSON.parse(line.slice(5).trim()) as {
+                type: string;
+                properties?: Record<string, unknown>;
+              };
               mapper(obj);
             } catch {}
           }
@@ -301,7 +327,11 @@ async function runPromptTurn(taskDescription: string, context: string): Promise<
     const triggerKind = process.env.CONTROL_PLANE_AMEND_TRIGGER_KIND || "";
     const triggerJson = process.env.CONTROL_PLANE_AMEND_TRIGGER_JSON || "";
     let trigger: Record<string, unknown> = {};
-    try { trigger = triggerJson ? JSON.parse(triggerJson) : {}; } catch { trigger = {}; }
+    try {
+      trigger = triggerJson ? JSON.parse(triggerJson) : {};
+    } catch {
+      trigger = {};
+    }
 
     const sharedFooter =
       `\n---\n\n` +
@@ -319,7 +349,10 @@ async function runPromptTurn(taskDescription: string, context: string): Promise<
     let preamble: string;
     if (triggerKind === "review_changes_requested") {
       const reviewer = (trigger.reviewerLogin as string) || "(unknown reviewer)";
-      const review = ((trigger.reviewBody as string) || "(reviewer left no body — check inline comments on the PR)").trim();
+      const review = (
+        (trigger.reviewBody as string) ||
+        "(reviewer left no body — check inline comments on the PR)"
+      ).trim();
       preamble =
         `# Hermes amend — address review feedback\n\n` +
         `You are continuing work on an EXISTING open pull request:\n` +
@@ -492,18 +525,14 @@ async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
   const amendUrl = process.env.CONTROL_PLANE_PR_MODE_URL || "";
   const amendMode = Boolean(amendBranch && amendNumber && amendUrl);
 
-  const branch = amendMode
-    ? amendBranch
-    : ((payload.branch as string) || `hermes/${Date.now()}`);
+  const branch = amendMode ? amendBranch : (payload.branch as string) || `hermes/${Date.now()}`;
   const brSh = branch.replace(/'/g, "'\\''");
   const fallbackTitle = `Hermes: ${payload.taskDescription ?? "automated change"}`;
   const fallbackBody = "Automated PR created by hermes-control-plane.";
   const taskDescription = (payload.taskDescription as string) || "";
 
   if (!owner || !repo) {
-    sendError(
-      `Missing GITHUB_OWNER / GITHUB_REPO env (owner=${owner} repo=${repo})`,
-    );
+    sendError(`Missing GITHUB_OWNER / GITHUB_REPO env (owner=${owner} repo=${repo})`);
     return;
   }
 
@@ -526,8 +555,8 @@ async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
     console.error("[runner] PR metadata pre-gen skipped:", (err as Error).message);
   }
   const title = (payload.title as string) || prMeta?.title || fallbackTitle;
-  const body = (payload.body as string)
-    || (prMeta ? renderPrBody(prMeta, taskDescription) : fallbackBody);
+  const body =
+    (payload.body as string) || (prMeta ? renderPrBody(prMeta, taskDescription) : fallbackBody);
 
   // Suppress unused-variable warning when baseBranch is only referenced
   // by the ahead-count path; we keep it scoped here for readability.
@@ -537,7 +566,7 @@ async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
     await execStrict(`git add -A`);
     const stagedDiff = await execCmd(`git diff --cached --name-only`);
     if (stagedDiff.trim()) {
-      await execStrict(`git commit -m "${title.replace(/"/g, '\"')}"`);
+      await execStrict(`git commit -m "${title.replace(/"/g, '"')}"`);
     } else {
       // Agent already committed during the run. Verify HEAD has something
       // worth pushing.
@@ -586,18 +615,27 @@ function attachHandlers(): void {
 
   ws.on("message", async (data: Buffer) => {
     const raw = data.toString();
-    let msg: { type: string; command?: { commandId: string; type: string; payload: Record<string, unknown> } };
-    try { msg = JSON.parse(raw); } catch { return; }
+    let msg: {
+      type: string;
+      command?: { commandId: string; type: string; payload: Record<string, unknown> };
+    };
+    try {
+      msg = JSON.parse(raw);
+    } catch {
+      return;
+    }
 
     if (msg.type !== "command" || !msg.command) return;
     const cmd = msg.command;
     console.log("[runner] Command:", cmd.type);
 
-    ws.send(JSON.stringify({
-      type: "runner.command_ack",
-      sessionId: SESSION_ID,
-      payload: { commandId: cmd.commandId },
-    }));
+    ws.send(
+      JSON.stringify({
+        type: "runner.command_ack",
+        sessionId: SESSION_ID,
+        payload: { commandId: cmd.commandId },
+      }),
+    );
 
     if (cmd.type === "agent.prompt") {
       const task = cmd.payload.taskDescription as string;
@@ -638,4 +676,3 @@ function attachHandlers(): void {
 }
 
 attachHandlers();
-

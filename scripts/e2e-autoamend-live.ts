@@ -106,7 +106,11 @@ async function deliverReview(deliveryId: string, headSha: string, body: string):
   return { status: r.status, body: await r.json() };
 }
 
-async function deliverCheckRunFailed(deliveryId: string, headSha: string, checkName: string): Promise<any> {
+async function deliverCheckRunFailed(
+  deliveryId: string,
+  headSha: string,
+  checkName: string,
+): Promise<any> {
   const payload = {
     action: "completed",
     check_run: {
@@ -141,7 +145,7 @@ async function getIndex(): Promise<any> {
     headers: { "x-hermes-launcher-secret": LAUNCHER_SECRET },
   });
   if (!r.ok) return null;
-  return (await r.json() as any).row;
+  return ((await r.json()) as any).row;
 }
 
 async function waitForSlotFree(maxMs = 180_000): Promise<void> {
@@ -149,7 +153,9 @@ async function waitForSlotFree(maxMs = 180_000): Promise<void> {
   while (Date.now() - start < maxMs) {
     const row = await getIndex();
     if (!row?.inflightAmendStartedAt) return;
-    console.log(`  slot still held by session=${row.inflightSessionId?.slice(0, 8)} count=${row.autofixCount}, waiting…`);
+    console.log(
+      `  slot still held by session=${row.inflightSessionId?.slice(0, 8)} count=${row.autofixCount}, waiting…`,
+    );
     await new Promise((r) => setTimeout(r, 5000));
   }
   throw new Error(`slot did not free within ${maxMs}ms`);
@@ -162,20 +168,26 @@ async function waitForSlotFree(maxMs = 180_000): Promise<void> {
   const headSha = await getHeadSha();
   console.log(`head   = ${headSha.slice(0, 7)}`);
   const before = await getIndex();
-  console.log(`pre-state: autofixCount=${before?.autofixCount} inflight=${!!before?.inflightAmendStartedAt} status=${before?.status}`);
+  console.log(
+    `pre-state: autofixCount=${before?.autofixCount} inflight=${!!before?.inflightAmendStartedAt} status=${before?.status}`,
+  );
 
   if (CASE === "review") {
     const res = await deliverReview(`e2e-rev-${Date.now()}`, headSha, "Synthetic review for E2E.");
     console.log("response:", JSON.stringify(res, null, 2));
   } else if (CASE === "check_run") {
-    const res = await deliverCheckRunFailed(`e2e-cr-${Date.now()}`, headSha, "hermes-e2e/synthetic");
+    const res = await deliverCheckRunFailed(
+      `e2e-cr-${Date.now()}`,
+      headSha,
+      "hermes-e2e/synthetic",
+    );
     console.log("response:", JSON.stringify(res, null, 2));
   } else if (CASE === "duplicate_sha") {
     // first goes through; second on same sha is refused.
     await waitForSlotFree();
     const r1 = await deliverReview(`e2e-dup-${Date.now()}-1`, headSha, "first");
     console.log("first:", JSON.stringify(r1, null, 2));
-    await new Promise(r => setTimeout(r, 1000));
+    await new Promise((r) => setTimeout(r, 1000));
     const r2 = await deliverReview(`e2e-dup-${Date.now()}-2`, headSha, "second on same sha");
     console.log("second:", JSON.stringify(r2, null, 2));
   } else if (CASE === "inflight") {
@@ -190,11 +202,15 @@ async function waitForSlotFree(maxMs = 180_000): Promise<void> {
     // fire 4 with different synthetic shas; expect 3 dispatched + 1 cap_exceeded.
     for (let i = 1; i <= 4; i++) {
       await waitForSlotFree();
-      const r = await deliverReview(`e2e-cap-${Date.now()}-${i}`, `${headSha.slice(0, -1)}${i}`, `attempt ${i}`);
+      const r = await deliverReview(
+        `e2e-cap-${Date.now()}-${i}`,
+        `${headSha.slice(0, -1)}${i}`,
+        `attempt ${i}`,
+      );
       console.log(`#${i}:`, JSON.stringify(r, null, 2));
       if (r.body.dispatched) {
         console.log("  waiting 5s before next…");
-        await new Promise(r => setTimeout(r, 5000));
+        await new Promise((resolve) => setTimeout(resolve, 5000));
       }
     }
   } else {
@@ -202,5 +218,7 @@ async function waitForSlotFree(maxMs = 180_000): Promise<void> {
   }
 
   const after = await getIndex();
-  console.log(`post-state: autofixCount=${after?.autofixCount} inflight=${!!after?.inflightAmendStartedAt} lastSha=${after?.lastAmendedSha?.slice(0, 7)}`);
+  console.log(
+    `post-state: autofixCount=${after?.autofixCount} inflight=${!!after?.inflightAmendStartedAt} lastSha=${after?.lastAmendedSha?.slice(0, 7)}`,
+  );
 })();

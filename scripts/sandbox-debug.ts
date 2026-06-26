@@ -27,12 +27,21 @@ async function run(cmd: string, label: string) {
 await run("cat /var/log/hermes-supervisor.log", "FULL supervisor.log");
 await run("cat /var/log/opencode-serve.log", "FULL opencode-serve.log");
 await run("wc -l /var/log/hermes-supervisor.log /var/log/opencode-serve.log", "log sizes");
-await run("ps -eo pid,user,etime,stat,command --no-headers | grep -vE '^\\s*\\d+\\s+root\\s+\\S+\\s+[ISR]\\s+\\[' | grep -v 'ps -eo'", "non-kernel processes");
+await run(
+  "ps -eo pid,user,etime,stat,command --no-headers | grep -vE '^\\s*\\d+\\s+root\\s+\\S+\\s+[ISR]\\s+\\[' | grep -v 'ps -eo'",
+  "non-kernel processes",
+);
 await run("ss -tlnp 2>&1 | head -20 || netstat -tlnp 2>&1 | head -20", "listening ports");
-await run("test -f /opt/control-plane/start.json && echo 'start.json exists, mtime:' && stat -c '%y' /opt/control-plane/start.json", "start.json mtime");
+await run(
+  "test -f /opt/control-plane/start.json && echo 'start.json exists, mtime:' && stat -c '%y' /opt/control-plane/start.json",
+  "start.json mtime",
+);
 await run("stat -c '%y' /var/log/hermes-supervisor.log /var/log/opencode-serve.log", "log mtimes");
 
 // Try to reproduce the spawn from inside the sandbox to see real-time
-await run("ls -la /opt/control-plane/runner.js && head -5 /opt/control-plane/runner.js", "runner.js sanity");
+await run(
+  "ls -la /opt/control-plane/runner.js && head -5 /opt/control-plane/runner.js",
+  "runner.js sanity",
+);
 
 process.exit(0);
