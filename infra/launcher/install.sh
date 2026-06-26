@@ -118,12 +118,16 @@ systemctl daemon-reload
 log "installed /etc/systemd/system/control-plane-quick-tunnel.service"
 
 # -------- 9. env file --------
-# Idempotent:
+# Idempotent + safe:
 #   - If $ENV_FILE already exists with all required values filled in
 #     (no REPLACE_ME left), leave it alone.
-#   - Otherwise interactively prompt for the 5 required secrets + 1 URL.
-#   - --no-prompt skips prompting and just copies env.example so the
-#     operator can edit it later (CI / scripted runs).
+#   - If $ENV_FILE exists but is incomplete or uses stale key names, copy
+#     it to $ENV_FILE.bak.<timestamp> and REFUSE to overwrite.  The operator
+#     must reconcile by hand.  This guards against `curl | bash` re-runs
+#     (stdin non-tty) silently nuking production secrets after an env
+#     rename, which is exactly what happened during the PR #30 rollout.
+#   - If $ENV_FILE does NOT exist: prompt interactively, or (CI /
+#     --no-prompt) drop env.example so the operator can edit it later.
 ENV_FILE=/etc/hermes-control-plane/launcher.env
 NO_PROMPT="${CONTROL_PLANE_NO_PROMPT:-0}"
 
@@ -153,8 +157,22 @@ env_complete() {
 
 if env_complete; then
   log "$ENV_FILE already filled in — not overwriting"
+elif [[ -f "$ENV_FILE" ]]; then
+  # File exists but is incomplete or uses stale keys.  Back it up and
+  # refuse to overwrite — the operator must reconcile by hand.  This is
+  # the path that previously destroyed production secrets when install.sh
+  # was re-run via `curl | bash` after the PR #30 env rename (stdin
+  # non-tty → old code fell through to the env.example overwrite branch).
+  BACKUP="$ENV_FILE.bak.$(date -u +%Y%m%dT%H%M%SZ)"
+  cp -a "$ENV_FILE" "$BACKUP"
+  warn "$ENV_FILE already exists but is incomplete or uses old keys."
+  warn "  backup: $BACKUP"
+  warn "  refusing to overwrite — reconcile by hand:"
+  warn "    sudo nano $ENV_FILE"
+  warn "  template: $SRC_DIR/infra/launcher/env.example"
 elif [[ "$NO_PROMPT" == "1" ]] || [[ ! -t 0 && -z "${E2B_API_KEY:-}" ]]; then
   # Non-interactive (CI or piped without env exports) — drop template only.
+  # Reachable only when $ENV_FILE does NOT already exist (guarded above).
   install -m 0600 -o "$HERMES_USER" -g "$HERMES_USER" \
     "$SRC_DIR/infra/launcher/env.example" "$ENV_FILE"
   warn "wrote $ENV_FILE from env.example — EDIT IT NOW with real secrets:"
