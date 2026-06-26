@@ -73,6 +73,7 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     profile: ProjectProfile,
     taskDescription: string,
     controlBaseUrl: string,
+    amendPrUrl?: string,
   ): Promise<Session> {
     // Skill: durable-objects/gotchas "Race Condition Despite Single-Threading".
     // The mutate-then-persist sequence has an await point, so block any
@@ -98,8 +99,14 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
       this.profile = profile;
       this.runnerToken = generateRunnerToken();
       this.controlBaseUrl = controlBaseUrl;
+      // Amend mode pre-population: store the existing PR URL on artifacts
+      // immediately so the transition() slot-release hook can identify
+      // the PR even if the session aborts before pr.updated fires.
+      if (amendPrUrl) {
+        this.artifacts = { sessionId, prUrl: amendPrUrl, changedFiles: [] };
+      }
 
-      this.appendEvent("session.created", "system", { taskDescription, projectId: profile.id });
+      this.appendEvent("session.created", "system", { taskDescription, projectId: profile.id, amendPrUrl });
       await this.persist();
 
       // Kick off sandbox provisioning in the background. The HTTP response
@@ -704,9 +711,10 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     profile: ProjectProfile,
     taskDescription: string,
     controlBaseUrl: string,
+    amendPrUrl?: string,
   ): Promise<Session & { runnerToken: string | null }> {
     await this.ensureRestored();
-    const session = await this.init(profile, taskDescription, controlBaseUrl);
+    const session = await this.init(profile, taskDescription, controlBaseUrl, amendPrUrl);
     return { ...session, runnerToken: this.runnerToken };
   }
 

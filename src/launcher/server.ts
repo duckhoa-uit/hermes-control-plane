@@ -280,6 +280,9 @@ async function handleCreate(req: Request): Promise<Response> {
       projectId: body.projectId ?? "default",
       taskDescription: body.taskDescription,
       repoUrl,
+      // Tell the DO this is an amend session so its slot-release hook
+      // works even on early abort (before pr.updated is emitted).
+      amendPrUrl: prMode?.prUrl,
     }),
   });
   if (!wResp.ok) {

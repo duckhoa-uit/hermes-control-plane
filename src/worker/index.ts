@@ -24,6 +24,7 @@ interface SessionDORpc {
     profile: ProjectProfile,
     taskDescription: string,
     controlBaseUrl: string,
+    amendPrUrl?: string,
   ): Promise<Session & { runnerToken: string | null }>;
   getState(): Promise<{
     session: Session | null;
@@ -533,6 +534,11 @@ Logs / details: ${parsed.detailsUrl}
           taskDescription: string;
           repoUrl?: string;
           profile?: Partial<ProjectProfile>;
+          // Set by the launcher when this is an amend session. The DO
+          // pre-populates artifacts.prUrl so its own slot-release hook on
+          // terminal transitions can find the PR_INDEX_DO key even if the
+          // session is aborted before reaching pr.updated.
+          amendPrUrl?: string;
         }>();
 
         // Build profile. LLM credentials (ZAI_API_KEY etc.) and any other
@@ -560,7 +566,7 @@ Logs / details: ${parsed.detailsUrl}
         // when the client hits the deployed Worker directly.
         const controlBaseUrl = env.PUBLIC_BASE_URL?.replace(/\/$/, "") ?? url.origin;
 
-        const session = await asRpc(stub).initSession(profile, body.taskDescription, controlBaseUrl);
+        const session = await asRpc(stub).initSession(profile, body.taskDescription, controlBaseUrl, body.amendPrUrl);
 
         return new Response(JSON.stringify(session), {
           status: 201,
