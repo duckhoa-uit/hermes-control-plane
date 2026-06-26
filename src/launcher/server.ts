@@ -32,6 +32,7 @@ const E2B_TEMPLATE = process.env.E2B_TEMPLATE ?? "control-plane-runner";
 const ZAI_API_KEY = process.env.ZAI_API_KEY;
 const GITHUB_USER_TOKEN = process.env.GITHUB_USER_TOKEN;
 const GITHUB_USER_LOGIN = process.env.GITHUB_USER_LOGIN;
+const HERMES_LAUNCHER_SECRET = process.env.HERMES_LAUNCHER_SECRET;
 const MAX_CONCURRENT_SESSIONS = Number(process.env.MAX_CONCURRENT_SESSIONS ?? 10);
 // When false, the sidecar will NOT auto-trigger /create-pr on review_ready.
 // Useful for e2e tests that need to send follow-up prompts before the
@@ -44,6 +45,7 @@ const requiredEnv: Array<[string, string | undefined]> = [
   ["GITHUB_USER_TOKEN", GITHUB_USER_TOKEN],
   ["GITHUB_USER_LOGIN", GITHUB_USER_LOGIN],
   ["CONTROL_PLANE_BASE_URL", CONTROL_PLANE_BASE_URL],
+  ["HERMES_LAUNCHER_SECRET", HERMES_LAUNCHER_SECRET],
 ];
 const missing = requiredEnv.filter(([, v]) => !v).map(([k]) => k);
 if (missing.length > 0) {
@@ -195,7 +197,9 @@ async function resolveParentAmend(
   }
   const owner = m[1], repo = m[2], number = Number(m[3]);
   const prKey = `${owner}/${repo}#${number}`;
-  const idxResp = await fetch(`${CONTROL_PLANE_BASE_URL}/pr-index?key=${encodeURIComponent(prKey)}`);
+  const idxResp = await fetch(`${CONTROL_PLANE_BASE_URL}/pr-index?key=${encodeURIComponent(prKey)}`, {
+    headers: { "x-hermes-launcher-secret": HERMES_LAUNCHER_SECRET! },
+  });
   if (idxResp.status === 404) {
     return { ok: false, status: 410, error: "PR no longer indexed", reason: "the PR was unregistered (merged or unknown) — start a fresh session instead of amending" };
   }

@@ -689,6 +689,7 @@ wrangler secret put E2B_API_KEY              # required; Worker refuses to provi
 wrangler secret put PUBLIC_BASE_URL          # https://hermes.<your-domain>.workers.dev
 wrangler secret put CONTROL_PLANE_LAUNCHER_URL      # https://<your-launcher-host>:8789 (Cloudflare Tunnel URL of the launcher VPS)
 wrangler secret put GITHUB_WEBHOOK_SECRET    # required for PR-lifecycle + auto-amend webhooks (see §13.3)
+wrangler secret put HERMES_LAUNCHER_SECRET   # required; shared secret authenticating launcher GET /pr-index calls
 # Optional — auto-amend cap per PR (default 3). Set as a plain var, not a secret.
 # wrangler.jsonc → vars.HERMES_AUTOFIX_CAP = "5"
 

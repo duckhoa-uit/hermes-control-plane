@@ -26,4 +26,11 @@ interface CloudflareEnv {
   // open PR before tryClaimAmendSlot starts rejecting with cap_exceeded.
   // Defaults to 3 in the handler.
   HERMES_AUTOFIX_CAP?: string;
+  // Shared secret authenticating launcher → Worker calls on routes that
+  // would otherwise leak session ids to anonymous callers (notably
+  // GET /pr-index, which maps a public PR URL → sessionId). Set with
+  // `wrangler secret put HERMES_LAUNCHER_SECRET` and mirror it in the
+  // launcher's HERMES_LAUNCHER_SECRET env. When unset, the Worker fails
+  // closed (503) on the guarded routes.
+  HERMES_LAUNCHER_SECRET?: string;
 }

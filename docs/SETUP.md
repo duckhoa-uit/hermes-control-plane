@@ -193,6 +193,7 @@ them inline when launching.
 | `E2B_TEMPLATE` | template alias; defaults to `control-plane-runner` |
 | `E2B_API_KEY` | the Worker doesn't call E2B, but refuses to provision when unset |
 | `GITHUB_WEBHOOK_SECRET` | HMAC secret for `POST /webhooks/github`; required to ingest PR lifecycle / auto-amend events |
+| `HERMES_LAUNCHER_SECRET` | shared secret authenticating launcher → Worker on `/pr-index`; required (else the route fails closed with 503). Must match the launcher's `HERMES_LAUNCHER_SECRET` env. |
 | `HERMES_AUTOFIX_CAP` | optional; max auto-amend sessions per PR (default `3`) |
 | `CONTROL_PLANE_LAUNCHER_URL` | required when GITHUB_WEBHOOK_SECRET is set — Worker POSTs to launcher /sessions to spawn amend sessions. In local dev set to an ngrok URL pointing at the launcher (`:8789`). |
 
@@ -207,6 +208,7 @@ them inline when launching.
 | `CONTROL_PLANE_AUTO_PR` | `1` (default) = launcher fires `/create-pr` on `review_ready` |
 | `ZAI_API_KEY` | OpenCode (Z.AI) provider key |
 | `GITHUB_USER_TOKEN` / `GITHUB_USER_LOGIN` / `GITHUB_USER_EMAIL` | per-user PR identity |
+| `HERMES_LAUNCHER_SECRET` | required; shared secret sent on `x-hermes-launcher-secret` when the launcher reads `/pr-index`. Must match the Worker secret. |
 | `MAX_CONCURRENT_SESSIONS` | default 10; E2B Hobby caps at 20 |
 
 ## 8. Run end-to-end (three terminals)

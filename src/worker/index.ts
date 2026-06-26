@@ -123,6 +123,17 @@ const PROMPT_STATUS_BY_KIND: Record<string, number> = {
   ok: 200,
 };
 
+/** Constant-time string compare for shared-secret auth. Avoids leaking
+ *  the length of the matching prefix via early-exit string equality. */
+function timingSafeEqualStrings(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < a.length; i++) {
+    mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return mismatch === 0;
+}
+
 export default {
   async fetch(request: Request, env: CloudflareEnv): Promise<Response> {
     const url = new URL(request.url);
@@ -156,7 +167,25 @@ export default {
       // Returns the PR index row for a given prKey, or 404 if missing.
       // Used by the launcher to decide whether send_followup_prompt should
       // re-provision in amend mode against an open PR.
+      //
+      // Gated behind HERMES_LAUNCHER_SECRET because the row contains the
+      // sessionId for a guessable key (the public PR URL), and other
+      // session routes trust possession of the session id. Fail closed
+      // (503) if the secret is unset on the Worker.
       if (path === "/pr-index" && request.method === "GET") {
+        if (!env.HERMES_LAUNCHER_SECRET) {
+          return new Response(
+            JSON.stringify({ error: "launcher secret not configured" }),
+            { status: 503, headers: CORS_HEADERS },
+          );
+        }
+        const provided = request.headers.get("x-hermes-launcher-secret") ?? "";
+        if (!timingSafeEqualStrings(provided, env.HERMES_LAUNCHER_SECRET)) {
+          return new Response(
+            JSON.stringify({ error: "unauthorized" }),
+            { status: 401, headers: CORS_HEADERS },
+          );
+        }
         const key = url.searchParams.get("key");
         if (!key) {
           return new Response(

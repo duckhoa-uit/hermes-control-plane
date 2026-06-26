@@ -1072,6 +1072,7 @@ describe("E2E: Worker + SessionDurableObject", () => {
 
   it("GET /pr-index?key=…: returns the row registered by onPRCreated", async () => {
     const env = makeEnv() as any;
+    env.HERMES_LAUNCHER_SECRET = "launcher-secret";
     const createResp = await worker.fetch(new Request("https://x/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1093,7 +1094,9 @@ describe("E2E: Worker + SessionDurableObject", () => {
     }));
     await new Promise(r => setTimeout(r, 10));
 
-    const resp = await worker.fetch(new Request("https://x/pr-index?key=" + encodeURIComponent("o/r#13")), env);
+    const resp = await worker.fetch(new Request("https://x/pr-index?key=" + encodeURIComponent("o/r#13"), {
+      headers: { "x-hermes-launcher-secret": "launcher-secret" },
+    }), env);
     expect(resp.status).toBe(200);
     const { row } = (await resp.json()) as any;
     expect(row).toMatchObject({ prKey: "o/r#13", sessionId: id, ownerLogin: "alice", status: "open" });
@@ -1101,14 +1104,38 @@ describe("E2E: Worker + SessionDurableObject", () => {
 
   it("GET /pr-index missing key -> 400", async () => {
     const env = makeEnv() as any;
-    const resp = await worker.fetch(new Request("https://x/pr-index"), env);
+    env.HERMES_LAUNCHER_SECRET = "launcher-secret";
+    const resp = await worker.fetch(new Request("https://x/pr-index", {
+      headers: { "x-hermes-launcher-secret": "launcher-secret" },
+    }), env);
     expect(resp.status).toBe(400);
   });
 
   it("GET /pr-index unknown PR -> 404", async () => {
     const env = makeEnv() as any;
-    const resp = await worker.fetch(new Request("https://x/pr-index?key=o/r%23999"), env);
+    env.HERMES_LAUNCHER_SECRET = "launcher-secret";
+    const resp = await worker.fetch(new Request("https://x/pr-index?key=o/r%23999", {
+      headers: { "x-hermes-launcher-secret": "launcher-secret" },
+    }), env);
     expect(resp.status).toBe(404);
+  });
+
+  it("GET /pr-index without HERMES_LAUNCHER_SECRET set on Worker -> 503", async () => {
+    const env = makeEnv() as any;
+    delete env.HERMES_LAUNCHER_SECRET;
+    const resp = await worker.fetch(new Request("https://x/pr-index?key=o/r%23999"), env);
+    expect(resp.status).toBe(503);
+  });
+
+  it("GET /pr-index with missing or wrong secret header -> 401", async () => {
+    const env = makeEnv() as any;
+    env.HERMES_LAUNCHER_SECRET = "launcher-secret";
+    const noHeader = await worker.fetch(new Request("https://x/pr-index?key=o/r%23999"), env);
+    expect(noHeader.status).toBe(401);
+    const wrong = await worker.fetch(new Request("https://x/pr-index?key=o/r%23999", {
+      headers: { "x-hermes-launcher-secret": "nope" },
+    }), env);
+    expect(wrong.status).toBe(401);
   });
 
   // ---- DO getState surfaces repoUrl + baseBranch (consumed by launcher amend resolver) ----

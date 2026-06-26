@@ -44,8 +44,10 @@ const PR_URL = args.values["pr-url"]!;
 const CASE = args.values.case!;
 const REVIEWER = args.values.reviewer!;
 const SECRET = process.env.GITHUB_WEBHOOK_SECRET || "";
+const LAUNCHER_SECRET = process.env.HERMES_LAUNCHER_SECRET || "";
 if (!PR_KEY || !PR_URL) throw new Error("--pr-key and --pr-url required");
 if (!SECRET) throw new Error("GITHUB_WEBHOOK_SECRET env required");
+if (!LAUNCHER_SECRET) throw new Error("HERMES_LAUNCHER_SECRET env required (for /pr-index)");
 
 function parsePrKey(s: string): { owner: string; repo: string; number: number } {
   const m = s.match(/^([^/]+)\/([^#]+)#(\d+)$/);
@@ -135,7 +137,9 @@ async function deliverCheckRunFailed(deliveryId: string, headSha: string, checkN
 }
 
 async function getIndex(): Promise<any> {
-  const r = await fetch(`${WORKER}/pr-index?key=${encodeURIComponent(PR_KEY)}`);
+  const r = await fetch(`${WORKER}/pr-index?key=${encodeURIComponent(PR_KEY)}`, {
+    headers: { "x-hermes-launcher-secret": LAUNCHER_SECRET },
+  });
   if (!r.ok) return null;
   return (await r.json() as any).row;
 }
