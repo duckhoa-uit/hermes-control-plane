@@ -193,3 +193,182 @@ describe("parseGithubWebhook", () => {
     ).toBeNull();
   });
 });
+
+// ---- pull_request_review fixtures + tests ----
+
+import type {
+  PullRequestReviewEventPayload,
+  CheckRunEventPayload,
+} from "../src/worker/github-webhook";
+
+function reviewPayload(
+  overrides: Partial<PullRequestReviewEventPayload> = {},
+): PullRequestReviewEventPayload {
+  return {
+    action: "submitted",
+    pull_request: {
+      number: 42,
+      html_url: "https://github.com/duckhoa-uit/lawn/pull/42",
+      state: "open",
+      head: { sha: "abcdef0123456789", ref: "hermes/abcd1234" },
+      base: { ref: "main" },
+    },
+    review: {
+      id: 12345,
+      state: "changes_requested",
+      body: "Please rename foo -> bar and tighten the loop.",
+      user: { login: "reviewer1", type: "User" },
+      submitted_at: "2026-06-26T01:23:45Z",
+    },
+    repository: { full_name: "duckhoa-uit/lawn" },
+    sender: { login: "reviewer1", type: "User" },
+    ...overrides,
+  };
+}
+
+describe("parseGithubWebhook — pull_request_review", () => {
+  it("dispatches changes_requested submissions", () => {
+    const body = JSON.stringify(reviewPayload());
+    const parsed = parseGithubWebhook("pull_request_review", "del-rev-1", body);
+    expect(parsed).toMatchObject({
+      kind: "review_changes_requested",
+      prKey: "duckhoa-uit/lawn#42",
+      prUrl: "https://github.com/duckhoa-uit/lawn/pull/42",
+      headSha: "abcdef0123456789",
+      headBranch: "hermes/abcd1234",
+      reviewerLogin: "reviewer1",
+      reviewerType: "User",
+      reviewBody: "Please rename foo -> bar and tighten the loop.",
+      reviewId: 12345,
+      senderLogin: "reviewer1",
+    });
+  });
+
+  it("ignores approved reviews", () => {
+    const body = JSON.stringify(reviewPayload({
+      review: { ...reviewPayload().review, state: "approved" },
+    }));
+    const parsed = parseGithubWebhook("pull_request_review", "del-rev-2", body);
+    expect(parsed).toMatchObject({
+      kind: "ignored",
+      reason: "pull_request_review.submitted/approved",
+    });
+  });
+
+  it("ignores commented reviews (no state change)", () => {
+    const body = JSON.stringify(reviewPayload({
+      review: { ...reviewPayload().review, state: "commented", body: "lgtm-ish" },
+    }));
+    const parsed = parseGithubWebhook("pull_request_review", "del-rev-3", body);
+    expect(parsed).toMatchObject({
+      kind: "ignored",
+      reason: "pull_request_review.submitted/commented",
+    });
+  });
+
+  it("ignores review.edited / review.dismissed (only submitted dispatches)", () => {
+    const body = JSON.stringify(reviewPayload({ action: "edited" }));
+    const parsed = parseGithubWebhook("pull_request_review", "del-rev-4", body);
+    expect(parsed).toMatchObject({ kind: "ignored", reason: /pull_request_review\.edited/ });
+  });
+
+  it("returns null on malformed payload (missing review)", () => {
+    const bad = JSON.stringify({ action: "submitted", pull_request: reviewPayload().pull_request, repository: reviewPayload().repository });
+    expect(parseGithubWebhook("pull_request_review", "del-rev-5", bad)).toBeNull();
+  });
+
+  it("preserves empty review body (reviewer may only use inline comments)", () => {
+    const body = JSON.stringify(reviewPayload({
+      review: { ...reviewPayload().review, body: null },
+    }));
+    const parsed = parseGithubWebhook("pull_request_review", "del-rev-6", body);
+    expect((parsed as any).reviewBody).toBe("");
+  });
+});
+
+// ---- check_run fixtures + tests ----
+
+function checkRunPayload(
+  overrides: Partial<CheckRunEventPayload> = {},
+): CheckRunEventPayload {
+  return {
+    action: "completed",
+    check_run: {
+      id: 9999,
+      name: "ci / test",
+      head_sha: "abcdef0123456789",
+      status: "completed",
+      conclusion: "failure",
+      html_url: "https://github.com/duckhoa-uit/lawn/runs/9999",
+      details_url: "https://github.com/duckhoa-uit/lawn/actions/runs/9999",
+      pull_requests: [{ number: 42, head: { ref: "hermes/abcd1234", sha: "abcdef0123456789" } }],
+    },
+    repository: { full_name: "duckhoa-uit/lawn" },
+    sender: { login: "github-actions[bot]", type: "Bot" },
+    ...overrides,
+  };
+}
+
+describe("parseGithubWebhook — check_run", () => {
+  it("dispatches conclusion=failure", () => {
+    const parsed = parseGithubWebhook("check_run", "del-cr-1", JSON.stringify(checkRunPayload()));
+    expect(parsed).toMatchObject({
+      kind: "check_run_failed",
+      prKey: "duckhoa-uit/lawn#42",
+      headSha: "abcdef0123456789",
+      checkName: "ci / test",
+      conclusion: "failure",
+      detailsUrl: "https://github.com/duckhoa-uit/lawn/actions/runs/9999",
+    });
+  });
+
+  it("dispatches conclusion=timed_out", () => {
+    const parsed = parseGithubWebhook(
+      "check_run", "del-cr-2",
+      JSON.stringify(checkRunPayload({
+        check_run: { ...checkRunPayload().check_run, conclusion: "timed_out" },
+      })),
+    );
+    expect(parsed).toMatchObject({ kind: "check_run_failed", conclusion: "timed_out" });
+  });
+
+  it("ignores conclusion=success", () => {
+    const parsed = parseGithubWebhook(
+      "check_run", "del-cr-3",
+      JSON.stringify(checkRunPayload({
+        check_run: { ...checkRunPayload().check_run, conclusion: "success" },
+      })),
+    );
+    expect(parsed).toMatchObject({ kind: "ignored", reason: "check_run.success" });
+  });
+
+  it("ignores conclusion=cancelled / neutral / skipped / action_required", () => {
+    for (const c of ["cancelled", "neutral", "skipped", "action_required", null] as const) {
+      const parsed = parseGithubWebhook(
+        "check_run", `del-cr-${c}`,
+        JSON.stringify(checkRunPayload({
+          check_run: { ...checkRunPayload().check_run, conclusion: c as any },
+        })),
+      );
+      expect(parsed).toMatchObject({ kind: "ignored" });
+    }
+  });
+
+  it("ignores check_run.created / requested_action / rerequested (only completed dispatches)", () => {
+    const parsed = parseGithubWebhook(
+      "check_run", "del-cr-act",
+      JSON.stringify(checkRunPayload({ action: "created" })),
+    );
+    expect(parsed).toMatchObject({ kind: "ignored", reason: /check_run\.created/ });
+  });
+
+  it("ignores check_run with no associated PR (push to branch w/o open PR)", () => {
+    const parsed = parseGithubWebhook(
+      "check_run", "del-cr-nopr",
+      JSON.stringify(checkRunPayload({
+        check_run: { ...checkRunPayload().check_run, pull_requests: [] },
+      })),
+    );
+    expect(parsed).toMatchObject({ kind: "ignored", reason: "check_run.no_pr" });
+  });
+});

@@ -1,12 +1,13 @@
 // ============================================================
 // GitHub webhook verification + parsing for the control plane.
 //
-// Scope: lifecycle only. We subscribe to `pull_request` events so we
-// can flip the PR Index row's status when a PR is merged/closed and
-// transition the parent session to archived. Follow-up prompts and
-// auto-trigger via mentions are explicitly out of scope — those go
-// through the MCP gateway (Slack/Telegram → Hermes Agent → MCP) and
-// never look at webhook payloads.
+// Scope: PR lifecycle + auto-amend on reviewer feedback / CI failure.
+// We subscribe to three GitHub event types:
+//   - `pull_request`        — lifecycle (merged/closed → archive session)
+//   - `pull_request_review` — reviewer "Request changes" → spawn amend
+//   - `check_run`           — failure / timed_out → spawn amend
+// Follow-up via PR comments / @mentions / issue_comment is explicitly
+// out of scope — gateway-driven (Slack/Telegram → Hermes Agent → MCP).
 //
 // HMAC: GitHub signs the raw body with `X-Hub-Signature-256: sha256=<hex>`.
 // We use Web Crypto's HMAC-SHA-256 and compare digests in constant time
@@ -35,6 +36,58 @@ export interface PullRequestEventPayload {
   sender: { login: string };
 }
 
+/** PR review event. We only act when state === "changes_requested";
+ *  approved / commented reviews are routinely posted and dispatching on
+ *  them would amend the PR for every drive-by review. */
+export interface PullRequestReviewEventPayload {
+  action: "submitted" | "edited" | "dismissed" | string;
+  pull_request: {
+    number: number;
+    html_url: string;
+    state: "open" | "closed";
+    head: { sha: string; ref: string };
+    base: { ref: string };
+  };
+  review: {
+    id: number;
+    state: "approved" | "changes_requested" | "commented" | "dismissed" | string;
+    body: string | null;
+    user: { login: string; type?: string };
+    submitted_at: string;
+  };
+  repository: { full_name: string };
+  sender: { login: string; type?: string };
+}
+
+/** GitHub Actions check_run lifecycle. We act on completed runs with
+ *  conclusion failure / timed_out only — `action_required` means a human
+ *  workflow approval is pending and is not something an agent fix can
+ *  address. */
+export interface CheckRunEventPayload {
+  action: "completed" | "created" | "rerequested" | "requested_action" | string;
+  check_run: {
+    id: number;
+    name: string;
+    head_sha: string;
+    status: "queued" | "in_progress" | "completed" | string;
+    conclusion:
+      | "success"
+      | "failure"
+      | "timed_out"
+      | "cancelled"
+      | "neutral"
+      | "skipped"
+      | "stale"
+      | "action_required"
+      | null;
+    html_url: string;
+    details_url?: string;
+    pull_requests: Array<{ number: number; head: { ref: string; sha: string } }>;
+  };
+  repository: { full_name: string };
+  sender: { login: string; type?: string };
+}
+
 export type ParsedWebhook =
   | {
       kind: "pull_request";
@@ -44,6 +97,34 @@ export type ParsedWebhook =
       merged: boolean;
       prUrl: string;
       senderLogin: string;
+      repoFullName: string;
+    }
+  | {
+      kind: "review_changes_requested";
+      deliveryId: string;
+      prKey: string;
+      prUrl: string;
+      headSha: string;
+      headBranch: string;
+      reviewerLogin: string;
+      reviewerType?: string;       // "User" | "Bot"
+      senderLogin: string;
+      senderType?: string;
+      reviewBody: string;          // may be empty if reviewer only used inline comments
+      reviewId: number;
+      repoFullName: string;
+    }
+  | {
+      kind: "check_run_failed";
+      deliveryId: string;
+      prKey: string;               // resolved from check_run.pull_requests[0]
+      prUrl: string;
+      headSha: string;
+      checkName: string;
+      conclusion: "failure" | "timed_out";
+      detailsUrl: string;
+      senderLogin: string;
+      senderType?: string;
       repoFullName: string;
     }
   | { kind: "ignored"; deliveryId: string; reason: string };
@@ -139,7 +220,69 @@ export function parseGithubWebhook(
     };
   }
 
-  // Everything else (issue_comment, pull_request_review, check_run, …)
+  if (eventHeader === "pull_request_review") {
+    const p = body as PullRequestReviewEventPayload;
+    if (!p.pull_request || !p.review || !p.repository) return null;
+    // We only dispatch on `submitted` + state `changes_requested`.
+    // `commented` reviews (no state change) and `approved` reviews are
+    // common drive-by interactions — amending on them would spam the PR.
+    if (p.action !== "submitted" || p.review.state !== "changes_requested") {
+      return { kind: "ignored", deliveryId, reason: `pull_request_review.${p.action}/${p.review.state}` };
+    }
+    return {
+      kind: "review_changes_requested",
+      deliveryId,
+      prKey: `${p.repository.full_name}#${p.pull_request.number}`,
+      prUrl: p.pull_request.html_url,
+      headSha: p.pull_request.head?.sha ?? "",
+      headBranch: p.pull_request.head?.ref ?? "",
+      reviewerLogin: p.review.user?.login ?? "",
+      reviewerType: p.review.user?.type,
+      senderLogin: p.sender?.login ?? "",
+      senderType: p.sender?.type,
+      reviewBody: p.review.body ?? "",
+      reviewId: p.review.id,
+      repoFullName: p.repository.full_name,
+    };
+  }
+
+  if (eventHeader === "check_run") {
+    const p = body as CheckRunEventPayload;
+    if (!p.check_run || !p.repository) return null;
+    if (p.action !== "completed") {
+      return { kind: "ignored", deliveryId, reason: `check_run.${p.action}` };
+    }
+    const conclusion = p.check_run.conclusion;
+    if (conclusion !== "failure" && conclusion !== "timed_out") {
+      return { kind: "ignored", deliveryId, reason: `check_run.${conclusion ?? "null"}` };
+    }
+    // The PR(s) this check_run belongs to. A push to a branch with no
+    // open PR has an empty list — skip those (the check_run will still
+    // arrive but no Hermes session to amend).
+    const prs = p.check_run.pull_requests ?? [];
+    if (prs.length === 0) {
+      return { kind: "ignored", deliveryId, reason: "check_run.no_pr" };
+    }
+    // GitHub Actions only ever ties a check_run to a single PR; take the
+    // first one. (If a sha is shared by multiple PRs, we'd amend whichever
+    // GitHub listed first — corner case, not seen in practice.)
+    const pr = prs[0];
+    return {
+      kind: "check_run_failed",
+      deliveryId,
+      prKey: `${p.repository.full_name}#${pr.number}`,
+      prUrl: `https://github.com/${p.repository.full_name}/pull/${pr.number}`,
+      headSha: p.check_run.head_sha,
+      checkName: p.check_run.name,
+      conclusion,
+      detailsUrl: p.check_run.details_url ?? p.check_run.html_url,
+      senderLogin: p.sender?.login ?? "",
+      senderType: p.sender?.type,
+      repoFullName: p.repository.full_name,
+    };
+  }
+
+  // Everything else (issue_comment, pull_request_review_comment, push, …)
   // we acknowledge but do not act on. Follow-up is gateway-driven.
   return { kind: "ignored", deliveryId, reason: eventHeader ?? "unknown" };
 }

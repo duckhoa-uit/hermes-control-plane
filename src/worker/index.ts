@@ -204,7 +204,8 @@ export default {
           );
         }
 
-        // pull_request branch. Look up the PR in the index DO.
+        // From here on we need the PR index for all kinds. Compute
+        // once; each kind branches below for its own dispatch.
         const prIndex = asPrIndex(getPrIndexStub(env));
         const row = await prIndex.lookup(parsed.prKey);
         if (!row) {
@@ -230,54 +231,69 @@ export default {
           );
         }
 
-        // Lifecycle actions we care about. GitHub also fires `opened`,
-        // `reopened`, `edited`, `synchronize`, `ready_for_review`, etc.
-        // for the `pull_request` event — none of those map onto a Hermes
-        // lifecycle transition, so we ack the delivery (the dedup ring
-        // already recorded it) and skip the SESSION_DO dispatch. Without
-        // this guard, every `synchronize` from the runner's own
-        // `git push` would emit a spurious `pr.closed` (merged=false).
-        let archived = false;
-        if (parsed.action === "closed") {
-          await prIndex.markStatus(parsed.prKey, parsed.merged ? "merged" : "closed");
-          try {
-            const sessId = env.SESSION_DO.idFromString(row.sessionId);
-            const stub = env.SESSION_DO.get(sessId);
-            const res = await asRpc(stub).ingestPrLifecycleEvent({
-              merged: parsed.merged,
-              prUrl: parsed.prUrl,
-              deliveryId: parsed.deliveryId,
-              senderLogin: parsed.senderLogin,
-            });
-            archived = res.archived;
-          } catch (err) {
-            console.error(
-              `[webhook] SESSION_DO.ingestPrLifecycleEvent failed for ${row.sessionId}: ` +
-              `${(err as Error).message}`,
-            );
-            // Don't 5xx — we already updated the index row and dedup'd the
-            // delivery. GitHub retrying won't fix a missing/corrupt DO.
+        // Branch on the parsed kind.
+        if (parsed.kind === "pull_request") {
+          // Lifecycle actions we care about. GitHub also fires `opened`,
+          // `reopened`, `edited`, `synchronize`, `ready_for_review`, etc.
+          // for the `pull_request` event — none of those map onto a Hermes
+          // lifecycle transition, so we ack the delivery (the dedup ring
+          // already recorded it) and skip the SESSION_DO dispatch. Without
+          // this guard, every `synchronize` from the runner's own
+          // `git push` would emit a spurious `pr.closed` (merged=false).
+          let archived = false;
+          if (parsed.action === "closed") {
+            await prIndex.markStatus(parsed.prKey, parsed.merged ? "merged" : "closed");
+            try {
+              const sessId = env.SESSION_DO.idFromString(row.sessionId);
+              const stub = env.SESSION_DO.get(sessId);
+              const res = await asRpc(stub).ingestPrLifecycleEvent({
+                merged: parsed.merged,
+                prUrl: parsed.prUrl,
+                deliveryId: parsed.deliveryId,
+                senderLogin: parsed.senderLogin,
+              });
+              archived = res.archived;
+            } catch (err) {
+              console.error(
+                `[webhook] SESSION_DO.ingestPrLifecycleEvent failed for ${row.sessionId}: ` +
+                `${(err as Error).message}`,
+              );
+              // Don't 5xx — we already updated the index row and dedup'd the
+              // delivery. GitHub retrying won't fix a missing/corrupt DO.
+            }
+
+            // Drop the row once the PR is merged so the index doesn't grow
+            // unbounded. Closed-unmerged stays so future re-open events
+            // still land on the right session.
+            if (parsed.merged) {
+              await prIndex.unregister(parsed.prKey);
+            }
           }
 
-          // Drop the row once the PR is merged so the index doesn't grow
-          // unbounded. Closed-unmerged stays so future re-open events
-          // still land on the right session.
-          if (parsed.merged) {
-            await prIndex.unregister(parsed.prKey);
-          }
+          console.log(
+            `[webhook] pull_request pr=${parsed.prKey} action=${parsed.action} ` +
+            `merged=${parsed.merged} session=${row.sessionId.slice(0, 8)} archived=${archived}`,
+          );
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              kind: "pull_request",
+              archived,
+              sessionId: row.sessionId,
+            }),
+            { status: 200, headers: CORS_HEADERS },
+          );
         }
 
+        // pull_request_review.changes_requested + check_run_failed
+        // branches: parse-only in this commit; auto-amend dispatch lands
+        // in the dispatch commit.
         console.log(
-          `[webhook] pull_request pr=${parsed.prKey} action=${parsed.action} ` +
-          `merged=${parsed.merged} session=${row.sessionId.slice(0, 8)} archived=${archived}`,
+          `[webhook] parsed kind=${parsed.kind} pr=${parsed.prKey} ` +
+          `delivery=${parsed.deliveryId.slice(0, 8)} — dispatch TODO`,
         );
         return new Response(
-          JSON.stringify({
-            ok: true,
-            kind: "pull_request",
-            archived,
-            sessionId: row.sessionId,
-          }),
+          JSON.stringify({ ok: true, kind: parsed.kind, dispatched: false, reason: "dispatch_not_implemented_yet" }),
           { status: 200, headers: CORS_HEADERS },
         );
       }
