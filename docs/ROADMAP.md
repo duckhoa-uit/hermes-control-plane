@@ -110,7 +110,7 @@ row in the **Notes / PR** column._
 | 10 | WebSocket hibernation | Cloudflare Agents SDK | DO Hibernation API (`ctx.acceptWebSocket` + tagged attachments) + alarm-driven heartbeat; sockets survive DO hibernation | ✅ | Low (cost) | shipped §12.18 |
 | 11 | Multiplayer / author attribution | Yes, per-prompt author | Single implicit owner; no `author_user_id` on events. Explicitly a single-user app until §14 ships (`docs/DEPLOYMENT.md` multi-user Slack rollout depends on §14). | ❌ | Med | P3.1 / §14 |
 | 12 | PR auth | User GitHub OAuth token | **Single-user shipped:** `GITHUB_USER_TOKEN` env (PAT/OAuth) used by the runner for `git push` + `POST /pulls`; PR `author` = real user. App token is fallback. Multi-user (per-user OAuth storage) still locked design in §14. | 🟡 | Low (single user) | P1.1 single-user shipped; §14 = multi-user |
-| 13 | GitHub webhooks | PR open/merge/close → events | **PR lifecycle ingestion shipped** — `POST /webhooks/github` (HMAC-SHA-256, dedup by `X-GitHub-Delivery`) flips PR Index DO status + dispatches `pr.merged` / `pr.closed` events; merged PRs auto-archive the parent session. Out of scope: auto-trigger via PR mentions (follow-up is gateway-driven via MCP). | 🟡 | Low | PR-followup ship; see DEPLOYMENT §13.3 |
+| 13 | GitHub webhooks | PR open/merge/close → events; auto-trigger on review feedback / CI failure | **Shipped end-to-end.** `POST /webhooks/github` (HMAC-SHA-256, dedup by `X-GitHub-Delivery`) consumes `pull_request`, `pull_request_review`, `check_run`. Lifecycle: merged→archive, closed→mark. Auto-amend: review.changes_requested + check_run.failure spawn an amend session via launcher (single-flight, cap 3 per PR, dedup by head sha, self-review refused). PR comments / @mentions intentionally NOT consumed — manual follow-up still via MCP. | ✅ | Low | PR #24 + #25; see DEPLOYMENT §13.3 |
 | 14 | Verification tools | Sentry/DD/LD/Braintrust/screenshots/computer-use | Test runner only (per profile) | ❌ | Med | |
 | 15 | Skills/MCPs | Encode shipping conventions | None | ❌ | Low | |
 | 16 | Slack client | Yes (with repo classifier) | None | ❌ | Low | |
@@ -167,22 +167,33 @@ without re-asking. Keep items small enough to ship in one PR.
     → 412 with `auth_url`; expired token auto-refreshes; integration test
     for both authored-by-bot (pre-OAuth) and authored-by-user (post-OAuth)
     paths.
-- [x] **P1.2 GitHub webhook ingestion (PR lifecycle).** Shipped via the
-  webhooks/PR-followup branch. New route `POST /webhooks/github` (HMAC
-  verified) routes `pull_request` events into `PrIndexDurableObject`
-  (singleton DO, idFromName("global")) and dispatches
-  `SESSION_DO.ingestPrLifecycleEvent`. Event types `pr.merged` and
-  `pr.closed` land on the session's event log; merged PRs transition the
-  parent session `completed -> archived` and unregister the PR row. Dedup
-  by `X-GitHub-Delivery` (bounded 16-entry ring per PR).
-  - Verified: 14 unit tests (`tests/pr-index-do.test.ts`,
-    `tests/github-webhook.test.ts`) + 3 e2e webhook tests
-    (`tests/e2e-do.test.ts`).
-  - Out of scope (intentional): auto-trigger via PR comments / mentions
-    (`issue_comment`, `pull_request_review`). Follow-up is gateway-driven
-    via MCP `send_followup_prompt` -> transparent re-provision in amend
-    mode (also shipped in the same branch). See DEPLOYMENT §13.3 for
-    webhook setup; ARCHITECTURE §3.b for the lifecycle + amend flow.
+- [x] **P1.2 GitHub webhook ingestion (lifecycle + auto-amend).** Shipped
+  in two passes on the `feat/webhooks-followup` branch:
+  - **Lifecycle (PR #24):** `POST /webhooks/github` (HMAC-SHA-256)
+    consumes `pull_request`. Routes through `PrIndexDurableObject`
+    (singleton DO, idFromName("global")) → dispatches
+    `SESSION_DO.ingestPrLifecycleEvent`. Event types `pr.merged` and
+    `pr.closed` land on the session log; merged PRs transition
+    `completed → archived` and unregister the PR row. Dedup by
+    `X-GitHub-Delivery` (bounded 16-entry ring per PR).
+  - **Auto-amend (PR #25):** subscribes `pull_request_review` and
+    `check_run`. On reviewer `changes_requested` OR check_run
+    `failure`/`timed_out`, the handler `tryClaimAmendSlot(prKey,
+    headSha, parentSessionId, cap)` then POSTs `/sessions` on the
+    launcher with `parentSessionId` and a built `taskDescription`.
+    Spawned session releases the slot on its own terminal transition.
+    Guards: cap (default 3, `HERMES_AUTOFIX_CAP`), strict single-flight
+    (`inflight` reject), dedup by `head_sha` (`duplicate_sha` reject),
+    self-review refused (`reviewerLogin === ownerLogin`).
+    New event types: `pr.updated`, `pr.autofix.triggered`,
+    `pr.autofix.skipped`.
+  - Live-verified end-to-end on `duckhoa-uit/lawn` PRs #4–#11
+    (full matrix in DEPLOYMENT §13.3).
+  - Out of scope (intentional): `issue_comment`,
+    `pull_request_review_comment`, `@mention`-driven triggers,
+    auto-reply bot comments on the PR (status only in the session log).
+  - 181 tests pass (unit + integration). See DEPLOYMENT §13.3 for
+    setup, ARCHITECTURE §3.b for the dispatch flow.
 
 ### P2 — Agent capabilities
 

@@ -130,6 +130,10 @@ user as a status tail. Override the Worker URL with the
 | `approval.requested` | Surface the requested command to the user and wait — the runner is blocked until the user resolves it |
 | `git.branch.pushed` | status only; PR is being opened next |
 | `pr.created` | Post the PR URL — this is the success signal |
+| `pr.updated` | Amend session pushed a follow-up commit to the SAME PR (do NOT announce a new PR; same number, link still works) |
+| `pr.autofix.triggered` | A real GitHub review/CI failure spawned an amend session; tell the user "Hermes is fixing review feedback / CI failure on PR #N" + link the trigger (reviewer login or check name from the payload) |
+| `pr.autofix.skipped` | Amend was refused; `payload.skipReason` is one of `cap_exceeded` / `duplicate_sha` / `inflight` / `self_review` / `launcher_not_configured` / `launcher_<status>` — surface the human-friendly meaning |
+| `pr.merged` / `pr.closed` | GitHub webhook lifecycle; for `pr.merged` the session moves to `archived` |
 | `session.failed` / `session.aborted` | Post the error message |
 | `system.stalled` | Tell the user "agent went silent (>15 min)"; offer to abort |
 

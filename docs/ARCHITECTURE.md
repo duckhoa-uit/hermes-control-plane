@@ -132,9 +132,11 @@ Two consumers of the index:
    5. unregisters the row on merge (closed-unmerged keeps the row
       in case the PR is reopened).
 
-   Follow-up prompts are explicitly **not** webhook-driven. They go
-   through the MCP gateway (Slack/Telegram -> Hermes Agent ->
-   `send_followup_prompt`), not GitHub comments/mentions.
+   Reviewer "Request changes" and CI failures are webhook-driven —
+   see the auto-amend section below. We do NOT consume PR comments
+   (`issue_comment`), inline review comments
+   (`pull_request_review_comment`), or `@mentions` — manual follow-up
+   goes through MCP (`send_followup_prompt`).
 
 2. **MCP `send_followup_prompt`** — when called against a terminal
    session whose PR is still open, the launcher transparently spawns

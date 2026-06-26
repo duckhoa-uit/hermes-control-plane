@@ -4,6 +4,13 @@ Background coding agent control plane. A user posts a task; the system spins up
 a sandboxed [OpenCode](https://opencode.ai) session, the agent makes the
 changes, opens a real GitHub PR, then tears the sandbox down.
 
+When the PR is opened, a per-PR webhook hook drives the rest of the
+lifecycle automatically: reviewer "Request changes" or CI failures spawn
+an *amend session* that pushes a follow-up commit onto the same PR
+(no new PR opened). Merge → session archives. See
+[`docs/DEPLOYMENT.md §13.3`](docs/DEPLOYMENT.md#133-github-webhook-pr-lifecycle)
+for the full matrix.
+
 Docs:
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — how the system works today (stable snapshot).
 - [`docs/SETUP.md`](docs/SETUP.md) — local-development setup.
@@ -106,7 +113,7 @@ key, a fine-grained GitHub PAT. Step-by-step is in
 | `POST` | `/sessions/:id/abort` | force-abort |
 | `POST` | `/sessions/:id/prompt` | follow-up prompt (runner must still be connected) |
 | `POST` | `/sessions/:id/create-pr` | triggered automatically by the launcher on `review_ready` |
-| `POST` | `/webhooks/github` | HMAC-SHA-256 verified PR-lifecycle webhook. See [`docs/DEPLOYMENT.md` §13.3](docs/DEPLOYMENT.md). |
+| `POST` | `/webhooks/github` | HMAC-SHA-256 verified webhook. Consumes `pull_request` (lifecycle: merged→archive, closed→mark), `pull_request_review` (changes_requested→auto-amend session), `check_run` (failure/timed_out→auto-amend session). See [`docs/DEPLOYMENT.md` §13.3](docs/DEPLOYMENT.md). |
 | `GET` | `/pr-index?key=<owner/repo#N>` | Look up the PR index row (used by the launcher to verify a parent PR is still open before amend re-provision). |
 
 ## Tech stack

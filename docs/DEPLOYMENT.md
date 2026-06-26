@@ -799,9 +799,28 @@ transition into the relevant session.
 **Local testing.** Use `gh webhook forward` against a `wrangler dev`
 instance. Set `GITHUB_WEBHOOK_SECRET` in `.dev.vars`. See
 `tests/github-webhook.test.ts` for the on-the-wire shape of the events
-we accept.
+we accept. For end-to-end live testing without GitHub, sign synthetic
+webhook bodies with `scripts/e2e-autoamend-live.ts`:
 
----
+```bash
+GITHUB_WEBHOOK_SECRET=… bun run scripts/e2e-autoamend-live.ts \
+  --pr-key duckhoa-uit/lawn#11 \
+  --pr-url https://github.com/duckhoa-uit/lawn/pull/11 \
+  --case review|check_run|duplicate_sha|inflight|cap
+```
+
+**Live verification matrix** (PRs on `duckhoa-uit/lawn`, see PR #24 + #25):
+
+| Scenario | Trigger | PR | Outcome |
+|---|---|---|---|
+| `pull_request.opened` → register in PR index | real GitHub | #4–11 | row created on the singleton PR_INDEX_DO |
+| `pull_request.closed` (merged=false) | real GitHub | #6 | session log gets `pr.closed`; index `status` flips to `closed` |
+| `pull_request.closed` (merged=true) | real GitHub | #7 | session transitions `completed → archived`; index row unregistered |
+| `pull_request_review.submitted` (changes_requested) | real GitHub review by 2nd account | #8 | amend session spawned; commit pushed onto same PR; `pr.autofix.triggered { trigger: "review_changes_requested" }` |
+| `check_run.completed` (failure) | real GitHub Actions on a marker-file workflow | #11 | amend session spawned; agent removed marker file; subsequent CI run **succeeded** |
+| `duplicate_sha` guard | real GitHub redelivery | #8 | 2nd review on same head sha → 200 `duplicate_sha` |
+| `inflight` guard | synthetic (back-to-back deliveries) | #10 | 2nd delivery while spawn in flight → 200 `inflight` |
+| `cap_exceeded` guard | synthetic | #10 | after 3 amends, 4th refused with `cap_exceeded` |
 
 ---
 
