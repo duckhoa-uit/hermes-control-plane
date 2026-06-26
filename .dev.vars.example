@@ -61,7 +61,7 @@ GITHUB_WEBHOOK_SECRET=
 # Public URL the sandbox runner uses to dial back over WS.
 # Local dev: an ngrok URL pointing at `wrangler dev`. Production: the
 # deployed Worker URL.
-PUBLIC_BASE_URL=
+WORKER_URL=
 
 # Optional. Maximum auto-amend sessions per PR before tryClaimAmendSlot
 # returns cap_exceeded. Default 3.
@@ -72,8 +72,8 @@ PUBLIC_BASE_URL=
 # =====================================================================
 
 # Worker URL the launcher calls (POST /sessions, GET /pr-index, etc.).
-# Local dev: same ngrok URL as PUBLIC_BASE_URL.
-WORKER_BASE_URL=
+# Local dev: same ngrok URL as WORKER_URL.
+WORKER_URL=
 
 # Optional launcher tweaks.
 # LAUNCHER_PORT=8789
@@ -95,4 +95,4 @@ LAUNCHER_SHARED_SECRET=
 # Launcher URL the Worker DO calls for /resume + /publish-pr.
 # Local dev: http://localhost:8789. Production: Cloudflare Tunnel URL of
 # the VPS launcher.
-CONTROL_PLANE_LAUNCHER_URL=http://localhost:8789
+LAUNCHER_URL=http://localhost:8789

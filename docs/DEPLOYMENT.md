@@ -195,7 +195,7 @@ cadence:
 | `ZAI_API_KEY` | launcher VM env | infra | quarterly | Forwarded into the sandbox; supervisor applies it to opencode via `auth.set` |
 | `GITHUB_WRITE_TOKEN` (fine-grained PAT, Contents + Pull-requests RW) | launcher VM env **only — never enters the sandbox** | infra | every 90 days | P1.1 single-user OAuth. Used by the launcher's `POST /sessions/:id/publish-pr` for `git push` + `POST /pulls`; PR `author` is the real user. |
 | `GITHUB_READ_TOKEN` (fine-grained PAT, Contents Read) | launcher VM env; baked into sandbox `.git/config` | infra | every 90 days | Lets the sandbox `git clone` + `git fetch`. Cannot push (GitHub returns 403). |
-| `WORKER_BASE_URL` | launcher VM env | infra | n/a | the Worker URL; static per env. Used both for launcher→Worker calls and as the WS dial-back URL given to the runner inside the sandbox. |
+| `WORKER_URL` | launcher VM env | infra | n/a | the Worker URL; static per env. Used both for launcher→Worker calls and as the WS dial-back URL given to the runner inside the sandbox. |
 | Slack signing secret + bot token | Hermes agent infra | Hermes team | yearly | not in this repo |
 
 Secrets that *do* live in the Worker (post-P1.1): the GitHub OAuth
@@ -694,8 +694,8 @@ wrangler login
 
 # Secrets (use `wrangler secret put` — do NOT commit them to wrangler.jsonc)
 wrangler secret put E2B_API_KEY              # required; Worker refuses to provision otherwise
-wrangler secret put PUBLIC_BASE_URL          # https://hermes.<your-domain>.workers.dev
-wrangler secret put CONTROL_PLANE_LAUNCHER_URL      # https://<your-launcher-host>:8789 (Cloudflare Tunnel URL of the launcher VPS)
+wrangler secret put WORKER_URL          # https://hermes.<your-domain>.workers.dev
+wrangler secret put LAUNCHER_URL      # https://<your-launcher-host>:8789 (Cloudflare Tunnel URL of the launcher VPS)
 wrangler secret put GITHUB_WEBHOOK_SECRET    # required for PR-lifecycle + auto-amend webhooks (see §13.3)
 wrangler secret put LAUNCHER_SHARED_SECRET   # required; shared secret. Used in BOTH directions: launcher → Worker /pr-index, AND Worker → launcher /sessions+/resume. Must match the launcher's LAUNCHER_SHARED_SECRET env.
 # Optional — auto-amend cap per PR (default 3). Set as a plain var, not a secret.
@@ -705,7 +705,7 @@ bun run deploy
 ```
 
 Cloudflare will print the deployed Worker URL. Set that as
-`PUBLIC_BASE_URL` (the runner inside the sandbox dials this over WSS —
+`WORKER_URL` (the runner inside the sandbox dials this over WSS —
 no more ngrok needed in prod).
 
 ### 13.2 Launcher (any always-on host)
@@ -732,7 +732,7 @@ export GITHUB_USER_EMAIL=you@example.com
 
 # Wire to the deployed Worker (one URL serves both launcher→Worker calls
 # and the runner-inside-sandbox WS dial-back)
-export WORKER_BASE_URL=https://hermes.<your-domain>.workers.dev
+export WORKER_URL=https://hermes.<your-domain>.workers.dev
 
 # Optional
 export LAUNCHER_PORT=8789

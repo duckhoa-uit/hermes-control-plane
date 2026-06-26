@@ -41,13 +41,13 @@ curl -fsSL https://raw.githubusercontent.com/duckhoa-uit/hermes-control-plane/ma
   | sudo bash
 # install.sh asks for E2B_API_KEY, ZAI_API_KEY, GITHUB_WRITE_TOKEN,
 # GITHUB_READ_TOKEN, GITHUB_USER_LOGIN, GITHUB_USER_EMAIL (optional),
-# WORKER_BASE_URL (default: the deployed Worker URL).
+# WORKER_URL (default: the deployed Worker URL).
 
 # 2. Pre-exported env vars (good when piping into bash):
 curl -fsSL https://raw.githubusercontent.com/duckhoa-uit/hermes-control-plane/main/infra/launcher/install.sh \
   | sudo E2B_API_KEY=... ZAI_API_KEY=... GITHUB_WRITE_TOKEN=... \
          GITHUB_READ_TOKEN=... GITHUB_USER_LOGIN=duckhoa-uit \
-         WORKER_BASE_URL=https://hermes-control-plane.duckhoa-dev.workers.dev \
+         WORKER_URL=https://hermes-control-plane.duckhoa-dev.workers.dev \
          bash
 
 # 3. Skip prompts entirely — drop the env.example template and edit by hand later:
@@ -63,7 +63,7 @@ After it finishes, the script prints the 6 remaining manual steps:
 4. Set up Cloudflare Tunnel for `launcher.<your-domain>` → `localhost:8789`.
 5. From your dev machine: mirror the launcher secrets onto the Worker:
    ```bash
-   echo "<tunnel-url>" | bun x wrangler secret put CONTROL_PLANE_LAUNCHER_URL
+   echo "<tunnel-url>" | bun x wrangler secret put LAUNCHER_URL
    ssh <vps> 'sudo grep ^LAUNCHER_SHARED_SECRET= /etc/hermes-control-plane/launcher.env | cut -d= -f2-' \
      | bun x wrangler secret put LAUNCHER_SHARED_SECRET
    bun run deploy
@@ -82,7 +82,7 @@ You should see:
 
 ## Quick tunnel (no domain, no CF account)
 
-Need a public URL for `CONTROL_PLANE_LAUNCHER_URL` before you own a domain?
+Need a public URL for `LAUNCHER_URL` before you own a domain?
 Pass `CONTROL_PLANE_QUICK_TUNNEL=1` to `install.sh` — it installs and
 starts a TryCloudflare quick tunnel as a second systemd unit:
 
@@ -91,7 +91,7 @@ curl -fsSL https://raw.githubusercontent.com/duckhoa-uit/hermes-control-plane/ma
   | sudo CONTROL_PLANE_QUICK_TUNNEL=1 \
          E2B_API_KEY=... ZAI_API_KEY=... GITHUB_WRITE_TOKEN=... \
          GITHUB_READ_TOKEN=... \
-         GITHUB_USER_LOGIN=... WORKER_BASE_URL=https://...workers.dev \
+         GITHUB_USER_LOGIN=... WORKER_URL=https://...workers.dev \
          bash
 ```
 
@@ -106,7 +106,7 @@ sudo /opt/hermes-control-plane/quick-tunnel-url.sh --wait 60 # block 60s
 **Caveats** — TryCloudflare is for bootstrapping only:
 
 - URL is random and **changes every cloudflared restart**. After a restart
-  you must re-run `wrangler secret put CONTROL_PLANE_LAUNCHER_URL` + `bun
+  you must re-run `wrangler secret put LAUNCHER_URL` + `bun
   run deploy` for the Worker DO's resume path to keep working.
 - No Cloudflare Access wall — anyone who guesses the URL can `POST
   /sessions` against your launcher. Treat the URL as a (weak) secret.

@@ -17,7 +17,7 @@
 //
 // Run:
 //   E2B_API_KEY=... ZAI_API_KEY=... GITHUB_WRITE_TOKEN=... GITHUB_USER_LOGIN=... \
-//   WORKER_BASE_URL=https://<deployed-worker>.workers.dev \
+//   WORKER_URL=https://<deployed-worker>.workers.dev \
 //   bun run src/launcher/server.ts
 
 import { Sandbox } from "e2b";
@@ -27,7 +27,7 @@ import { sweepOrphans } from "./sweeper";
 import { buildMcpHandler } from "../mcp/server";
 
 const PORT = Number(process.env.LAUNCHER_PORT ?? 8789);
-const WORKER_BASE_URL = process.env.WORKER_BASE_URL;
+const WORKER_URL = process.env.WORKER_URL;
 const E2B_API_KEY = process.env.E2B_API_KEY;
 const E2B_TEMPLATE = process.env.E2B_TEMPLATE ?? "control-plane-runner";
 const ZAI_API_KEY = process.env.ZAI_API_KEY;
@@ -50,7 +50,7 @@ const requiredEnv: Array<[string, string | undefined]> = [
   ["ZAI_API_KEY", ZAI_API_KEY],
   ["GITHUB_WRITE_TOKEN", GITHUB_WRITE_TOKEN],
   ["GITHUB_USER_LOGIN", GITHUB_USER_LOGIN],
-  ["WORKER_BASE_URL", WORKER_BASE_URL],
+  ["WORKER_URL", WORKER_URL],
   ["LAUNCHER_SHARED_SECRET", LAUNCHER_SHARED_SECRET],
 ];
 const missing = requiredEnv.filter(([, v]) => !v).map(([k]) => k);
@@ -108,7 +108,7 @@ function watchSession(sessionId: string): void {
 
     let done = false;
     try {
-      const r = await fetch(`${WORKER_BASE_URL}/sessions/${sessionId}`);
+      const r = await fetch(`${WORKER_URL}/sessions/${sessionId}`);
       if (r.ok) {
         const data = (await r.json()) as { session?: { status: string } };
         const status = data.session?.status ?? "";
@@ -116,7 +116,7 @@ if (status === "review_ready" && !prTriggered && AUTO_PR) {
           prTriggered = true;
           log(`session ${sessionId.slice(0, 8)} review_ready -> trigger create-pr`);
           try {
-            await fetch(`${WORKER_BASE_URL}/sessions/${sessionId}/create-pr`, {
+            await fetch(`${WORKER_URL}/sessions/${sessionId}/create-pr`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
             });
@@ -215,7 +215,7 @@ async function resolveParentAmend(
   prMode: { branch: string; prNumber: number; prUrl: string };
 } | { ok: false; status: number; error: string; reason: string }> {
   // 1. Parent session state — needs repoUrl, baseBranch, branch, prUrl.
-  const sResp = await fetch(`${WORKER_BASE_URL}/sessions/${parentSessionId}`);
+  const sResp = await fetch(`${WORKER_URL}/sessions/${parentSessionId}`);
   if (sResp.status === 404) {
     return { ok: false, status: 404, error: "parent session not found", reason: "parentSessionId does not exist" };
   }
@@ -242,7 +242,7 @@ async function resolveParentAmend(
   }
   const owner = m[1], repo = m[2], number = Number(m[3]);
   const prKey = `${owner}/${repo}#${number}`;
-  const idxResp = await fetch(`${WORKER_BASE_URL}/pr-index?key=${encodeURIComponent(prKey)}`, {
+  const idxResp = await fetch(`${WORKER_URL}/pr-index?key=${encodeURIComponent(prKey)}`, {
     headers: { "x-hermes-launcher-secret": LAUNCHER_SHARED_SECRET! },
   });
   if (idxResp.status === 404) {
@@ -322,7 +322,7 @@ async function handleCreate(req: Request): Promise<Response> {
   }
 
   // 1. Create the session DO via the Worker.
-  const wResp = await fetch(`${WORKER_BASE_URL}/sessions`, {
+  const wResp = await fetch(`${WORKER_URL}/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -351,7 +351,7 @@ async function handleCreate(req: Request): Promise<Response> {
     provisioned = await provisionSession({
       sessionId: session.id,
       runnerToken: session.runnerToken,
-      controlWsUrl: WORKER_BASE_URL!,
+      controlWsUrl: WORKER_URL!,
       repoUrl,
       baseBranch,
       e2bApiKey: E2B_API_KEY!,
@@ -366,7 +366,7 @@ async function handleCreate(req: Request): Promise<Response> {
       amendTrigger: body.amendTrigger,
     });
   } catch (err) {
-    await fetch(`${WORKER_BASE_URL}/sessions/${session.id}/abort`, { method: "POST" });
+    await fetch(`${WORKER_URL}/sessions/${session.id}/abort`, { method: "POST" });
     return Response.json(
       { error: "provision failed", sessionId: session.id, detail: (err as Error).message },
       { status: 500 },
@@ -382,7 +382,7 @@ async function handleCreate(req: Request): Promise<Response> {
   if (provisioned.repoInstructions) {
     try {
       const r = await fetch(
-        `${WORKER_BASE_URL}/sessions/${session.id}/repo-instructions`,
+        `${WORKER_URL}/sessions/${session.id}/repo-instructions`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -416,8 +416,8 @@ async function handleCreate(req: Request): Promise<Response> {
     {
       sessionId: session.id,
       sandboxId: provisioned.sandboxId,
-      streamUrl: `${WORKER_BASE_URL}/sessions/${session.id}/stream`,
-      stateUrl: `${WORKER_BASE_URL}/sessions/${session.id}`,
+      streamUrl: `${WORKER_URL}/sessions/${session.id}/stream`,
+      stateUrl: `${WORKER_URL}/sessions/${session.id}`,
       // Reflect amend wiring back to the caller (MCP tool surfaces this in
       // structuredContent so the agent can mention the branch in chat).
       parentSessionId: body.parentSessionId,
@@ -451,7 +451,7 @@ async function handleDelete(sessionId: string): Promise<Response> {
       // ignore
     }
   }
-  await fetch(`${WORKER_BASE_URL}/sessions/${sessionId}/abort`, { method: "POST" });
+  await fetch(`${WORKER_URL}/sessions/${sessionId}/abort`, { method: "POST" });
   return Response.json({ ok: true });
 }
 
@@ -527,7 +527,7 @@ async function handleResume(sessionId: string): Promise<Response> {
 
 
 async function handleGet(sessionId: string): Promise<Response> {
-  const r = await fetch(`${WORKER_BASE_URL}/sessions/${sessionId}`);
+  const r = await fetch(`${WORKER_URL}/sessions/${sessionId}`);
   return new Response(await r.text(), {
     status: r.status,
     headers: { "Content-Type": "application/json" },
@@ -650,7 +650,7 @@ async function handleHealth(): Promise<Response> {
       sandboxId: s.sandboxId,
       startedAt: s.startedAt,
     })),
-    worker: WORKER_BASE_URL,
+    worker: WORKER_URL,
     cap: MAX_CONCURRENT_SESSIONS,
   });
 }
@@ -660,7 +660,7 @@ async function main(): Promise<void> {
   try {
     const sweep = await sweepOrphans({
       e2bApiKey: E2B_API_KEY!,
-      hermesBaseUrl: WORKER_BASE_URL!,
+      hermesBaseUrl: WORKER_URL!,
     });
     log(
       `startup sweep: scanned=${sweep.scanned} killed=${sweep.killed.length} kept=${sweep.kept.length}`,
@@ -673,7 +673,7 @@ async function main(): Promise<void> {
   // MCP server bundled into the launcher (the Hermes Agent — see
   // docs/DEPLOYMENT.md §12 and infra/mcp/README.md.
   const mcpHandler = buildMcpHandler({
-    workerBaseUrl: WORKER_BASE_URL!,
+    workerBaseUrl: WORKER_URL!,
     launcherBaseUrl: `http://localhost:${PORT}`,
     launcherSecret: LAUNCHER_SHARED_SECRET!,
     log,
@@ -729,7 +729,7 @@ async function main(): Promise<void> {
   });
 
   log(`control-plane-launcher listening on http://localhost:${server.port}`);
-  log(`  worker = ${WORKER_BASE_URL}`);
+  log(`  worker = ${WORKER_URL}`);
   log(`  cap    = ${MAX_CONCURRENT_SESSIONS}`);
   log(`  autoPR = ${AUTO_PR}`);
   log(`  mcp    = http://localhost:${server.port}/mcp`);

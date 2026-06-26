@@ -13,11 +13,11 @@ interface CloudflareEnv {
   E2B_API_KEY?: string;
   // Public base URL the sandbox runner uses to dial back over WS.
   // Locally: an ngrok URL pointing at wrangler dev. Production: deployed Worker URL.
-  PUBLIC_BASE_URL?: string;
+  WORKER_URL?: string;
   // M5: launcher sidecar URL (so DO can POST /resume to thaw a paused
   // sandbox). Optional — when unset, DO returns 409 with recoverable:false
   // on follow-up to a disconnected runner (pre-M5 behaviour).
-  CONTROL_PLANE_LAUNCHER_URL?: string;
+  LAUNCHER_URL?: string;
   // HMAC secret used to verify POST /webhooks/github deliveries. Set with
   // `wrangler secret put GITHUB_WEBHOOK_SECRET`; matches the "Secret"
   // field in the GitHub webhook settings.

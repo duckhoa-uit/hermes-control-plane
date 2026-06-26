@@ -357,10 +357,10 @@ export default {
         // /sessions on the launcher with parentSessionId + a built
         // taskDescription. The spawned session releases the slot on
         // terminal (see SessionDurableObject.transition).
-        const launcherUrl = env.CONTROL_PLANE_LAUNCHER_URL;
+        const launcherUrl = env.LAUNCHER_URL;
         if (!launcherUrl) {
           console.warn(
-            `[webhook] ${parsed.kind} pr=${parsed.prKey}: skipped (CONTROL_PLANE_LAUNCHER_URL unset)`,
+            `[webhook] ${parsed.kind} pr=${parsed.prKey}: skipped (LAUNCHER_URL unset)`,
           );
           try {
             const stub = env.SESSION_DO.get(env.SESSION_DO.idFromString(row.sessionId));
@@ -667,11 +667,11 @@ Logs / details: ${parsed.detailsUrl}
         const stub = env.SESSION_DO.get(id);
 
         // The DO/sandbox runner needs a publicly reachable URL to dial back
-        // for the WS bridge. Prefer the explicit PUBLIC_BASE_URL secret (set
+        // for the WS bridge. Prefer the explicit WORKER_URL secret (set
         // to e.g. an ngrok URL locally, or the deployed Worker URL in prod);
         // fall back to the request origin which is correct in production
         // when the client hits the deployed Worker directly.
-        const controlBaseUrl = env.PUBLIC_BASE_URL?.replace(/\/$/, "") ?? url.origin;
+        const controlBaseUrl = env.WORKER_URL?.replace(/\/$/, "") ?? url.origin;
 
         const session = await asRpc(stub).initSession(profile, body.taskDescription, controlBaseUrl, body.amendPrUrl, body.branchSuffix);
 

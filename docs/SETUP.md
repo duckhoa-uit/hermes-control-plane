@@ -159,16 +159,16 @@ Auto-amend has hard limits per PR (locked in PR #24+#25):
 
 The runner inside the sandbox dials your Worker over WebSocket, and
 the launcher calls the same Worker over HTTPS. Locally that needs one
-public URL — `WORKER_BASE_URL`.
+public URL — `WORKER_URL`.
 
 ```bash
 ngrok http 8787
 # copy the https URL, e.g. https://abcd-1234.ngrok-free.app
-export WORKER_BASE_URL=https://abcd-1234.ngrok-free.app
+export WORKER_URL=https://abcd-1234.ngrok-free.app
 ```
 
 Free-tier ngrok is fine; the browser interstitial doesn't affect WS
-upgrades. In production point `WORKER_BASE_URL` at the deployed Worker
+upgrades. In production point `WORKER_URL` at the deployed Worker
 URL — no tunnel needed.
 
 ## 7. `.dev.vars` example
@@ -201,14 +201,14 @@ them inline when launching.
 |---|---|
 | `HEARTBEAT_TIMEOUT_MS` | runner stall threshold; default 15 min (see `src/core/constants.ts`) |
 | `MAX_CONCURRENT_SESSIONS` | Hobby-tier headroom; default 10 (E2B Hobby cap is 20) |
-| `PUBLIC_BASE_URL` | optional; falls back to the request origin |
-| `CONTROL_PLANE_LAUNCHER_URL` | required for the M5 resume path; DO POSTs here to thaw paused sandboxes |
+| `WORKER_URL` | optional; falls back to the request origin |
+| `LAUNCHER_URL` | required for the M5 resume path; DO POSTs here to thaw paused sandboxes |
 | `E2B_TEMPLATE` | template alias; defaults to `control-plane-runner` |
 | `E2B_API_KEY` | the Worker doesn't call E2B, but refuses to provision when unset |
 | `GITHUB_WEBHOOK_SECRET` | HMAC secret for `POST /webhooks/github`; required to ingest PR lifecycle / auto-amend events |
 | `LAUNCHER_SHARED_SECRET` | shared secret used for both directions: launcher → Worker `/pr-index` AND Worker → launcher `/sessions`+`/resume`. Required on the Worker (else `/pr-index` 503s). The Worker sends it on the `x-hermes-launcher-secret` header for every launcher REST call. Must match the launcher's `LAUNCHER_SHARED_SECRET` env. |
 | `AUTOFIX_CAP_PER_PR` | optional; max auto-amend sessions per PR (default `3`) |
-| `CONTROL_PLANE_LAUNCHER_URL` | required when GITHUB_WEBHOOK_SECRET is set — Worker POSTs to launcher /sessions to spawn amend sessions. In local dev set to an ngrok URL pointing at the launcher (`:8789`). |
+| `LAUNCHER_URL` | required when GITHUB_WEBHOOK_SECRET is set — Worker POSTs to launcher /sessions to spawn amend sessions. In local dev set to an ngrok URL pointing at the launcher (`:8789`). |
 
 **Launcher env (process env, see `infra/launcher/env.example`):**
 
@@ -216,7 +216,7 @@ them inline when launching.
 |---|---|
 | `E2B_API_KEY` | required |
 | `E2B_TEMPLATE` | default `control-plane-runner` |
-| `WORKER_BASE_URL` | required; deployed Worker URL (or ngrok in dev). Used both for launcher→Worker and as the runner's WS dial-back URL. |
+| `WORKER_URL` | required; deployed Worker URL (or ngrok in dev). Used both for launcher→Worker and as the runner's WS dial-back URL. |
 | `LAUNCHER_PORT` | default `8789` |
 | `AUTO_CREATE_PR` | `1` (default) = launcher fires `/create-pr` on `review_ready` |
 | `ZAI_API_KEY` | OpenCode (Z.AI) provider key |
@@ -243,7 +243,7 @@ ngrok http 8787
 export E2B_API_KEY=… ZAI_API_KEY=…
 export GITHUB_WRITE_TOKEN=… GITHUB_READ_TOKEN=… GITHUB_USER_LOGIN=…
 # Use the ngrok URL for both launcher→Worker and runner→Worker.
-export WORKER_BASE_URL=https://abcd-1234.ngrok-free.app
+export WORKER_URL=https://abcd-1234.ngrok-free.app
 export E2B_TEMPLATE=control-plane-runner
 bun run launcher
 # [launcher] startup sweep: scanned=0 killed=0 kept=0
@@ -276,14 +276,14 @@ real GitHub PR, the sandbox is auto-killed.
 
 `scripts/launch-session.ts` is a thin client. Two modes:
 
-- **Sidecar mode** (preferred): set `CONTROL_PLANE_LAUNCHER_URL=http://localhost:8789`
+- **Sidecar mode** (preferred): set `LAUNCHER_URL=http://localhost:8789`
   and just call:
   ```bash
-  CONTROL_PLANE_LAUNCHER_URL=http://localhost:8789 \
+  LAUNCHER_URL=http://localhost:8789 \
   bun run launch https://github.com/you/repo "your task"
   ```
 - **Direct mode** (no sidecar running): same vars as the launcher, no
-  `CONTROL_PLANE_LAUNCHER_URL`. The CLI provisions the sandbox in-process and reaps
+  `LAUNCHER_URL`. The CLI provisions the sandbox in-process and reaps
   it on exit.
 
 ## 10. Deployment (single-user, production)

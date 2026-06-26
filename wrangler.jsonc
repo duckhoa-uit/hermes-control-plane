@@ -24,7 +24,7 @@
   ],
   "vars": {
     "E2B_TEMPLATE": "control-plane-runner",
-    // CONTROL_PLANE_LAUNCHER_URL is set via `wrangler secret put` in prod
+    // LAUNCHER_URL is set via `wrangler secret put` in prod
     // (Cloudflare Tunnel URL of the VPS launcher). For `wrangler dev`, set
     // it inline in .dev.vars instead.
     // GITHUB_WEBHOOK_SECRET is also a wrangler secret.

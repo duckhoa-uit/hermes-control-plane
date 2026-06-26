@@ -6,7 +6,7 @@
 //   - Terminal 1: `bunx wrangler dev` (worker on :8787)
 //   - Terminal 2: ngrok tunnel to :8787 (e.g. `ngrok http 8787`)
 //   - Terminal 3: `bun run launcher` with these env vars:
-//       WORKER_BASE_URL=<https ngrok URL>
+//       WORKER_URL=<https ngrok URL>
 //       E2B_API_KEY, ZAI_API_KEY, GITHUB_WRITE_TOKEN, GITHUB_USER_LOGIN
 //   - Terminal 4: THIS script:
 //       bun run scripts/e2e-full.ts \
