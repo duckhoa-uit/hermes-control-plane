@@ -127,3 +127,25 @@ fat fixtures.
   annotations, or block comments to code you didn't change.
 
 These rules apply equally to humans and agents.
+
+---
+
+## Dependency policy
+
+Renovate (`renovate.json`) is the source of truth for dependency upgrades.
+Key rules a reviewer or agent should know about:
+
+| Rule | Value | Why |
+|---|---|---|
+| `minimumReleaseAge` | **3 days** | Wait 72 hours after a release before opening a PR. Mitigates supply-chain attacks against freshly-published versions. Security advisories bypass this gate (`minimumReleaseAge: 0` under `vulnerabilityAlerts`). |
+| `rangeStrategy` | `bump` | Bumps the version in `package.json` instead of widening the range. Reproducible installs. |
+| `lockFileMaintenance` | weekly | Refreshes `bun.lock` even when no version bump exists. |
+| `dependencyDashboardApproval` for `major` | required | Major bumps wait for a human tick on the Renovate dashboard issue. |
+| `prHourlyLimit` / `prConcurrentLimit` | 3 / 6 | Caps the rate at which Renovate floods the PR list. |
+| Grouping | `cloudflare workers runtime`, `agent runtime (opencode + e2b)`, `dev toolchain` | Limits blast radius — runtime-critical upgrades land in their own PR. |
+
+If you need to merge a freshly-released dependency before the 3-day gate,
+edit `package.json` + `bun.lock` manually and explain why in the PR.
+
+Unused dependencies are caught by `bun run deadcode` (knip, CI gate) — no
+human policy needed there.

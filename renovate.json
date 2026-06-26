@@ -1,0 +1,65 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommits",
+    ":semanticCommitTypeAll(chore)",
+    ":semanticCommitScope(deps)",
+    "group:allNonMajor",
+    "schedule:weekly"
+  ],
+  "timezone": "Asia/Ho_Chi_Minh",
+  "labels": ["dependencies", "renovate"],
+  "rangeStrategy": "bump",
+  "minimumReleaseAge": "3 days",
+  "internalChecksFilter": "strict",
+  "prHourlyLimit": 3,
+  "prConcurrentLimit": 6,
+  "configMigration": true,
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am on monday"]
+  },
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security", "dependencies"],
+    "minimumReleaseAge": "0 days"
+  },
+  "packageRules": [
+    {
+      "description": "Bun + Wrangler are runtime-critical; pin to a single version per PR and require maintenance review.",
+      "matchPackageNames": ["wrangler", "@cloudflare/workers-types"],
+      "groupName": "cloudflare workers runtime"
+    },
+    {
+      "description": "OpenCode + E2B drive the sandboxed agent runtime — keep them in their own group so breakage is isolated to a single PR.",
+      "matchPackageNames": ["@opencode-ai/sdk", "e2b"],
+      "groupName": "agent runtime (opencode + e2b)"
+    },
+    {
+      "description": "Test/lint/format/quality toolchain churns frequently; group so PRs don't fragment the dashboard.",
+      "matchPackageNames": [
+        "vitest",
+        "oxlint",
+        "@biomejs/biome",
+        "knip",
+        "jscpd",
+        "husky",
+        "lint-staged",
+        "typescript"
+      ],
+      "groupName": "dev toolchain"
+    },
+    {
+      "description": "Hold major bumps for explicit human review.",
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "GitHub Actions are pinned by major tag (@v4/@v5 etc).",
+      "matchManagers": ["github-actions"],
+      "extends": ["helpers:pinGitHubActionDigests"]
+    }
+  ]
+}
