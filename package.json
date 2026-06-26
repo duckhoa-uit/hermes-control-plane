@@ -15,6 +15,7 @@
     "deadcode": "knip --include files,dependencies,binaries,unlisted,exports,nsExports,duplicates --no-config-hints",
     "deadcode:report": "knip",
     "dupes": "jscpd --threshold 4",
+    "bundle:size": "bun run scripts/bundle-size.ts",
     "api": "bun run src/testing/api-client.ts",
     "fake-runner": "bun run src/testing/fake-runner.ts",
     "template:build": "bun run infra/e2b/build-template.ts",
