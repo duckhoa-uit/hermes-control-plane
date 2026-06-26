@@ -45,7 +45,7 @@ Three processes, three responsibilities:
    template, with `lifecycle: { onTimeout: "pause", autoResume: true }`
    and a 15 min idle timeout.
 4. **Launcher** `git clone`s the repo inside the sandbox using the
-   user's PAT (`GITHUB_USER_TOKEN`), bakes the PAT into
+   user's PAT (`HERMES_GITHUB_WRITE_TOKEN`), bakes the PAT into
    `.git/config` for the agent's own `git push` later, then drops
    `/opt/control-plane/start.json` with the per-session env (runner
    token, Worker WS URL, PAT, model). The PAT only lives inside the
@@ -329,7 +329,7 @@ per deploy.
 | Credential | Where it lives | Why not somewhere else |
 |---|---|---|
 | `E2B_API_KEY` | launcher env only | Worker can't drive E2B SDK; key would be dead weight. |
-| `GITHUB_USER_TOKEN` | launcher env, scoped per-repo, baked into `.git/config` of the per-session sandbox | The runner needs it to `git push` + open the PR. PAT is short-lived and per-session. |
+| `HERMES_GITHUB_WRITE_TOKEN` | launcher env, scoped per-repo, baked into `.git/config` of the per-session sandbox | The runner needs it to `git push` + open the PR. PAT is short-lived and per-session. |
 | `ZAI_API_KEY` | launcher env, forwarded into the sandbox via `start.json` | Runner needs it to drive OpenCode. |
 | `runnerToken` | minted in the DO, dropped in `start.json` for the runner, validated on WS connect | Avoids broad credentials inside the sandbox; one token per session, useless after the session ends. |
 

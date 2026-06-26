@@ -4,7 +4,7 @@
 
 import { Sandbox } from "e2b";
 
-function parseRepoUrl(url: string): { owner: string; repo: string } {
+export function parseRepoUrl(url: string): { owner: string; repo: string } {
   const m = url.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
   if (!m) throw new Error(`cannot parse GitHub repo URL: ${url}`);
   return { owner: m[1], repo: m[2] };
@@ -32,6 +32,11 @@ export interface ProvisionInput {
   // fails fast if unset); kept optional here for unit tests and the
   // offline CLI (scripts/launch-session.ts).
   githubUserToken?: string;
+  // B3: separate read-only PAT (Contents: Read) baked into the sandbox's
+  // origin remote when publishViaLauncher=true.  The sandbox-side agent
+  // can clone and fetch but `git push origin` will 403; pushes go through
+  // the launcher /publish-pr endpoint with the write token.
+  githubReadToken?: string;
   githubUserLogin?: string;
   githubUserEmail?: string;
 
@@ -65,6 +70,12 @@ export interface ProvisionInput {
         detailsUrl?: string;
         conclusion?: string;
       };
+
+  // B2: gate the runner's publish phase. When true, the runner emits
+  // runner.ready_to_publish over WS and the DO drives the publish via
+  // the launcher's /publish-pr endpoint instead of pushing from inside
+  // the sandbox.
+  publishViaLauncher?: boolean;
 }
 
 export interface ProvisionResult {
@@ -147,10 +158,19 @@ export async function provisionSession(input: ProvisionInput): Promise<Provision
       // non-GitHub repo URL — runner's PR step will surface a clear error.
     }
     const userToken = input.githubUserToken ?? "";
+    const readToken = input.githubReadToken ?? "";
     const userLogin = input.githubUserLogin ?? "";
-    if (owner && repo && userToken && userLogin) {
+    // B3: when publishViaLauncher is true, bake the read-only token into
+    // origin so the in-sandbox agent can fetch but cannot push. Falls back
+    // to the write token only when the read token is unset (e.g. local
+    // dev that hasn't provisioned the second PAT yet) so existing setups
+    // keep working until the operator adds HERMES_GITHUB_READ_TOKEN.
+    const sandboxOriginToken = input.publishViaLauncher
+      ? (readToken || userToken)
+      : userToken;
+    if (owner && repo && sandboxOriginToken && userLogin) {
       const gitEmail = input.githubUserEmail || `${userLogin}@users.noreply.github.com`;
-      const remoteUrl = `https://${userToken}:x-oauth-basic@github.com/${owner}/${repo}.git`;
+      const remoteUrl = `https://x-access-token:${sandboxOriginToken}@github.com/${owner}/${repo}.git`;
       const setupCmds: string[] = [
         `cd ${REPO_DIR}`,
         `git config user.name '${userLogin.replace(/'/g, "'\\''")}'`,
@@ -207,12 +227,21 @@ export async function provisionSession(input: ProvisionInput): Promise<Provision
       CONTROL_PLANE_RUNNER_TOKEN: input.runnerToken,
       CONTROL_PLANE_WS: input.controlWsUrl,
       ZAI_API_KEY: input.zaiApiKey ?? "",
-      GITHUB_USER_TOKEN: userToken,
+      // B3: HERMES_GITHUB_WRITE_TOKEN ONLY ships into the sandbox when
+      // the legacy in-sandbox publish path is active. Under
+      // publishViaLauncher=true the runner never needs the write token —
+      // the launcher /publish-pr endpoint holds it.
+      ...(input.publishViaLauncher ? {} : { HERMES_GITHUB_WRITE_TOKEN: userToken }),
       GITHUB_USER_LOGIN: userLogin,
       GITHUB_USER_EMAIL: input.githubUserEmail ?? "",
       GITHUB_OWNER: owner,
       GITHUB_REPO: repo,
       GITHUB_BASE_BRANCH: input.baseBranch ?? "main",
+      // B2: forwarded so the runner can branch its publish phase.
+      // B3 will additionally rip HERMES_GITHUB_WRITE_TOKEN from this
+      // map; for now both tokens still ship so the legacy path keeps
+      // working when the flag is false.
+      HERMES_PUBLISH_VIA_LAUNCHER: input.publishViaLauncher ? "true" : "false",
     };
     if (input.prMode) {
       // Runner reads these to switch into amend mode: skips POST /pulls

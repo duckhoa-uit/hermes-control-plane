@@ -82,7 +82,7 @@ These come from the launcher / runner / GitHub API and pass through
 unchanged. The Hermes Agent should match on substring to choose the
 operator-facing hint (see SKILL.md "Error you may see" table).
 
-- `Bad credentials` → `GITHUB_USER_TOKEN` expired or under-scoped.
+- `Bad credentials` → `HERMES_GITHUB_WRITE_TOKEN` expired or under-scoped.
 - `Not Found` on `POST /pulls` → repo URL wrong or PAT lacks access.
 - `protected branch` / `branch protection` → push refused, base branch is protected.
 - `MAX_CONCURRENT_SESSIONS` / `429` → launcher cap reached.

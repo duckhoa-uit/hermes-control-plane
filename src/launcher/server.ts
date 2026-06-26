@@ -16,12 +16,13 @@
 //   POST /sessions/:id/resume  M5: Sandbox.connect() on a paused sandbox
 //
 // Run:
-//   E2B_API_KEY=... ZAI_API_KEY=... GITHUB_USER_TOKEN=... GITHUB_USER_LOGIN=... \
+//   E2B_API_KEY=... ZAI_API_KEY=... HERMES_GITHUB_WRITE_TOKEN=... GITHUB_USER_LOGIN=... \
 //   CONTROL_PLANE_BASE_URL=https://<deployed-worker>.workers.dev \
 //   bun run src/launcher/server.ts
 
 import { Sandbox } from "e2b";
 import { provisionSession, killSandbox, type ProvisionResult } from "./provision";
+import { publishPr } from "./publish";
 import { sweepOrphans } from "./sweeper";
 import { buildMcpHandler } from "../mcp/server";
 
@@ -30,7 +31,12 @@ const CONTROL_PLANE_BASE_URL = process.env.CONTROL_PLANE_BASE_URL;
 const E2B_API_KEY = process.env.E2B_API_KEY;
 const E2B_TEMPLATE = process.env.E2B_TEMPLATE ?? "control-plane-runner";
 const ZAI_API_KEY = process.env.ZAI_API_KEY;
-const GITHUB_USER_TOKEN = process.env.GITHUB_USER_TOKEN;
+const HERMES_GITHUB_WRITE_TOKEN = process.env.HERMES_GITHUB_WRITE_TOKEN;
+// B3: read-only PAT (Contents: Read) baked into the sandbox origin remote
+// under publishViaLauncher=true.  Optional today so legacy deployments
+// without the second token keep working (provision falls back to the
+// write token when this is unset).
+const HERMES_GITHUB_READ_TOKEN = process.env.HERMES_GITHUB_READ_TOKEN;
 const GITHUB_USER_LOGIN = process.env.GITHUB_USER_LOGIN;
 const HERMES_LAUNCHER_SECRET = process.env.HERMES_LAUNCHER_SECRET;
 const MAX_CONCURRENT_SESSIONS = Number(process.env.MAX_CONCURRENT_SESSIONS ?? 10);
@@ -38,11 +44,16 @@ const MAX_CONCURRENT_SESSIONS = Number(process.env.MAX_CONCURRENT_SESSIONS ?? 10
 // Useful for e2e tests that need to send follow-up prompts before the
 // runner exits. Default true (production behaviour).
 const AUTO_PR = (process.env.CONTROL_PLANE_AUTO_PR ?? "1") !== "0";
+// B2 — when true, the launcher tells the runner to skip its in-sandbox
+// push + REST and emit runner.ready_to_publish instead. The DO then
+// drives publish via /sessions/:id/publish-pr.
+const PUBLISH_VIA_LAUNCHER =
+  (process.env.HERMES_PUBLISH_VIA_LAUNCHER ?? "false").toLowerCase() === "true";
 
 const requiredEnv: Array<[string, string | undefined]> = [
   ["E2B_API_KEY", E2B_API_KEY],
   ["ZAI_API_KEY", ZAI_API_KEY],
-  ["GITHUB_USER_TOKEN", GITHUB_USER_TOKEN],
+  ["HERMES_GITHUB_WRITE_TOKEN", HERMES_GITHUB_WRITE_TOKEN],
   ["GITHUB_USER_LOGIN", GITHUB_USER_LOGIN],
   ["CONTROL_PLANE_BASE_URL", CONTROL_PLANE_BASE_URL],
   ["HERMES_LAUNCHER_SECRET", HERMES_LAUNCHER_SECRET],
@@ -254,11 +265,11 @@ async function resolveParentAmend(
   // from the spawned session id (hermes/<short of spawn id>), not the
   // original PR branch. Source-of-truth is GitHub itself.
   let headBranch = data.session.branch;
-  if (GITHUB_USER_TOKEN) {
+  if (HERMES_GITHUB_WRITE_TOKEN) {
     try {
       const ghResp = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${number}`, {
         headers: {
-          Authorization: `Bearer ${GITHUB_USER_TOKEN}`,
+          Authorization: `Bearer ${HERMES_GITHUB_WRITE_TOKEN}`,
           Accept: "application/vnd.github+json",
         },
       });
@@ -351,12 +362,14 @@ async function handleCreate(req: Request): Promise<Response> {
       e2bApiKey: E2B_API_KEY!,
       e2bTemplate: E2B_TEMPLATE,
       zaiApiKey: ZAI_API_KEY,
-      githubUserToken: process.env.GITHUB_USER_TOKEN,
+      githubUserToken: process.env.HERMES_GITHUB_WRITE_TOKEN,
+      githubReadToken: process.env.HERMES_GITHUB_READ_TOKEN,
       githubUserLogin: process.env.GITHUB_USER_LOGIN,
       githubUserEmail: process.env.GITHUB_USER_EMAIL,
       prMode,
       branchSuffix: body.branchSuffix,
       amendTrigger: body.amendTrigger,
+      publishViaLauncher: PUBLISH_VIA_LAUNCHER,
     });
   } catch (err) {
     await fetch(`${CONTROL_PLANE_BASE_URL}/sessions/${session.id}/abort`, { method: "POST" });
@@ -527,6 +540,112 @@ async function handleGet(sessionId: string): Promise<Response> {
   });
 }
 
+
+async function handlePublishPr(
+  sessionId: string,
+  req: Request,
+): Promise<Response> {
+  // B1 — server-server publish chokepoint. Caller is the Worker DO
+  // (handleCreatePR under HERMES_PUBLISH_VIA_LAUNCHER=true), already
+  // authenticated by the launcher-secret middleware in main().
+  //
+  // Body: { branch, baseBranch, title, body, amendMode?, amendPrNumber?,
+  //         amendPrUrl?, repoUrl?, ownerLogin? }. Sandbox id is resolved
+  // from the in-memory activeSessions map; falls back to an E2B metadata
+  // lookup so a launcher restart between provision and publish doesn't
+  // strand the publish call.
+  type Body = {
+    repoUrl?: string;
+    branch?: string;
+    baseBranch?: string;
+    title?: string;
+    body?: string;
+    amendMode?: boolean;
+    amendPrNumber?: number;
+    amendPrUrl?: string;
+    ownerLogin?: string;
+  };
+  let parsed: Body;
+  try {
+    parsed = (await req.json()) as Body;
+  } catch (err) {
+    return Response.json(
+      { error: "invalid JSON body", detail: (err as Error).message },
+      { status: 400 },
+    );
+  }
+  if (!parsed.branch || !parsed.baseBranch || !parsed.repoUrl) {
+    return Response.json(
+      { error: "branch, baseBranch, repoUrl required" },
+      { status: 400 },
+    );
+  }
+  if (!parsed.amendMode && (!parsed.title || !parsed.body)) {
+    return Response.json(
+      { error: "title and body required for non-amend publish" },
+      { status: 400 },
+    );
+  }
+
+  const sandboxId = await findSandboxForSession(sessionId);
+  if (!sandboxId) {
+    return Response.json(
+      {
+        error: "Sandbox not found for session",
+        sessionId,
+        reason:
+          "No active or paused sandbox is tagged with this session id; cannot publish.",
+      },
+      { status: 410 },
+    );
+  }
+
+  const result = await publishPr({
+    sandboxId,
+    e2bApiKey: E2B_API_KEY!,
+    writeToken: HERMES_GITHUB_WRITE_TOKEN!,
+    repoUrl: parsed.repoUrl,
+    branch: parsed.branch,
+    baseBranch: parsed.baseBranch,
+    title: parsed.title ?? "",
+    body: parsed.body ?? "",
+    amendMode: Boolean(parsed.amendMode),
+    amendPrNumber: parsed.amendPrNumber,
+    amendPrUrl: parsed.amendPrUrl,
+    ownerLogin: parsed.ownerLogin ?? GITHUB_USER_LOGIN,
+  });
+
+  if (!result.ok) {
+    log(
+      `publish-pr ${sessionId.slice(0, 8)} FAILED stage=${result.stage} ` +
+        `msg=${result.message}`,
+    );
+    return Response.json(
+      {
+        ok: false,
+        stage: result.stage,
+        message: result.message,
+        detail: result.detail,
+        ...(result.status ? { status: result.status } : {}),
+      },
+      { status: result.stage === "pulls_post" && result.status ? result.status : 502 },
+    );
+  }
+  log(
+    `publish-pr ${sessionId.slice(0, 8)} OK pr=#${result.prNumber} ` +
+      `branch=${result.branch} amend=${result.amendMode}`,
+  );
+  return Response.json({
+    ok: true,
+    prUrl: result.prUrl,
+    prNumber: result.prNumber,
+    branch: result.branch,
+    amendMode: result.amendMode,
+    ownerLogin: result.ownerLogin,
+    pushOutput: result.pushOutput,
+  });
+}
+
 async function handleHealth(): Promise<Response> {
   return Response.json({
     status: "ok",
@@ -602,6 +721,8 @@ async function main(): Promise<void> {
           if (req.method === "DELETE") return await handleDelete(id);
           if (req.method === "GET") return await handleGet(id);
         }
+        const pp = url.pathname.match(/^\/sessions\/([^/]+)\/publish-pr$/);
+        if (pp && req.method === "POST") return await handlePublishPr(pp[1], req);
         const rm = url.pathname.match(/^\/sessions\/([^/]+)\/resume$/);
         if (rm && req.method === "POST") return await handleResume(rm[1]);
         return Response.json({ error: "not found" }, { status: 404 });
@@ -616,6 +737,7 @@ async function main(): Promise<void> {
   log(`  worker = ${CONTROL_PLANE_BASE_URL}`);
   log(`  cap    = ${MAX_CONCURRENT_SESSIONS}`);
   log(`  autoPR = ${AUTO_PR}`);
+  log(`  publishViaLauncher = ${PUBLISH_VIA_LAUNCHER}`);
   log(`  mcp    = http://localhost:${server.port}/mcp`);
 }
 

@@ -193,19 +193,19 @@ cadence:
 |---|---|---|---|---|
 | `E2B_API_KEY` | launcher VM env | infra | quarterly | rotate via E2B dashboard, hot-swap env, restart launcher |
 | `ZAI_API_KEY` | launcher VM env | infra | quarterly | Forwarded into the sandbox; supervisor applies it to opencode via `auth.set` |
-| `GITHUB_USER_TOKEN` (fine-grained PAT) | launcher VM env | infra | every 90 days | P1.1 single-user OAuth. Runner uses it for `git push` + `POST /pulls`; PR `author` is the real user. |
+| `HERMES_GITHUB_WRITE_TOKEN` (fine-grained PAT) | launcher VM env | infra | every 90 days | P1.1 single-user OAuth. Runner uses it for `git push` + `POST /pulls`; PR `author` is the real user. |
 | `CONTROL_PLANE_BASE_URL` | launcher VM env | infra | n/a | the Worker URL; static per env. Used both for launcher→Worker calls and as the WS dial-back URL given to the runner inside the sandbox. |
 | Slack signing secret + bot token | Hermes agent infra | Hermes team | yearly | not in this repo |
 
 Secrets that *do* live in the Worker (post-P1.1): the GitHub OAuth
-client secret and the OAuth token encryption key. Everything else (E2B, Z.AI, `GITHUB_USER_TOKEN`) is launcher-only. The Worker is the right place
+client secret and the OAuth token encryption key. Everything else (E2B, Z.AI, `HERMES_GITHUB_WRITE_TOKEN`) is launcher-only. The Worker is the right place
 for OAuth secrets because the OAuth dance terminates there
 (`/auth/github/callback`).
 
 **Rotation logistics** (kept here as the canonical reference; SETUP §10.3
 moved into this section):
 
-- `GITHUB_USER_TOKEN` (PAT): rotate every 90 days. Restart launcher to
+- `HERMES_GITHUB_WRITE_TOKEN` (PAT): rotate every 90 days. Restart launcher to
   pick up the new value. In-flight sessions started with the old token
   finish on the old token (the token is captured in the sandbox env at
   provision time).
@@ -428,7 +428,7 @@ shortcuts.
 - [ ] Launcher binary deployed; `curl https://launcher/<env>/health` → ok
 - [ ] `scripts/release-smoke.ts` end-to-end → PR opened on the sentinel
       repo, sandbox killed, E2B list empty afterwards
-- [ ] `GITHUB_USER_TOKEN` set on the launcher; PAT has Contents + Pull-requests RW on the target repos
+- [ ] `HERMES_GITHUB_WRITE_TOKEN` set on the launcher; PAT has Contents + Pull-requests RW on the target repos
 - [ ] GitHub OAuth app created; `GITHUB_OAUTH_CLIENT_ID`/`_SECRET` set as
       Worker secrets (`wrangler secret put`)
 - [ ] `OAUTH_TOKEN_ENCRYPTION_KEY` minted (`openssl rand -base64 32`) and
@@ -468,7 +468,7 @@ There is no authentication on the Worker's session-mutating routes. Do
 **not** expose the deployed Worker URL publicly without a Cloudflare
 Access policy or equivalent (Zero Trust, IP allowlist, basic auth via a
 front-end Worker). A second operator hitting `POST /sessions` would push
-under your `GITHUB_USER_TOKEN`. Multi-user auth (per-user OAuth storage,
+under your `HERMES_GITHUB_WRITE_TOKEN`. Multi-user auth (per-user OAuth storage,
 per-route auth) is the locked design in [`ROADMAP.md §14`](ROADMAP.md);
 the 1-user mitigation is [§14 Cloudflare Access](#14-locking-the-deployed-worker-behind-cloudflare-access).
 
@@ -507,7 +507,7 @@ the deploy". The launcher VM is the only place in the stack that holds
 *long-lived* secrets in cleartext:
 
 - `E2B_API_KEY` — full sandbox + billing control on the E2B account
-- `GITHUB_USER_TOKEN` (fine-grained PAT) — push + open PR on the repos
+- `HERMES_GITHUB_WRITE_TOKEN` (fine-grained PAT) — push + open PR on the repos
   this PAT is scoped to
 - `ZAI_API_KEY` — drains the Z.AI Coding Plan budget if abused
 
@@ -600,7 +600,7 @@ Hermes:
 - **When to use** the tools (concrete code change against a GitHub repo,
   bounded scope, real PR wanted).
 - **When NOT to use** them (questions, explanations, local-only repos).
-- **Prerequisites** (MCP server registered, `GITHUB_USER_TOKEN` in
+- **Prerequisites** (MCP server registered, `HERMES_GITHUB_WRITE_TOKEN` in
   launcher env).
 - **Procedure** (5 ordered steps with completion criteria per the
   Hermes authoring HARDLINE §5).
@@ -650,7 +650,7 @@ Per Hermes' "What goes in skills vs. what stays in Hermes":
 | When to call `start_coding_task` vs. answer directly | SKILL.md `## When to Use` |
 | How to render `pr.created` in Slack/Telegram/Discord | Hermes' platform adapters (their concern) |
 | Which repos a user may touch | Hermes allow-list (their concern) |
-| OAuth preconditions (`GITHUB_USER_TOKEN` set) | SKILL.md `## Prerequisites` |
+| OAuth preconditions (`HERMES_GITHUB_WRITE_TOKEN` set) | SKILL.md `## Prerequisites` |
 
 Rule of thumb: **anything the control plane mandates → SKILL.md or MCP
 schema. Anything Hermes chooses → Hermes config / adapter.**
@@ -715,7 +715,7 @@ export E2B_TEMPLATE=control-plane-runner
 export ZAI_API_KEY=...
 
 # GitHub single-user OAuth — PR author = real user (P1.1)
-export GITHUB_USER_TOKEN=github_pat_...     # fine-grained PAT, see SETUP §5
+export HERMES_GITHUB_WRITE_TOKEN=github_pat_...     # fine-grained PAT, see SETUP §5
 export GITHUB_USER_LOGIN=your-github-handle
 export GITHUB_USER_EMAIL=you@example.com
 

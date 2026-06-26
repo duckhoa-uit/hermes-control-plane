@@ -442,6 +442,12 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
               (eventPayload.ownerLogin as string) ?? "",
               eventType,
             );
+          } else if (eventType === "runner.ready_to_publish") {
+            // B2 — runner finished local prep under
+            // HERMES_PUBLISH_VIA_LAUNCHER=true. Log the prep event for
+            // observability, then drive the launcher publish.
+            this.appendEvent(eventType, "opencode", eventPayload);
+            this.handleReadyToPublish(eventPayload);
           } else {
             this.appendEvent(eventType, "opencode", eventPayload);
           }
@@ -701,6 +707,126 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
       }
       this.stopHeartbeatCheck();
     }
+  }
+
+  // ---- B2: publish-via-launcher ----
+
+  /** Drive the launcher /sessions/:id/publish-pr endpoint when the
+   *  runner has finished local prep and emitted runner.ready_to_publish.
+   *  On success the launcher returns the PR url+number; we synthesise
+   *  a pr.created (or pr.updated for amend) and route through the
+   *  normal onPRCreated path so PrIndex register + state transitions
+   *  fire exactly once, matching the legacy in-sandbox path.  On
+   *  failure we emit pr.publish.failed + transition the session into
+   *  failed so the operator sees a clear error. */
+  private handleReadyToPublish(payload: Record<string, unknown>): void {
+    if (!this.session) return;
+    const sessionId = this.session.id;
+    const launcherUrl = this.env.CONTROL_PLANE_LAUNCHER_URL;
+    const launcherSecret = this.env.HERMES_LAUNCHER_SECRET;
+    const repoUrl = this.profile?.repoUrl ?? "";
+    const baseBranch = this.profile?.defaultBranch ?? "main";
+    if (!launcherUrl || !launcherSecret) {
+      const reason =
+        "publish-via-launcher requires CONTROL_PLANE_LAUNCHER_URL + " +
+        "HERMES_LAUNCHER_SECRET on the worker; one or both are unset.";
+      this.appendEvent("pr.publish.failed", "system", { stage: "config", reason });
+      this.transition("failed", reason);
+      return;
+    }
+    if (!repoUrl) {
+      const reason = "publish-via-launcher: profile.repoUrl is unset";
+      this.appendEvent("pr.publish.failed", "system", { stage: "config", reason });
+      this.transition("failed", reason);
+      return;
+    }
+    const branch = (payload.branch as string) || "";
+    const title = (payload.title as string) || "";
+    const body = (payload.body as string) || "";
+    const amendMode = Boolean(payload.amendMode);
+    const ownerLogin = (payload.ownerLogin as string) || "";
+    const amendPrNumber = payload.amendPrNumber as number | undefined;
+    const amendPrUrl = payload.amendPrUrl as string | undefined;
+
+    this.appendEvent("pr.publishing", "system", {
+      branch,
+      headSha: (payload.headSha as string) || "",
+      amendMode,
+    });
+
+    this.ctx.waitUntil((async () => {
+      try {
+        const resp = await fetch(
+          `${launcherUrl}/sessions/${sessionId}/publish-pr`,
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-hermes-launcher-secret": launcherSecret,
+            },
+            body: JSON.stringify({
+              repoUrl,
+              branch,
+              baseBranch,
+              title,
+              body,
+              amendMode,
+              amendPrNumber,
+              amendPrUrl,
+              ownerLogin,
+            }),
+          },
+        );
+        const rawBody = await resp.text();
+        let parsed: Record<string, unknown> = {};
+        try {
+          parsed = rawBody ? (JSON.parse(rawBody) as Record<string, unknown>) : {};
+        } catch {
+          // non-JSON response — surface raw body in the failure path
+        }
+        if (!resp.ok || parsed.ok === false) {
+          const stage = (parsed.stage as string) || "launcher";
+          const message =
+            (parsed.message as string) ||
+            (parsed.error as string) ||
+            `launcher HTTP ${resp.status}`;
+          const detail = (parsed.detail as string) || rawBody.slice(0, 300);
+          this.appendEvent("pr.publish.failed", "system", { stage, message, detail });
+          if (this.session && !isTerminal(this.session.status)) {
+            this.transition("failed", `publish-via-launcher: ${message}`);
+          }
+          return;
+        }
+        const prUrl = (parsed.prUrl as string) || "";
+        if (!prUrl) {
+          this.appendEvent("pr.publish.failed", "system", {
+            stage: "launcher",
+            message: "launcher returned ok=true without prUrl",
+          });
+          if (this.session && !isTerminal(this.session.status)) {
+            this.transition("failed", "publish-via-launcher: missing prUrl");
+          }
+          return;
+        }
+        // Normalise the success terminal: route through onPRCreated so
+        // the legacy and new paths produce indistinguishable downstream
+        // state (PrIndex register, status -> completed, etc.).
+        this.onPRCreated(
+          prUrl,
+          (parsed.ownerLogin as string) || ownerLogin,
+          amendMode ? "pr.updated" : "pr.created",
+        );
+      } catch (err) {
+        const message = (err as Error).message;
+        this.appendEvent("pr.publish.failed", "system", {
+          stage: "launcher",
+          message,
+        });
+        if (this.session && !isTerminal(this.session.status)) {
+          this.transition("failed", `publish-via-launcher: ${message}`);
+        }
+      }
+    })());
   }
 
   // ---- PR created callback ----

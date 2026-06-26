@@ -467,10 +467,20 @@ async function generatePrMetadata(
 }
 
 async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
-  // Token / git identity / origin / branch are already wired by the launcher
-  // post-clone (src/launcher/provision.ts step 3). Runner uses GITHUB_USER_TOKEN
-  // (P1.1 single-user OAuth) to call the PR REST endpoint as the real user.
-  const token = process.env.GITHUB_USER_TOKEN || "";
+  // B2 — split into local-prep + publish phases.
+  //
+  //   Phase 1 (always): generate PR metadata, stage + commit any
+  //   uncommitted changes, verify ahead-count. Runs locally in the
+  //   sandbox; no network.
+  //
+  //   Phase 2 (publish): two paths gated by HERMES_PUBLISH_VIA_LAUNCHER
+  //   env. Default `false` = legacy in-sandbox path (git push + REST,
+  //   unchanged). `true` = emit `runner.ready_to_publish` over WS and
+  //   stop; the DO drives publish via the launcher's
+  //   POST /sessions/:id/publish-pr endpoint and replies on the same WS.
+  //
+  // The flag is read at the runner side from process.env to keep the
+  // command-payload shape stable across the rollout.
   const userLogin = process.env.GITHUB_USER_LOGIN || "";
   const owner = process.env.GITHUB_OWNER || "";
   const repo = process.env.GITHUB_REPO || "";
@@ -484,20 +494,33 @@ async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
   const amendUrl = process.env.CONTROL_PLANE_PR_MODE_URL || "";
   const amendMode = Boolean(amendBranch && amendNumber && amendUrl);
 
+  const publishViaLauncher =
+    (process.env.HERMES_PUBLISH_VIA_LAUNCHER || "").toLowerCase() === "true";
+
   const branch = amendMode
     ? amendBranch
     : ((payload.branch as string) || `hermes/${Date.now()}`);
-  // Branch names containing characters valid in git but special in the
-  // shell (e.g. `$`, backticks) reach us through CONTROL_PLANE_PR_MODE_BRANCH
-  // (set from GitHub's pull_request.head.ref). Escape for single-quoted
-  // shell interpolation the same way provision.ts does.
   const brSh = branch.replace(/'/g, "'\\''");
   const fallbackTitle = `Hermes: ${payload.taskDescription ?? "automated change"}`;
   const fallbackBody = "Automated PR created by hermes-control-plane.";
   const taskDescription = (payload.taskDescription as string) || "";
 
-  if (!token || !owner || !repo) {
-    sendError(`Missing GITHUB_USER_TOKEN / owner / repo (token=${!!token} owner=${owner} repo=${repo})`);
+  // Token is required only on the legacy path. The new path keeps the
+  // write token launcher-side only (B3 will rip it from sandbox env
+  // entirely; for now we only consult it when needed).
+  const token = process.env.HERMES_GITHUB_WRITE_TOKEN || "";
+  if (!publishViaLauncher && (!token || !owner || !repo)) {
+    sendError(
+      `Missing HERMES_GITHUB_WRITE_TOKEN / owner / repo ` +
+        `(token=${!!token} owner=${owner} repo=${repo})`,
+    );
+    return;
+  }
+  if (publishViaLauncher && (!owner || !repo)) {
+    sendError(
+      `Missing GITHUB_OWNER / GITHUB_REPO env required for publish-via-launcher ` +
+        `(owner=${owner} repo=${repo})`,
+    );
     return;
   }
 
@@ -540,6 +563,37 @@ async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
         return;
       }
     }
+
+    // ---- Publish phase ----------------------------------------------
+    if (publishViaLauncher) {
+      // New path. Resolve headSha so the DO + launcher can correlate
+      // the publish call with the runner's exact tip; no push happens
+      // here.  The DO replies asynchronously via `pr.publish.result` /
+      // `pr.publish.failed` once the launcher returns.
+      const headSha = (await execCmd("git rev-parse HEAD")).trim();
+      sendEvent("pr.publishing", { branch, headSha, amendMode });
+      // The WS event `runner.ready_to_publish` is the canonical signal
+      // for the DO. We send it as a plain runner event (eventType in
+      // hermes events stream) AND mark the runner-complete with a
+      // pending flag so the DO knows not to fire sendError on terminal
+      // until the publish round-trip resolves.
+      sendEvent("runner.ready_to_publish", {
+        branch,
+        headSha,
+        title,
+        body,
+        amendMode,
+        amendPrNumber: amendMode ? Number(amendNumber) : undefined,
+        amendPrUrl: amendMode ? amendUrl : undefined,
+        ownerLogin: userLogin,
+      });
+      // Stop here. We do NOT call sendComplete — the DO is the one
+      // emitting pr.created / pr.updated + sendComplete equivalents
+      // after the launcher publish round-trip.
+      return;
+    }
+
+    // ---- Legacy path (publishViaLauncher=false) ---------------------
     const pushOut = await execStrict(`git push --set-upstream origin '${brSh}' 2>&1`);
     sendEvent("git.branch.pushed", { branch, pushOutput: pushOut.slice(-500), authorIdentity: userLogin });
 
