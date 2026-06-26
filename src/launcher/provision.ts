@@ -4,7 +4,7 @@
 
 import { Sandbox } from "e2b";
 
-function parseRepoUrl(url: string): { owner: string; repo: string } {
+export function parseRepoUrl(url: string): { owner: string; repo: string } {
   const m = url.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
   if (!m) throw new Error(`cannot parse GitHub repo URL: ${url}`);
   return { owner: m[1], repo: m[2] };

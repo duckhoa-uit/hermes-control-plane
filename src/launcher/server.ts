@@ -22,6 +22,7 @@
 
 import { Sandbox } from "e2b";
 import { provisionSession, killSandbox, type ProvisionResult } from "./provision";
+import { publishPr } from "./publish";
 import { sweepOrphans } from "./sweeper";
 import { buildMcpHandler } from "../mcp/server";
 
@@ -527,6 +528,112 @@ async function handleGet(sessionId: string): Promise<Response> {
   });
 }
 
+
+async function handlePublishPr(
+  sessionId: string,
+  req: Request,
+): Promise<Response> {
+  // B1 — server-server publish chokepoint. Caller is the Worker DO
+  // (handleCreatePR under HERMES_PUBLISH_VIA_LAUNCHER=true), already
+  // authenticated by the launcher-secret middleware in main().
+  //
+  // Body: { branch, baseBranch, title, body, amendMode?, amendPrNumber?,
+  //         amendPrUrl?, repoUrl?, ownerLogin? }. Sandbox id is resolved
+  // from the in-memory activeSessions map; falls back to an E2B metadata
+  // lookup so a launcher restart between provision and publish doesn't
+  // strand the publish call.
+  type Body = {
+    repoUrl?: string;
+    branch?: string;
+    baseBranch?: string;
+    title?: string;
+    body?: string;
+    amendMode?: boolean;
+    amendPrNumber?: number;
+    amendPrUrl?: string;
+    ownerLogin?: string;
+  };
+  let parsed: Body;
+  try {
+    parsed = (await req.json()) as Body;
+  } catch (err) {
+    return Response.json(
+      { error: "invalid JSON body", detail: (err as Error).message },
+      { status: 400 },
+    );
+  }
+  if (!parsed.branch || !parsed.baseBranch || !parsed.repoUrl) {
+    return Response.json(
+      { error: "branch, baseBranch, repoUrl required" },
+      { status: 400 },
+    );
+  }
+  if (!parsed.amendMode && (!parsed.title || !parsed.body)) {
+    return Response.json(
+      { error: "title and body required for non-amend publish" },
+      { status: 400 },
+    );
+  }
+
+  const sandboxId = await findSandboxForSession(sessionId);
+  if (!sandboxId) {
+    return Response.json(
+      {
+        error: "Sandbox not found for session",
+        sessionId,
+        reason:
+          "No active or paused sandbox is tagged with this session id; cannot publish.",
+      },
+      { status: 410 },
+    );
+  }
+
+  const result = await publishPr({
+    sandboxId,
+    e2bApiKey: E2B_API_KEY!,
+    writeToken: HERMES_GITHUB_WRITE_TOKEN!,
+    repoUrl: parsed.repoUrl,
+    branch: parsed.branch,
+    baseBranch: parsed.baseBranch,
+    title: parsed.title ?? "",
+    body: parsed.body ?? "",
+    amendMode: Boolean(parsed.amendMode),
+    amendPrNumber: parsed.amendPrNumber,
+    amendPrUrl: parsed.amendPrUrl,
+    ownerLogin: parsed.ownerLogin ?? GITHUB_USER_LOGIN,
+  });
+
+  if (!result.ok) {
+    log(
+      `publish-pr ${sessionId.slice(0, 8)} FAILED stage=${result.stage} ` +
+        `msg=${result.message}`,
+    );
+    return Response.json(
+      {
+        ok: false,
+        stage: result.stage,
+        message: result.message,
+        detail: result.detail,
+        ...(result.status ? { status: result.status } : {}),
+      },
+      { status: result.stage === "pulls_post" && result.status ? result.status : 502 },
+    );
+  }
+  log(
+    `publish-pr ${sessionId.slice(0, 8)} OK pr=#${result.prNumber} ` +
+      `branch=${result.branch} amend=${result.amendMode}`,
+  );
+  return Response.json({
+    ok: true,
+    prUrl: result.prUrl,
+    prNumber: result.prNumber,
+    branch: result.branch,
+    amendMode: result.amendMode,
+    ownerLogin: result.ownerLogin,
+    pushOutput: result.pushOutput,
+  });
+}
+
 async function handleHealth(): Promise<Response> {
   return Response.json({
     status: "ok",
@@ -602,6 +709,8 @@ async function main(): Promise<void> {
           if (req.method === "DELETE") return await handleDelete(id);
           if (req.method === "GET") return await handleGet(id);
         }
+        const pp = url.pathname.match(/^\/sessions\/([^/]+)\/publish-pr$/);
+        if (pp && req.method === "POST") return await handlePublishPr(pp[1], req);
         const rm = url.pathname.match(/^\/sessions\/([^/]+)\/resume$/);
         if (rm && req.method === "POST") return await handleResume(rm[1]);
         return Response.json({ error: "not found" }, { status: 404 });
