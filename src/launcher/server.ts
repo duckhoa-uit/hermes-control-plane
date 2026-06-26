@@ -32,6 +32,11 @@ const E2B_API_KEY = process.env.E2B_API_KEY;
 const E2B_TEMPLATE = process.env.E2B_TEMPLATE ?? "control-plane-runner";
 const ZAI_API_KEY = process.env.ZAI_API_KEY;
 const HERMES_GITHUB_WRITE_TOKEN = process.env.HERMES_GITHUB_WRITE_TOKEN;
+// B3: read-only PAT (Contents: Read) baked into the sandbox origin remote
+// under publishViaLauncher=true.  Optional today so legacy deployments
+// without the second token keep working (provision falls back to the
+// write token when this is unset).
+const HERMES_GITHUB_READ_TOKEN = process.env.HERMES_GITHUB_READ_TOKEN;
 const GITHUB_USER_LOGIN = process.env.GITHUB_USER_LOGIN;
 const HERMES_LAUNCHER_SECRET = process.env.HERMES_LAUNCHER_SECRET;
 const MAX_CONCURRENT_SESSIONS = Number(process.env.MAX_CONCURRENT_SESSIONS ?? 10);
@@ -358,6 +363,7 @@ async function handleCreate(req: Request): Promise<Response> {
       e2bTemplate: E2B_TEMPLATE,
       zaiApiKey: ZAI_API_KEY,
       githubUserToken: process.env.HERMES_GITHUB_WRITE_TOKEN,
+      githubReadToken: process.env.HERMES_GITHUB_READ_TOKEN,
       githubUserLogin: process.env.GITHUB_USER_LOGIN,
       githubUserEmail: process.env.GITHUB_USER_EMAIL,
       prMode,
