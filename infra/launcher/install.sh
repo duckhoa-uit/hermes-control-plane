@@ -168,8 +168,14 @@ else
   ask GITHUB_USER_EMAIL  "GITHUB_USER_EMAIL (blank → <login>@users.noreply.github.com)"
   ask CONTROL_PLANE_BASE_URL    "CONTROL_PLANE_BASE_URL (deployed Worker URL)" \
                          "https://hermes-control-plane.duckhoa-dev.workers.dev"
+  # Pre-generate a 64-char hex default so the prompt offers a sane value
+  # the operator can accept by pressing Enter, then mirror onto the Worker
+  # secret (instructions at end of install).
+  HERMES_LAUNCHER_SECRET_DEFAULT="$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p -c 64)"
+  ask HERMES_LAUNCHER_SECRET    "HERMES_LAUNCHER_SECRET (gates Worker<->launcher; mirror onto Worker)" \
+                         "$HERMES_LAUNCHER_SECRET_DEFAULT"
 
-  for k in E2B_API_KEY ZAI_API_KEY GITHUB_USER_TOKEN GITHUB_USER_LOGIN CONTROL_PLANE_BASE_URL; do
+  for k in E2B_API_KEY ZAI_API_KEY GITHUB_USER_TOKEN GITHUB_USER_LOGIN CONTROL_PLANE_BASE_URL HERMES_LAUNCHER_SECRET; do
     if [[ -z "${!k}" ]]; then
       die "$k is required; re-run install.sh or edit $ENV_FILE by hand"
     fi
@@ -194,6 +200,11 @@ ${GITHUB_USER_EMAIL:+GITHUB_USER_EMAIL=$GITHUB_USER_EMAIL}
 
 # ---- Worker ----
 CONTROL_PLANE_BASE_URL=$CONTROL_PLANE_BASE_URL
+
+# ---- Shared secret authenticating Worker<->launcher REST calls ----
+# Mirror this exact value onto the deployed Worker:
+#   echo "$HERMES_LAUNCHER_SECRET" | bunx wrangler secret put HERMES_LAUNCHER_SECRET
+HERMES_LAUNCHER_SECRET=$HERMES_LAUNCHER_SECRET
 
 # ---- Launcher tunables (defaults are fine) ----
 CONTROL_PLANE_LAUNCHER_PORT=8789
@@ -292,8 +303,12 @@ Next steps (Cloudflare cannot be automated):
       # write /etc/cloudflared/config.yml — see infra/launcher/README.md §3
       sudo cloudflared service install <tunnel-token>
 
-5.  Set the Worker secret (from your dev machine):
+5.  Set the Worker secrets (from your dev machine):
+      # Tunnel URL (Worker -> launcher dial-back):
       echo "<tunnel-url>" | bun x wrangler secret put CONTROL_PLANE_LAUNCHER_URL
+      # Shared secret — MUST match HERMES_LAUNCHER_SECRET in $ENV_FILE:
+      sudo grep ^HERMES_LAUNCHER_SECRET= $ENV_FILE | cut -d= -f2 \
+        | bun x wrangler secret put HERMES_LAUNCHER_SECRET
       bun run deploy
 
 6.  Wire Hermes Agent to the MCP server + skill. Edit ~/.hermes/config.yaml:
