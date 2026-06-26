@@ -44,12 +44,13 @@ Three processes, three responsibilities:
 3. **Launcher** `Sandbox.create()` from the `control-plane-runner`
    template, with `lifecycle: { onTimeout: "pause", autoResume: true }`
    and a 15 min idle timeout.
-4. **Launcher** `git clone`s the repo inside the sandbox using the
-   user's PAT (`HERMES_GITHUB_WRITE_TOKEN`), bakes the PAT into
-   `.git/config` for the agent's own `git push` later, then drops
+4. **Launcher** `git clone`s the repo inside the sandbox using a
+   *read-only* PAT (`HERMES_GITHUB_READ_TOKEN`), bakes that token
+   into `.git/config` so subsequent `git fetch` works, then drops
    `/opt/control-plane/start.json` with the per-session env (runner
-   token, Worker WS URL, PAT, model). The PAT only lives inside the
-   ephemeral sandbox; it is never persisted by the Worker.
+   token, Worker WS URL, model, owner/repo, base branch — but **no**
+   write-scoped PAT).  The write token (`HERMES_GITHUB_WRITE_TOKEN`)
+   never enters the sandbox; it lives only in the launcher process.
 5. **Supervisor** (already running in the snapshot via `setStartCmd`)
    sees the file appear and `exec`s the runner.
 6. **Runner** dials the Worker's `/sessions/:id/runner?token=…` over
@@ -58,9 +59,16 @@ Three processes, three responsibilities:
    `tool.call` / `tool.result` events back through the DO; the DO
    broadcasts them to all subscribed clients on `/sessions/:id/stream`.
 8. On `review_ready`, the launcher auto-fires the DO's `/create-pr`
-   (configurable via `CONTROL_PLANE_AUTO_PR`). The runner pushes the
-   branch using the user's PAT, opens the PR, emits `pr.created`, the
-   DO transitions to `completed`.
+   (configurable via `CONTROL_PLANE_AUTO_PR`).  The runner does local
+   prep only — `git add` / `git commit` / `git rev-parse HEAD` plus
+   an agent-authored title+body — and emits
+   `runner.ready_to_publish` over WS.  The DO calls the launcher's
+   `POST /sessions/:id/publish-pr`; the launcher pushes via a
+   *one-shot* `hermes-publish` remote (write token passed in env,
+   never persisted to `.git/config`), opens the PR via the REST
+   `POST /repos/:owner/:repo/pulls`, removes the temp remote, and
+   returns `{ prUrl, prNumber }`.  The DO synthesises `pr.created`
+   (or `pr.updated` in amend mode) and transitions to `completed`.
 9. The per-session watcher kills the sandbox once the DO reaches a
    terminal state.
 
@@ -140,10 +148,11 @@ Two consumers of the index:
    session whose PR is still open, the launcher transparently spawns
    a fresh session in **amend mode** against the same PR
    (`parentSessionId`). The new sandbox checks out the existing PR
-   branch instead of creating `hermes/<short>`, and the runner skips
-   `POST /pulls` — it just pushes the new commit and emits
-   `pr.updated` (idempotent on `artifacts.prUrl`). The result: the
-   same PR number gets a follow-up commit, no second PR is opened.
+   branch instead of creating `hermes/<short>`, and the publish phase
+   tells the launcher to **skip `POST /pulls`** (PR already exists);
+   the launcher pushes only and the DO emits `pr.updated`
+   (idempotent on `artifacts.prUrl`). The result: the same PR number
+   gets a follow-up commit, no second PR is opened.
 
 ```
                   pr.created
@@ -267,8 +276,12 @@ taxonomy lives in `src/core/types.ts:HermesEvent`.
 - `sandbox-runner.ts`. Connects to OpenCode via the typed SDK,
   subscribes to its SSE stream, maps OpenCode events to
   `HermesEvent` (`event-mapper.ts`), bridges them to the DO over WS
-  (`bridge.ts`), and on `review_ready` does `git push` + opens the
-  PR using the user's PAT.
+  (`bridge.ts`).  On `review_ready` it does local prep only —
+  `git add` / `git commit` / `git rev-parse HEAD` plus an
+  agent-authored PR title+body — and emits
+  `runner.ready_to_publish`.  The actual push + `POST /pulls`
+  happen in the launcher (`publish.ts`); the sandbox never holds a
+  write-scoped GitHub token.
 - `bridge.ts`. WS reconnect loop, sequence-number resume, heartbeat
   every 10 s.
 
@@ -278,8 +291,18 @@ taxonomy lives in `src/core/types.ts:HermesEvent`.
 
 - `server.ts`. HTTP API: `POST /sessions`, `GET /sessions/:id`,
   `DELETE /sessions/:id`, `POST /sessions/:id/resume`,
-  `GET /health`, `/mcp` (Slack/MCP entrypoint).
+  `POST /sessions/:id/publish-pr` (publish chokepoint — see
+  `publish.ts`), `GET /health`, `/mcp` (Slack/MCP entrypoint).
 - `provision.ts`. The `Sandbox.create` → clone → `start.json` dance.
+- `publish.ts`. The publish chokepoint.  Receives
+  `{ branch, baseBranch, title, body, amendMode, ... }` from the
+  DO, `Sandbox.connect`s to the running sandbox, adds a *one-shot*
+  `hermes-publish` remote (write token inlined into the URL via
+  the `envs` argument of `commands.run` — never written to
+  `.git/config`), pushes `HEAD:<branch>`, removes the temp remote,
+  and (fresh mode only) calls `POST /repos/:owner/:repo/pulls`.
+  The temp remote is removed even on push failure so the sandbox
+  never carries a token-bearing remote between commands.
 - `sweeper.ts`. Boot-time orphan scan: every E2B sandbox tagged with
   a `metadata.hermes_session_id` is checked against the Worker; sandboxes
   whose session is terminal or unknown are destroyed.
@@ -329,7 +352,8 @@ per deploy.
 | Credential | Where it lives | Why not somewhere else |
 |---|---|---|
 | `E2B_API_KEY` | launcher env only | Worker can't drive E2B SDK; key would be dead weight. |
-| `HERMES_GITHUB_WRITE_TOKEN` | launcher env, scoped per-repo, baked into `.git/config` of the per-session sandbox | The runner needs it to `git push` + open the PR. PAT is short-lived and per-session. |
+| `HERMES_GITHUB_WRITE_TOKEN` | **launcher env only — never enters the sandbox** | Only the launcher's `POST /sessions/:id/publish-pr` handler uses it (passed to `git push` via the `envs` arg of `commands.run` for a single command; the temp remote is removed immediately after). Sandbox-side `git push origin` returns 403 by construction. |
+| `HERMES_GITHUB_READ_TOKEN` | launcher env, baked into `.git/config` of the per-session sandbox | Lets the agent `git fetch` and lets `provision.ts` `git clone`. Contents:Read only, so the agent cannot push or open PRs even if it exfiltrates the token from `.git/config`. |
 | `ZAI_API_KEY` | launcher env, forwarded into the sandbox via `start.json` | Runner needs it to drive OpenCode. |
 | `runnerToken` | minted in the DO, dropped in `start.json` for the runner, validated on WS connect | Avoids broad credentials inside the sandbox; one token per session, useless after the session ends. |
 
