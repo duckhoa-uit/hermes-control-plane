@@ -1,13 +1,38 @@
-# ---- E2B Sandbox (lấy free tại https://e2b.dev/dashboard) ----
+# Hermes Control Plane — local dev env.
+#
+# Loaded automatically by `wrangler dev` (Worker side).  The launcher
+# (`bun run launcher`) reads `process.env` from the shell that starts
+# it — easiest: `set -a && source .dev.vars && set +a && bun run launcher`.
+#
+# Sections:
+#   1. Upstream services (E2B, Z.AI)
+#   2. GitHub PATs + operator identity
+#   3. Worker config (set in .dev.vars OR `wrangler secret put`)
+#   4. Launcher config
+#   5. Worker ↔ launcher wire-up (shared secret + URLs)
+#
+# Production deployment: see docs/SETUP.md §5-§7 + docs/DEPLOYMENT.md.
+
+# =====================================================================
+# 1. Upstream services
+# =====================================================================
+
+# E2B Sandbox API key. Free tier at https://e2b.dev/dashboard.
 E2B_API_KEY=
 
-# ---- Zai (z.ai) LLM Provider ----
-# OpenCode hỗ trợ provider `zai-coding-plan` natively (endpoint
-# https://api.z.ai/api/coding/paas/v4).
+# E2B template alias. Defaults to `control-plane-runner`. Rebuild with
+# `bun run infra/e2b/build-template.ts` when src/runner/* changes.
+# E2B_TEMPLATE=control-plane-runner
+
+# Z.AI (z.ai) LLM provider. OpenCode supports `zai-coding-plan` natively.
+# https://z.ai/manage-apikey/apikey-list
 ZAI_API_KEY=
 
-# ---- GitHub single-user OAuth (P1.1, required for opening PRs) ----
-# Two fine-grained PATs.  Both scoped to the repos Hermes operates on.
+# =====================================================================
+# 2. GitHub PATs + operator identity
+# =====================================================================
+# Two fine-grained PATs (P1.1 single-user OAuth).  Both scoped to the
+# repos Hermes operates on.
 #
 #   GITHUB_WRITE_TOKEN — Contents + Pull-requests Read & Write.
 #     LAUNCHER-SIDE ONLY.  Never enters the sandbox.  Used by the
@@ -18,6 +43,56 @@ ZAI_API_KEY=
 #     agent cannot push (GitHub returns 403 on the read-only PAT).
 GITHUB_WRITE_TOKEN=
 GITHUB_READ_TOKEN=
+
+# Operator identity used for git config + PR author attribution.
 GITHUB_USER_LOGIN=
 # Optional. Defaults to <login>@users.noreply.github.com.
 GITHUB_USER_EMAIL=
+
+# =====================================================================
+# 3. Worker config
+# =====================================================================
+
+# HMAC secret for POST /webhooks/github. Worker fails closed (503) on
+# webhook deliveries when unset. Generate: `openssl rand -hex 32`.
+# Mirror to GitHub's webhook "Secret" field.
+GITHUB_WEBHOOK_SECRET=
+
+# Public URL the sandbox runner uses to dial back over WS.
+# Local dev: an ngrok URL pointing at `wrangler dev`. Production: the
+# deployed Worker URL.
+PUBLIC_BASE_URL=
+
+# Optional. Maximum auto-amend sessions per PR before tryClaimAmendSlot
+# returns cap_exceeded. Default 3.
+# AUTOFIX_CAP_PER_PR=3
+
+# =====================================================================
+# 4. Launcher config
+# =====================================================================
+
+# Worker URL the launcher calls (POST /sessions, GET /pr-index, etc.).
+# Local dev: same ngrok URL as PUBLIC_BASE_URL.
+WORKER_BASE_URL=
+
+# Optional launcher tweaks.
+# LAUNCHER_PORT=8789
+# AUTO_CREATE_PR=1
+# MAX_CONCURRENT_SESSIONS=10
+
+# =====================================================================
+# 5. Worker ↔ launcher wire-up
+# =====================================================================
+
+# Shared secret authenticating launcher ↔ Worker calls in BOTH directions:
+#   - Worker → launcher: x-hermes-launcher-secret header on POST /sessions,
+#     /publish-pr, /resume.
+#   - Launcher → Worker: same header on GET /pr-index.
+# Worker fails closed (503) on /pr-index when unset.
+# Generate: `openssl rand -hex 32`. Production: also `wrangler secret put`.
+LAUNCHER_SHARED_SECRET=
+
+# Launcher URL the Worker DO calls for /resume + /publish-pr.
+# Local dev: http://localhost:8789. Production: Cloudflare Tunnel URL of
+# the VPS launcher.
+CONTROL_PLANE_LAUNCHER_URL=http://localhost:8789
