@@ -1,25 +1,20 @@
-// B1 — publish-via-launcher chokepoint.
+// publish-via-launcher chokepoint.
 //
-// New publish path for HERMES_PUBLISH_VIA_LAUNCHER=true. The runner does
-// local-only git operations (add, commit, rev-parse) inside the sandbox
-// and emits `runner.ready_to_publish` over WS. The DO then calls this
-// launcher endpoint, which:
+// The runner does local-only git operations (add, commit, rev-parse)
+// inside the sandbox and emits `runner.ready_to_publish` over WS. The
+// DO then calls this launcher endpoint, which:
 //
 //   1. Connects to the existing E2B sandbox (no new sandbox spawned).
-//   2. Pushes HEAD to origin/<branch> using a *one-shot* remote URL with
-//      HERMES_GITHUB_WRITE_TOKEN in argv-only — never written to
-//      .git/config, never persisted on disk inside the sandbox. The
-//      sandbox-baked origin remains read-only (B3).
+//   2. Pushes HEAD to origin/<branch> using a *one-shot* remote URL
+//      with HERMES_GITHUB_WRITE_TOKEN passed via the `envs` argument
+//      of E2B's commands.run — never written to .git/config, never
+//      persisted on disk inside the sandbox. The sandbox-baked origin
+//      remains read-only.
 //   3. Calls POST /repos/:owner/:repo/pulls (amend mode skips this; PR
 //      already exists). Returns the PR url + number.
 //
 // Auth: gated upstream by the existing x-hermes-launcher-secret header
 // (server-server). The runner never sees HERMES_GITHUB_WRITE_TOKEN.
-//
-// Rollback: caller (DO) controls the publish path via the
-// HERMES_PUBLISH_VIA_LAUNCHER flag. Flipping the flag back to "false"
-// reverts to the legacy in-sandbox path (sandbox-runner.runPrCreation),
-// unchanged in B1.
 
 import { Sandbox } from "e2b";
 import { parseRepoUrl } from "./provision";
