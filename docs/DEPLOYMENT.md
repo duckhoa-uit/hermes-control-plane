@@ -193,12 +193,13 @@ cadence:
 |---|---|---|---|---|
 | `E2B_API_KEY` | launcher VM env | infra | quarterly | rotate via E2B dashboard, hot-swap env, restart launcher |
 | `ZAI_API_KEY` | launcher VM env | infra | quarterly | Forwarded into the sandbox; supervisor applies it to opencode via `auth.set` |
-| `HERMES_GITHUB_WRITE_TOKEN` (fine-grained PAT) | launcher VM env | infra | every 90 days | P1.1 single-user OAuth. Runner uses it for `git push` + `POST /pulls`; PR `author` is the real user. |
+| `HERMES_GITHUB_WRITE_TOKEN` (fine-grained PAT, Contents + Pull-requests RW) | launcher VM env **only — never enters the sandbox** | infra | every 90 days | P1.1 single-user OAuth. Used by the launcher's `POST /sessions/:id/publish-pr` for `git push` + `POST /pulls`; PR `author` is the real user. |
+| `HERMES_GITHUB_READ_TOKEN` (fine-grained PAT, Contents Read) | launcher VM env; baked into sandbox `.git/config` | infra | every 90 days | Lets the sandbox `git clone` + `git fetch`. Cannot push (GitHub returns 403). |
 | `CONTROL_PLANE_BASE_URL` | launcher VM env | infra | n/a | the Worker URL; static per env. Used both for launcher→Worker calls and as the WS dial-back URL given to the runner inside the sandbox. |
 | Slack signing secret + bot token | Hermes agent infra | Hermes team | yearly | not in this repo |
 
 Secrets that *do* live in the Worker (post-P1.1): the GitHub OAuth
-client secret and the OAuth token encryption key. Everything else (E2B, Z.AI, `HERMES_GITHUB_WRITE_TOKEN`) is launcher-only. The Worker is the right place
+client secret and the OAuth token encryption key. Everything else (E2B, Z.AI, both GitHub PATs) is launcher-only. The Worker is the right place
 for OAuth secrets because the OAuth dance terminates there
 (`/auth/github/callback`).
 
@@ -206,9 +207,13 @@ for OAuth secrets because the OAuth dance terminates there
 moved into this section):
 
 - `HERMES_GITHUB_WRITE_TOKEN` (PAT): rotate every 90 days. Restart launcher to
-  pick up the new value. In-flight sessions started with the old token
-  finish on the old token (the token is captured in the sandbox env at
-  provision time).
+  pick up the new value. In-flight sessions that have already emitted
+  `runner.ready_to_publish` will publish on the new token (the launcher
+  reads it at publish time, not at provision time).
+- `HERMES_GITHUB_READ_TOKEN` (PAT): rotate every 90 days. Restart launcher
+  so newly-provisioned sandboxes bake the new token into `.git/config`.
+  In-flight sandboxes keep using whatever was baked at provision; harmless
+  because clone + fetch already happened.
 - `E2B_API_KEY`, `ZAI_API_KEY`: same pattern — replace env + restart
   launcher.
 
@@ -428,7 +433,8 @@ shortcuts.
 - [ ] Launcher binary deployed; `curl https://launcher/<env>/health` → ok
 - [ ] `scripts/release-smoke.ts` end-to-end → PR opened on the sentinel
       repo, sandbox killed, E2B list empty afterwards
-- [ ] `HERMES_GITHUB_WRITE_TOKEN` set on the launcher; PAT has Contents + Pull-requests RW on the target repos
+- [ ] `HERMES_GITHUB_WRITE_TOKEN` set on the launcher (PAT has Contents + Pull-requests RW on the target repos) — launcher-side only, never put it in the sandbox or the Worker
+- [ ] `HERMES_GITHUB_READ_TOKEN` set on the launcher (PAT has Contents Read on the same repos) — baked into the sandbox `.git/config` so clone + fetch work
 - [ ] GitHub OAuth app created; `GITHUB_OAUTH_CLIENT_ID`/`_SECRET` set as
       Worker secrets (`wrangler secret put`)
 - [ ] `OAUTH_TOKEN_ENCRYPTION_KEY` minted (`openssl rand -base64 32`) and
@@ -507,8 +513,10 @@ the deploy". The launcher VM is the only place in the stack that holds
 *long-lived* secrets in cleartext:
 
 - `E2B_API_KEY` — full sandbox + billing control on the E2B account
-- `HERMES_GITHUB_WRITE_TOKEN` (fine-grained PAT) — push + open PR on the repos
-  this PAT is scoped to
+- `HERMES_GITHUB_WRITE_TOKEN` (fine-grained PAT, Contents + Pull-requests RW) — push + open PR on the
+  repos this PAT is scoped to.  Launcher-side only; never enters the sandbox.
+- `HERMES_GITHUB_READ_TOKEN` (fine-grained PAT, Contents Read) — baked into the
+  sandbox `.git/config` so clone + fetch work
 - `ZAI_API_KEY` — drains the Z.AI Coding Plan budget if abused
 
 The owner is a **named human** with these responsibilities:
@@ -715,7 +723,10 @@ export E2B_TEMPLATE=control-plane-runner
 export ZAI_API_KEY=...
 
 # GitHub single-user OAuth — PR author = real user (P1.1)
-export HERMES_GITHUB_WRITE_TOKEN=github_pat_...     # fine-grained PAT, see SETUP §5
+# Two PATs: WRITE = launcher-side only, READ = baked into sandbox .git/config.
+# See SETUP §5 for scopes.
+export HERMES_GITHUB_WRITE_TOKEN=github_pat_...
+export HERMES_GITHUB_READ_TOKEN=github_pat_...
 export GITHUB_USER_LOGIN=your-github-handle
 export GITHUB_USER_EMAIL=you@example.com
 

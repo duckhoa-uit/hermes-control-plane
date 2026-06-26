@@ -85,29 +85,39 @@ Available models: `glm-5.2` (1M ctx, default), `glm-5.1` (200K), `glm-4.7`
 wired into a launcher env var yet — drop it manually in
 `src/launcher/provision.ts:startConfig` if you need it before that lands).
 
-## 5. GitHub PAT (for PR creation)
+## 5. GitHub PATs (for repo access + PR creation)
 
-PRs are pushed and opened as the **real user** via a fine-grained personal
-access token (P1.1). The runner uses it for `git push` and `POST /pulls`,
-and the commit author is set from `GITHUB_USER_LOGIN`/`GITHUB_USER_EMAIL`.
-That way branch-protection rules like "PR must be reviewed by someone
-other than the author" work correctly.
+PRs are pushed and opened as the **real user** via two fine-grained personal
+access tokens (P1.1). The split keeps the write-scoped token out of the
+sandbox entirely: the in-sandbox agent can clone + fetch with the read PAT
+but cannot push, while the launcher process holds the write PAT and is the
+only thing that calls `git push` + `POST /pulls`. Commit author is set from
+`GITHUB_USER_LOGIN` / `GITHUB_USER_EMAIL`, so branch-protection rules like
+"PR must be reviewed by someone other than the author" work correctly.
 
-1. Create a fine-grained PAT at https://github.com/settings/tokens?type=beta
+1. Create **two** fine-grained PATs at https://github.com/settings/tokens?type=beta:
+
+   **Write PAT** (`HERMES_GITHUB_WRITE_TOKEN`) — **launcher-side only, never enters the sandbox.**
    - Resource owner: your user (or org).
    - Repository access: select the repos Hermes touches.
-   - Repository permissions: **Contents: Read & write**,
-     **Pull requests: Read & write**. Leave everything else as No access.
+   - Repository permissions: **Contents: Read & write**, **Pull requests: Read & write**. Leave everything else as No access.
    - Expiration: 90 days (rotate quarterly).
-2. Export the PAT plus your identity:
+
+   **Read PAT** (`HERMES_GITHUB_READ_TOKEN`) — baked into the sandbox `.git/config` so clone + fetch work.
+   - Same resource owner + repository access as the write PAT.
+   - Repository permissions: **Contents: Read** only. Leave everything else as No access.
+   - Expiration: 90 days (rotate quarterly).
+
+2. Export the PATs plus your identity:
    ```bash
    export HERMES_GITHUB_WRITE_TOKEN=github_pat_xxx
+   export HERMES_GITHUB_READ_TOKEN=github_pat_yyy
    export GITHUB_USER_LOGIN=your-github-handle
    export GITHUB_USER_EMAIL=you@example.com   # optional; defaults to
                                               # <login>@users.noreply.github.com
    ```
 3. Make sure GitHub has signed-commit / fork-permission settings that
-   allow your PAT to push to the target repos.
+   allow the write PAT to push to the target repos.
 
 ## 5b. GitHub webhook (PR lifecycle + auto-amend)
 
@@ -172,8 +182,11 @@ E2B_API_KEY=e2b_xxxxxxxxxxxxxxxxxxxx
 # Z.AI (forwarded into the sandbox by the launcher)
 ZAI_API_KEY=…
 
-# GitHub single-user OAuth (P1.1): PR authored by the real user
+# GitHub single-user OAuth (P1.1): two PATs — see §5 for scopes.
+# WRITE PAT = launcher-side only, never enters the sandbox.
+# READ PAT  = baked into the sandbox .git/config (clone+fetch only).
 HERMES_GITHUB_WRITE_TOKEN=github_pat_xxx
+HERMES_GITHUB_READ_TOKEN=github_pat_yyy
 GITHUB_USER_LOGIN=your-github-handle
 GITHUB_USER_EMAIL=you@example.com
 ```
@@ -207,7 +220,9 @@ them inline when launching.
 | `CONTROL_PLANE_LAUNCHER_PORT` | default `8789` |
 | `CONTROL_PLANE_AUTO_PR` | `1` (default) = launcher fires `/create-pr` on `review_ready` |
 | `ZAI_API_KEY` | OpenCode (Z.AI) provider key |
-| `HERMES_GITHUB_WRITE_TOKEN` / `GITHUB_USER_LOGIN` / `GITHUB_USER_EMAIL` | per-user PR identity |
+| `HERMES_GITHUB_WRITE_TOKEN` | write-scoped PAT (Contents + Pull-requests RW). **Launcher-side only — never put in the sandbox.** Used by `POST /sessions/:id/publish-pr` to push + open PRs as the real user. |
+| `HERMES_GITHUB_READ_TOKEN` | read-only PAT (Contents: Read). Baked into the sandbox `.git/config` so clone + fetch work; the sandbox cannot push. |
+| `GITHUB_USER_LOGIN` / `GITHUB_USER_EMAIL` | commit + PR identity. Email is optional (defaults to `<login>@users.noreply.github.com`). |
 | `HERMES_LAUNCHER_SECRET` | required; shared secret. The launcher (a) sends it on `x-hermes-launcher-secret` when reading the Worker's `/pr-index`, and (b) requires it on every inbound REST call (POST `/sessions`, GET/DELETE `/sessions/:id`, POST `/sessions/:id/resume`); requests without a matching header get 401. The local MCP server bundled in the launcher passes it through automatically. Must match the Worker secret. |
 | `MAX_CONCURRENT_SESSIONS` | default 10; E2B Hobby caps at 20 |
 
@@ -226,7 +241,7 @@ ngrok http 8787
 ```bash
 # Terminal 3 — launcher (sidecar)
 export E2B_API_KEY=… ZAI_API_KEY=…
-export HERMES_GITHUB_WRITE_TOKEN=… GITHUB_USER_LOGIN=…
+export HERMES_GITHUB_WRITE_TOKEN=… HERMES_GITHUB_READ_TOKEN=… GITHUB_USER_LOGIN=…
 # Use the ngrok URL for both launcher→Worker and runner→Worker.
 export CONTROL_PLANE_BASE_URL=https://abcd-1234.ngrok-free.app
 export E2B_TEMPLATE=control-plane-runner

@@ -58,9 +58,14 @@ Do NOT use this skill when:
       timeout: 300
   ```
 
-- **Operator's `HERMES_GITHUB_WRITE_TOKEN` in the launcher env**
-  (`/etc/hermes-control-plane/launcher.env`). Fine-grained PAT scoped to
-  the target repos with Contents + Pull-requests read & write. The
+- **Operator's two GitHub PATs in the launcher env**
+  (`/etc/hermes-control-plane/launcher.env`).
+  `HERMES_GITHUB_WRITE_TOKEN` (Contents + Pull-requests RW) is held
+  launcher-side only; it never enters the sandbox.  The launcher's
+  `POST /sessions/:id/publish-pr` is the only thing that uses it.
+  `HERMES_GITHUB_READ_TOKEN` (Contents Read) is baked into the
+  sandbox `.git/config` so clone + fetch work; the sandbox cannot push.
+  Both are scoped to the target repos. The
   runner uses this for both `git push` and `POST /pulls`, so the PR
   `author` is the real operator — required for branch-protection rules
   like "PR review by someone other than author".

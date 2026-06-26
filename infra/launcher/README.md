@@ -40,13 +40,13 @@ Three ways to provide the secrets:
 curl -fsSL https://raw.githubusercontent.com/duckhoa-uit/hermes-control-plane/main/infra/launcher/install.sh \
   | sudo bash
 # install.sh asks for E2B_API_KEY, ZAI_API_KEY, HERMES_GITHUB_WRITE_TOKEN,
-# GITHUB_USER_LOGIN, GITHUB_USER_EMAIL (optional),
+# HERMES_GITHUB_READ_TOKEN, GITHUB_USER_LOGIN, GITHUB_USER_EMAIL (optional),
 # CONTROL_PLANE_BASE_URL (default: the deployed Worker URL).
 
 # 2. Pre-exported env vars (good when piping into bash):
 curl -fsSL https://raw.githubusercontent.com/duckhoa-uit/hermes-control-plane/main/infra/launcher/install.sh \
   | sudo E2B_API_KEY=... ZAI_API_KEY=... HERMES_GITHUB_WRITE_TOKEN=... \
-         GITHUB_USER_LOGIN=duckhoa-uit \
+         HERMES_GITHUB_READ_TOKEN=... GITHUB_USER_LOGIN=duckhoa-uit \
          CONTROL_PLANE_BASE_URL=https://hermes-control-plane.duckhoa-dev.workers.dev \
          bash
 
@@ -90,6 +90,7 @@ starts a TryCloudflare quick tunnel as a second systemd unit:
 curl -fsSL https://raw.githubusercontent.com/duckhoa-uit/hermes-control-plane/main/infra/launcher/install.sh \
   | sudo CONTROL_PLANE_QUICK_TUNNEL=1 \
          E2B_API_KEY=... ZAI_API_KEY=... HERMES_GITHUB_WRITE_TOKEN=... \
+         HERMES_GITHUB_READ_TOKEN=... \
          GITHUB_USER_LOGIN=... CONTROL_PLANE_BASE_URL=https://...workers.dev \
          bash
 ```
