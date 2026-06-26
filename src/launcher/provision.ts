@@ -158,7 +158,7 @@ export async function provisionSession(input: ProvisionInput): Promise<Provision
     const userLogin = input.githubUserLogin ?? "";
     // B3 / PR #C: sandbox origin uses the read-only token.  Falls back to
     // the write token only when the read token is unset so legacy dev
-    // setups without HERMES_GITHUB_READ_TOKEN keep cloning; the runner
+    // setups without GITHUB_READ_TOKEN keep cloning; the runner
     // still cannot push because the write token is never put in
     // start.json (the launcher /publish-pr endpoint holds the only
     // copy used for push).
@@ -222,7 +222,7 @@ export async function provisionSession(input: ProvisionInput): Promise<Provision
       CONTROL_PLANE_RUNNER_TOKEN: input.runnerToken,
       CONTROL_PLANE_WS: input.controlWsUrl,
       ZAI_API_KEY: input.zaiApiKey ?? "",
-      // PR #C: HERMES_GITHUB_WRITE_TOKEN is never put in start.json.
+      // PR #C: GITHUB_WRITE_TOKEN is never put in start.json.
       // The launcher /publish-pr endpoint is the only holder.
       GITHUB_USER_LOGIN: userLogin,
       GITHUB_USER_EMAIL: input.githubUserEmail ?? "",

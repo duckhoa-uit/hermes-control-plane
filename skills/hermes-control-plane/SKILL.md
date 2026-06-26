@@ -60,10 +60,10 @@ Do NOT use this skill when:
 
 - **Operator's two GitHub PATs in the launcher env**
   (`/etc/hermes-control-plane/launcher.env`).
-  `HERMES_GITHUB_WRITE_TOKEN` (Contents + Pull-requests RW) is held
+  `GITHUB_WRITE_TOKEN` (Contents + Pull-requests RW) is held
   launcher-side only; it never enters the sandbox.  The launcher's
   `POST /sessions/:id/publish-pr` is the only thing that uses it.
-  `HERMES_GITHUB_READ_TOKEN` (Contents Read) is baked into the
+  `GITHUB_READ_TOKEN` (Contents Read) is baked into the
   sandbox `.git/config` so clone + fetch work; the sandbox cannot push.
   Both are scoped to the target repos. The
   runner uses this for both `git push` and `POST /pulls`, so the PR
@@ -161,7 +161,7 @@ it when you need to extract a specific field (e.g. `approval.requested.command`,
 | `launcher 5xx` / fetch failed | Launcher VPS is down or unreachable | Tell the user "control plane is unreachable" and stop — nothing to retry until ops fixes it |
 | `worker 404` on `get_session_status` | The `sessionId` is wrong or the DO was archived | Stop polling; ask the user to restart the task |
 | `worker 202 recoverable=true` on `send_followup_prompt` | Sandbox is paused; resume is in flight | Wait for the next `pr.created` or status change before replying |
-| `session.failed` with `Bad credentials` | `HERMES_GITHUB_WRITE_TOKEN` is missing, expired, or under-scoped | Tell the user "GitHub token rejected — operator must refresh `HERMES_GITHUB_WRITE_TOKEN`"; do not retry |
+| `session.failed` with `Bad credentials` | `GITHUB_WRITE_TOKEN` is missing, expired, or under-scoped | Tell the user "GitHub token rejected — operator must refresh `GITHUB_WRITE_TOKEN`"; do not retry |
 | `session.failed` with `not found` / `404` on the repo | Repo URL is wrong or the PAT does not cover it | Confirm the repo with the user; if correct, the PAT is missing access |
 | `session.failed` while pushing | Branch protection rejected the push | Pass the launcher message through verbatim; do not invent a workaround |
 
@@ -258,7 +258,7 @@ return value tells you which path it took.
 - **Don't auto-merge.** The whole point of opening a PR is human review.
   Branch protection on `main` should require review from someone other
   than the PR author — that rule depends on the PR being authored by
-  the real user, which is what `HERMES_GITHUB_WRITE_TOKEN` ensures.
+  the real user, which is what `GITHUB_WRITE_TOKEN` ensures.
 
 - **One sandbox per session.** Calling `start_coding_task` twice spawns
   two sandboxes — don't retry on transient errors; check

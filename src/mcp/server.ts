@@ -81,7 +81,7 @@ function makeServer(w: McpServerWiring): McpServer {
   //
   // The single primary entry point. Spawns an E2B sandbox, clones the
   // repo, runs the agent, opens a real GitHub PR authored by the user
-  // (P1.1 HERMES_GITHUB_WRITE_TOKEN). Returns once the session is created — the
+  // (P1.1 GITHUB_WRITE_TOKEN). Returns once the session is created — the
   // actual PR URL is delivered via the events stream (see below).
   // ──────────────────────────────────────────────────────────────────────
   server.registerTool(

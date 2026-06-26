@@ -45,11 +45,11 @@ Three processes, three responsibilities:
    template, with `lifecycle: { onTimeout: "pause", autoResume: true }`
    and a 15 min idle timeout.
 4. **Launcher** `git clone`s the repo inside the sandbox using a
-   *read-only* PAT (`HERMES_GITHUB_READ_TOKEN`), bakes that token
+   *read-only* PAT (`GITHUB_READ_TOKEN`), bakes that token
    into `.git/config` so subsequent `git fetch` works, then drops
    `/opt/control-plane/start.json` with the per-session env (runner
    token, Worker WS URL, model, owner/repo, base branch — but **no**
-   write-scoped PAT).  The write token (`HERMES_GITHUB_WRITE_TOKEN`)
+   write-scoped PAT).  The write token (`GITHUB_WRITE_TOKEN`)
    never enters the sandbox; it lives only in the launcher process.
 5. **Supervisor** (already running in the snapshot via `setStartCmd`)
    sees the file appear and `exec`s the runner.
@@ -352,8 +352,8 @@ per deploy.
 | Credential | Where it lives | Why not somewhere else |
 |---|---|---|
 | `E2B_API_KEY` | launcher env only | Worker can't drive E2B SDK; key would be dead weight. |
-| `HERMES_GITHUB_WRITE_TOKEN` | **launcher env only — never enters the sandbox** | Only the launcher's `POST /sessions/:id/publish-pr` handler uses it (passed to `git push` via the `envs` arg of `commands.run` for a single command; the temp remote is removed immediately after). Sandbox-side `git push origin` returns 403 by construction. |
-| `HERMES_GITHUB_READ_TOKEN` | launcher env, baked into `.git/config` of the per-session sandbox | Lets the agent `git fetch` and lets `provision.ts` `git clone`. Contents:Read only, so the agent cannot push or open PRs even if it exfiltrates the token from `.git/config`. |
+| `GITHUB_WRITE_TOKEN` | **launcher env only — never enters the sandbox** | Only the launcher's `POST /sessions/:id/publish-pr` handler uses it (passed to `git push` via the `envs` arg of `commands.run` for a single command; the temp remote is removed immediately after). Sandbox-side `git push origin` returns 403 by construction. |
+| `GITHUB_READ_TOKEN` | launcher env, baked into `.git/config` of the per-session sandbox | Lets the agent `git fetch` and lets `provision.ts` `git clone`. Contents:Read only, so the agent cannot push or open PRs even if it exfiltrates the token from `.git/config`. |
 | `ZAI_API_KEY` | launcher env, forwarded into the sandbox via `start.json` | Runner needs it to drive OpenCode. |
 | `runnerToken` | minted in the DO, dropped in `start.json` for the runner, validated on WS connect | Avoids broad credentials inside the sandbox; one token per session, useless after the session ends. |
 

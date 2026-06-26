@@ -144,7 +144,7 @@ async function runDirectMode(): Promise<void> {
       e2bTemplate: E2B_TEMPLATE,
       zaiApiKey: ZAI_API_KEY,
       opencodeModel: ZAI_MODEL,
-      githubUserToken: process.env.HERMES_GITHUB_WRITE_TOKEN,
+      githubUserToken: process.env.GITHUB_WRITE_TOKEN,
       githubUserLogin: process.env.GITHUB_USER_LOGIN,
       githubUserEmail: process.env.GITHUB_USER_EMAIL,
     });

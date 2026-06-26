@@ -6,7 +6,7 @@
 //
 //   1. Connects to the existing E2B sandbox (no new sandbox spawned).
 //   2. Pushes HEAD to origin/<branch> using a *one-shot* remote URL
-//      with HERMES_GITHUB_WRITE_TOKEN passed via the `envs` argument
+//      with GITHUB_WRITE_TOKEN passed via the `envs` argument
 //      of E2B's commands.run — never written to .git/config, never
 //      persisted on disk inside the sandbox. The sandbox-baked origin
 //      remains read-only.
@@ -14,7 +14,7 @@
 //      already exists). Returns the PR url + number.
 //
 // Auth: gated upstream by the existing x-hermes-launcher-secret header
-// (server-server). The runner never sees HERMES_GITHUB_WRITE_TOKEN.
+// (server-server). The runner never sees GITHUB_WRITE_TOKEN.
 
 import { Sandbox } from "e2b";
 import { parseRepoUrl } from "./provision";
@@ -24,7 +24,7 @@ const REPO_DIR = "/home/user/repo";
 export interface PublishInput {
   sandboxId: string;
   e2bApiKey: string;
-  writeToken: string;        // HERMES_GITHUB_WRITE_TOKEN — argv only
+  writeToken: string;        // GITHUB_WRITE_TOKEN — argv only
   repoUrl: string;
   branch: string;
   baseBranch: string;
@@ -89,7 +89,7 @@ export async function publishPr(
     // sandbox-baked read-only 'origin'. -f forces overwrite if a
     // previous publish left the temp remote dangling.
     `git remote remove hermes-publish 2>/dev/null; ` +
-    `git remote add hermes-publish "https://x-access-token:$HERMES_GITHUB_WRITE_TOKEN@github.com/${owner}/${repo}.git" && ` +
+    `git remote add hermes-publish "https://x-access-token:$GITHUB_WRITE_TOKEN@github.com/${owner}/${repo}.git" && ` +
     `(git -c credential.helper= push --set-upstream hermes-publish "HEAD:${brSh}" 2>&1; echo "__exit=$?") ; ` +
     // Always remove the temp remote, even on push failure, so the
     // sandbox never carries a token-bearing remote between commands.
@@ -98,7 +98,7 @@ export async function publishPr(
   try {
     const pushed = await sbx.commands.run(pushCmd, {
       timeoutMs: 60_000,
-      envs: { HERMES_GITHUB_WRITE_TOKEN: input.writeToken },
+      envs: { GITHUB_WRITE_TOKEN: input.writeToken },
     });
     pushOut = pushed.stdout || "";
   } catch (err) {

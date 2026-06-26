@@ -261,7 +261,7 @@ describe("provisionSession", () => {
 
   // ---- PR #B / B2-B3: publish-via-launcher token discipline ----
 
-  it("publishViaLauncher=true: HERMES_GITHUB_WRITE_TOKEN is absent from start.json", async () => {
+  it("publishViaLauncher=true: GITHUB_WRITE_TOKEN is absent from start.json", async () => {
     await provisionSession({
       sessionId: "session_b3_a",
       runnerToken: "tok",
@@ -274,7 +274,7 @@ describe("provisionSession", () => {
       githubUserLogin: "alice",
     });
     const cfg = JSON.parse(filesWrite.mock.calls[0][1] as string);
-    expect(cfg.HERMES_GITHUB_WRITE_TOKEN).toBeUndefined();
+    expect(cfg.GITHUB_WRITE_TOKEN).toBeUndefined();
     expect(cfg.HERMES_PUBLISH_VIA_LAUNCHER).toBeUndefined();
   });
 
@@ -318,7 +318,7 @@ describe("provisionSession", () => {
     // Even under fallback, the write token is still stripped from start.json
     // since the runner will not use it for publish anyway.
     const cfg = JSON.parse(filesWrite.mock.calls[0][1] as string);
-    expect(cfg.HERMES_GITHUB_WRITE_TOKEN).toBeUndefined();
+    expect(cfg.GITHUB_WRITE_TOKEN).toBeUndefined();
   });
 
   // ---- PR #A / A5: no amendTrigger means no env var (back-compat)

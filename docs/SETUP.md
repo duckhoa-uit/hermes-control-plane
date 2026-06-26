@@ -97,21 +97,21 @@ only thing that calls `git push` + `POST /pulls`. Commit author is set from
 
 1. Create **two** fine-grained PATs at https://github.com/settings/tokens?type=beta:
 
-   **Write PAT** (`HERMES_GITHUB_WRITE_TOKEN`) — **launcher-side only, never enters the sandbox.**
+   **Write PAT** (`GITHUB_WRITE_TOKEN`) — **launcher-side only, never enters the sandbox.**
    - Resource owner: your user (or org).
    - Repository access: select the repos Hermes touches.
    - Repository permissions: **Contents: Read & write**, **Pull requests: Read & write**. Leave everything else as No access.
    - Expiration: 90 days (rotate quarterly).
 
-   **Read PAT** (`HERMES_GITHUB_READ_TOKEN`) — baked into the sandbox `.git/config` so clone + fetch work.
+   **Read PAT** (`GITHUB_READ_TOKEN`) — baked into the sandbox `.git/config` so clone + fetch work.
    - Same resource owner + repository access as the write PAT.
    - Repository permissions: **Contents: Read** only. Leave everything else as No access.
    - Expiration: 90 days (rotate quarterly).
 
 2. Export the PATs plus your identity:
    ```bash
-   export HERMES_GITHUB_WRITE_TOKEN=github_pat_xxx
-   export HERMES_GITHUB_READ_TOKEN=github_pat_yyy
+   export GITHUB_WRITE_TOKEN=github_pat_xxx
+   export GITHUB_READ_TOKEN=github_pat_yyy
    export GITHUB_USER_LOGIN=your-github-handle
    export GITHUB_USER_EMAIL=you@example.com   # optional; defaults to
                                               # <login>@users.noreply.github.com
@@ -185,8 +185,8 @@ ZAI_API_KEY=…
 # GitHub single-user OAuth (P1.1): two PATs — see §5 for scopes.
 # WRITE PAT = launcher-side only, never enters the sandbox.
 # READ PAT  = baked into the sandbox .git/config (clone+fetch only).
-HERMES_GITHUB_WRITE_TOKEN=github_pat_xxx
-HERMES_GITHUB_READ_TOKEN=github_pat_yyy
+GITHUB_WRITE_TOKEN=github_pat_xxx
+GITHUB_READ_TOKEN=github_pat_yyy
 GITHUB_USER_LOGIN=your-github-handle
 GITHUB_USER_EMAIL=you@example.com
 ```
@@ -220,8 +220,8 @@ them inline when launching.
 | `CONTROL_PLANE_LAUNCHER_PORT` | default `8789` |
 | `CONTROL_PLANE_AUTO_PR` | `1` (default) = launcher fires `/create-pr` on `review_ready` |
 | `ZAI_API_KEY` | OpenCode (Z.AI) provider key |
-| `HERMES_GITHUB_WRITE_TOKEN` | write-scoped PAT (Contents + Pull-requests RW). **Launcher-side only — never put in the sandbox.** Used by `POST /sessions/:id/publish-pr` to push + open PRs as the real user. |
-| `HERMES_GITHUB_READ_TOKEN` | read-only PAT (Contents: Read). Baked into the sandbox `.git/config` so clone + fetch work; the sandbox cannot push. |
+| `GITHUB_WRITE_TOKEN` | write-scoped PAT (Contents + Pull-requests RW). **Launcher-side only — never put in the sandbox.** Used by `POST /sessions/:id/publish-pr` to push + open PRs as the real user. |
+| `GITHUB_READ_TOKEN` | read-only PAT (Contents: Read). Baked into the sandbox `.git/config` so clone + fetch work; the sandbox cannot push. |
 | `GITHUB_USER_LOGIN` / `GITHUB_USER_EMAIL` | commit + PR identity. Email is optional (defaults to `<login>@users.noreply.github.com`). |
 | `HERMES_LAUNCHER_SECRET` | required; shared secret. The launcher (a) sends it on `x-hermes-launcher-secret` when reading the Worker's `/pr-index`, and (b) requires it on every inbound REST call (POST `/sessions`, GET/DELETE `/sessions/:id`, POST `/sessions/:id/resume`); requests without a matching header get 401. The local MCP server bundled in the launcher passes it through automatically. Must match the Worker secret. |
 | `MAX_CONCURRENT_SESSIONS` | default 10; E2B Hobby caps at 20 |
@@ -241,7 +241,7 @@ ngrok http 8787
 ```bash
 # Terminal 3 — launcher (sidecar)
 export E2B_API_KEY=… ZAI_API_KEY=…
-export HERMES_GITHUB_WRITE_TOKEN=… HERMES_GITHUB_READ_TOKEN=… GITHUB_USER_LOGIN=…
+export GITHUB_WRITE_TOKEN=… GITHUB_READ_TOKEN=… GITHUB_USER_LOGIN=…
 # Use the ngrok URL for both launcher→Worker and runner→Worker.
 export CONTROL_PLANE_BASE_URL=https://abcd-1234.ngrok-free.app
 export E2B_TEMPLATE=control-plane-runner

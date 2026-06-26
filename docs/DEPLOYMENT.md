@@ -193,8 +193,8 @@ cadence:
 |---|---|---|---|---|
 | `E2B_API_KEY` | launcher VM env | infra | quarterly | rotate via E2B dashboard, hot-swap env, restart launcher |
 | `ZAI_API_KEY` | launcher VM env | infra | quarterly | Forwarded into the sandbox; supervisor applies it to opencode via `auth.set` |
-| `HERMES_GITHUB_WRITE_TOKEN` (fine-grained PAT, Contents + Pull-requests RW) | launcher VM env **only — never enters the sandbox** | infra | every 90 days | P1.1 single-user OAuth. Used by the launcher's `POST /sessions/:id/publish-pr` for `git push` + `POST /pulls`; PR `author` is the real user. |
-| `HERMES_GITHUB_READ_TOKEN` (fine-grained PAT, Contents Read) | launcher VM env; baked into sandbox `.git/config` | infra | every 90 days | Lets the sandbox `git clone` + `git fetch`. Cannot push (GitHub returns 403). |
+| `GITHUB_WRITE_TOKEN` (fine-grained PAT, Contents + Pull-requests RW) | launcher VM env **only — never enters the sandbox** | infra | every 90 days | P1.1 single-user OAuth. Used by the launcher's `POST /sessions/:id/publish-pr` for `git push` + `POST /pulls`; PR `author` is the real user. |
+| `GITHUB_READ_TOKEN` (fine-grained PAT, Contents Read) | launcher VM env; baked into sandbox `.git/config` | infra | every 90 days | Lets the sandbox `git clone` + `git fetch`. Cannot push (GitHub returns 403). |
 | `CONTROL_PLANE_BASE_URL` | launcher VM env | infra | n/a | the Worker URL; static per env. Used both for launcher→Worker calls and as the WS dial-back URL given to the runner inside the sandbox. |
 | Slack signing secret + bot token | Hermes agent infra | Hermes team | yearly | not in this repo |
 
@@ -206,11 +206,11 @@ for OAuth secrets because the OAuth dance terminates there
 **Rotation logistics** (kept here as the canonical reference; SETUP §10.3
 moved into this section):
 
-- `HERMES_GITHUB_WRITE_TOKEN` (PAT): rotate every 90 days. Restart launcher to
+- `GITHUB_WRITE_TOKEN` (PAT): rotate every 90 days. Restart launcher to
   pick up the new value. In-flight sessions that have already emitted
   `runner.ready_to_publish` will publish on the new token (the launcher
   reads it at publish time, not at provision time).
-- `HERMES_GITHUB_READ_TOKEN` (PAT): rotate every 90 days. Restart launcher
+- `GITHUB_READ_TOKEN` (PAT): rotate every 90 days. Restart launcher
   so newly-provisioned sandboxes bake the new token into `.git/config`.
   In-flight sandboxes keep using whatever was baked at provision; harmless
   because clone + fetch already happened.
@@ -433,8 +433,8 @@ shortcuts.
 - [ ] Launcher binary deployed; `curl https://launcher/<env>/health` → ok
 - [ ] `scripts/release-smoke.ts` end-to-end → PR opened on the sentinel
       repo, sandbox killed, E2B list empty afterwards
-- [ ] `HERMES_GITHUB_WRITE_TOKEN` set on the launcher (PAT has Contents + Pull-requests RW on the target repos) — launcher-side only, never put it in the sandbox or the Worker
-- [ ] `HERMES_GITHUB_READ_TOKEN` set on the launcher (PAT has Contents Read on the same repos) — baked into the sandbox `.git/config` so clone + fetch work
+- [ ] `GITHUB_WRITE_TOKEN` set on the launcher (PAT has Contents + Pull-requests RW on the target repos) — launcher-side only, never put it in the sandbox or the Worker
+- [ ] `GITHUB_READ_TOKEN` set on the launcher (PAT has Contents Read on the same repos) — baked into the sandbox `.git/config` so clone + fetch work
 - [ ] GitHub OAuth app created; `GITHUB_OAUTH_CLIENT_ID`/`_SECRET` set as
       Worker secrets (`wrangler secret put`)
 - [ ] `OAUTH_TOKEN_ENCRYPTION_KEY` minted (`openssl rand -base64 32`) and
@@ -474,7 +474,7 @@ There is no authentication on the Worker's session-mutating routes. Do
 **not** expose the deployed Worker URL publicly without a Cloudflare
 Access policy or equivalent (Zero Trust, IP allowlist, basic auth via a
 front-end Worker). A second operator hitting `POST /sessions` would push
-under your `HERMES_GITHUB_WRITE_TOKEN`. Multi-user auth (per-user OAuth storage,
+under your `GITHUB_WRITE_TOKEN`. Multi-user auth (per-user OAuth storage,
 per-route auth) is the locked design in [`ROADMAP.md §14`](ROADMAP.md);
 the 1-user mitigation is [§14 Cloudflare Access](#14-locking-the-deployed-worker-behind-cloudflare-access).
 
@@ -513,9 +513,9 @@ the deploy". The launcher VM is the only place in the stack that holds
 *long-lived* secrets in cleartext:
 
 - `E2B_API_KEY` — full sandbox + billing control on the E2B account
-- `HERMES_GITHUB_WRITE_TOKEN` (fine-grained PAT, Contents + Pull-requests RW) — push + open PR on the
+- `GITHUB_WRITE_TOKEN` (fine-grained PAT, Contents + Pull-requests RW) — push + open PR on the
   repos this PAT is scoped to.  Launcher-side only; never enters the sandbox.
-- `HERMES_GITHUB_READ_TOKEN` (fine-grained PAT, Contents Read) — baked into the
+- `GITHUB_READ_TOKEN` (fine-grained PAT, Contents Read) — baked into the
   sandbox `.git/config` so clone + fetch work
 - `ZAI_API_KEY` — drains the Z.AI Coding Plan budget if abused
 
@@ -608,7 +608,7 @@ Hermes:
 - **When to use** the tools (concrete code change against a GitHub repo,
   bounded scope, real PR wanted).
 - **When NOT to use** them (questions, explanations, local-only repos).
-- **Prerequisites** (MCP server registered, `HERMES_GITHUB_WRITE_TOKEN` in
+- **Prerequisites** (MCP server registered, `GITHUB_WRITE_TOKEN` in
   launcher env).
 - **Procedure** (5 ordered steps with completion criteria per the
   Hermes authoring HARDLINE §5).
@@ -658,7 +658,7 @@ Per Hermes' "What goes in skills vs. what stays in Hermes":
 | When to call `start_coding_task` vs. answer directly | SKILL.md `## When to Use` |
 | How to render `pr.created` in Slack/Telegram/Discord | Hermes' platform adapters (their concern) |
 | Which repos a user may touch | Hermes allow-list (their concern) |
-| OAuth preconditions (`HERMES_GITHUB_WRITE_TOKEN` set) | SKILL.md `## Prerequisites` |
+| OAuth preconditions (`GITHUB_WRITE_TOKEN` set) | SKILL.md `## Prerequisites` |
 
 Rule of thumb: **anything the control plane mandates → SKILL.md or MCP
 schema. Anything Hermes chooses → Hermes config / adapter.**
@@ -725,8 +725,8 @@ export ZAI_API_KEY=...
 # GitHub single-user OAuth — PR author = real user (P1.1)
 # Two PATs: WRITE = launcher-side only, READ = baked into sandbox .git/config.
 # See SETUP §5 for scopes.
-export HERMES_GITHUB_WRITE_TOKEN=github_pat_...
-export HERMES_GITHUB_READ_TOKEN=github_pat_...
+export GITHUB_WRITE_TOKEN=github_pat_...
+export GITHUB_READ_TOKEN=github_pat_...
 export GITHUB_USER_LOGIN=your-github-handle
 export GITHUB_USER_EMAIL=you@example.com
 

@@ -9,15 +9,15 @@ ZAI_API_KEY=
 # ---- GitHub single-user OAuth (P1.1, required for opening PRs) ----
 # Two fine-grained PATs.  Both scoped to the repos Hermes operates on.
 #
-#   HERMES_GITHUB_WRITE_TOKEN — Contents + Pull-requests Read & Write.
+#   GITHUB_WRITE_TOKEN — Contents + Pull-requests Read & Write.
 #     LAUNCHER-SIDE ONLY.  Never enters the sandbox.  Used by the
 #     launcher's POST /sessions/:id/publish-pr to push + open the PR.
 #
-#   HERMES_GITHUB_READ_TOKEN  — Contents: Read only.
+#   GITHUB_READ_TOKEN  — Contents: Read only.
 #     Baked into the sandbox's .git/config so clone + fetch work; the
 #     agent cannot push (GitHub returns 403 on the read-only PAT).
-HERMES_GITHUB_WRITE_TOKEN=
-HERMES_GITHUB_READ_TOKEN=
+GITHUB_WRITE_TOKEN=
+GITHUB_READ_TOKEN=
 GITHUB_USER_LOGIN=
 # Optional. Defaults to <login>@users.noreply.github.com.
 GITHUB_USER_EMAIL=

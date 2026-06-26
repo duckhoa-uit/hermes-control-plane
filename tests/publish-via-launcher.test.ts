@@ -64,9 +64,9 @@ describe("publishPr (B1)", () => {
     // The push call shape.
     const [pushCmd, opts] = commandsRun.mock.calls[0] as [string, Record<string, unknown>];
     expect(pushCmd).toContain("git remote add hermes-publish");
-    // Token is referenced via $HERMES_GITHUB_WRITE_TOKEN — passed as env,
+    // Token is referenced via $GITHUB_WRITE_TOKEN — passed as env,
     // never inlined into the command string itself.
-    expect(pushCmd).toContain("$HERMES_GITHUB_WRITE_TOKEN");
+    expect(pushCmd).toContain("$GITHUB_WRITE_TOKEN");
     expect(pushCmd).not.toContain(baseInput.writeToken);
     // Push to HEAD:<branch>; chain ends by removing the temp remote so a
     // failed push still doesn't leave a token-bearing remote behind.
@@ -76,7 +76,7 @@ describe("publishPr (B1)", () => {
     );
 
     // Env is passed via commands.run options.
-    expect((opts.envs as Record<string, string>).HERMES_GITHUB_WRITE_TOKEN).toBe(
+    expect((opts.envs as Record<string, string>).GITHUB_WRITE_TOKEN).toBe(
       baseInput.writeToken,
     );
 

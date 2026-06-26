@@ -125,7 +125,7 @@ key, a fine-grained GitHub PAT. Step-by-step is in
 - **Sandbox lifecycle**: Bun sidecar, E2B Sandboxes (Hobby tier)
 - **Sandbox interior**: Node 22 + bun + `opencode serve` (HTTP/SSE) + custom supervisor/runner
 - **Agent runtime**: OpenCode driving Z.AI (`zai-coding-plan/glm-5.2` default)
-- **Repo access**: two single-user fine-grained GitHub PATs. `HERMES_GITHUB_WRITE_TOKEN` (Contents + Pull-requests RW) lives **only** in the launcher process and is used by `POST /sessions/:id/publish-pr` to push + open PRs on the operator's behalf. `HERMES_GITHUB_READ_TOKEN` (Contents Read) is baked into the sandbox's `.git/config` so clone + fetch work; the sandbox cannot push. Multi-user OAuth is the locked design in [`docs/ROADMAP.md §14`](docs/ROADMAP.md).
+- **Repo access**: two single-user fine-grained GitHub PATs. `GITHUB_WRITE_TOKEN` (Contents + Pull-requests RW) lives **only** in the launcher process and is used by `POST /sessions/:id/publish-pr` to push + open PRs on the operator's behalf. `GITHUB_READ_TOKEN` (Contents Read) is baked into the sandbox's `.git/config` so clone + fetch work; the sandbox cannot push. Multi-user OAuth is the locked design in [`docs/ROADMAP.md §14`](docs/ROADMAP.md).
 
 ## License
 
