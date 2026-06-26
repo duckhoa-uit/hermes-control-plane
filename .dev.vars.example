@@ -8,7 +8,7 @@ ZAI_API_KEY=
 
 # ---- GitHub single-user OAuth (P1.1, required for opening PRs) ----
 # Fine-grained PAT, Contents + Pull-requests read & write.
-GITHUB_USER_TOKEN=
+HERMES_GITHUB_WRITE_TOKEN=
 GITHUB_USER_LOGIN=
 # Optional. Defaults to <login>@users.noreply.github.com.
 GITHUB_USER_EMAIL=

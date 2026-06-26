@@ -7,7 +7,7 @@
 //   - Terminal 2: ngrok tunnel to :8787 (e.g. `ngrok http 8787`)
 //   - Terminal 3: `bun run launcher` with these env vars:
 //       CONTROL_PLANE_BASE_URL=<https ngrok URL>
-//       E2B_API_KEY, ZAI_API_KEY, GITHUB_USER_TOKEN, GITHUB_USER_LOGIN
+//       E2B_API_KEY, ZAI_API_KEY, HERMES_GITHUB_WRITE_TOKEN, GITHUB_USER_LOGIN
 //   - Terminal 4: THIS script:
 //       bun run scripts/e2e-full.ts \
 //         --repo https://github.com/<you>/<throwaway>     \

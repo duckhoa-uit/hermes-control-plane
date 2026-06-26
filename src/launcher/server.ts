@@ -16,7 +16,7 @@
 //   POST /sessions/:id/resume  M5: Sandbox.connect() on a paused sandbox
 //
 // Run:
-//   E2B_API_KEY=... ZAI_API_KEY=... GITHUB_USER_TOKEN=... GITHUB_USER_LOGIN=... \
+//   E2B_API_KEY=... ZAI_API_KEY=... HERMES_GITHUB_WRITE_TOKEN=... GITHUB_USER_LOGIN=... \
 //   CONTROL_PLANE_BASE_URL=https://<deployed-worker>.workers.dev \
 //   bun run src/launcher/server.ts
 
@@ -30,7 +30,7 @@ const CONTROL_PLANE_BASE_URL = process.env.CONTROL_PLANE_BASE_URL;
 const E2B_API_KEY = process.env.E2B_API_KEY;
 const E2B_TEMPLATE = process.env.E2B_TEMPLATE ?? "control-plane-runner";
 const ZAI_API_KEY = process.env.ZAI_API_KEY;
-const GITHUB_USER_TOKEN = process.env.GITHUB_USER_TOKEN;
+const HERMES_GITHUB_WRITE_TOKEN = process.env.HERMES_GITHUB_WRITE_TOKEN;
 const GITHUB_USER_LOGIN = process.env.GITHUB_USER_LOGIN;
 const HERMES_LAUNCHER_SECRET = process.env.HERMES_LAUNCHER_SECRET;
 const MAX_CONCURRENT_SESSIONS = Number(process.env.MAX_CONCURRENT_SESSIONS ?? 10);
@@ -42,7 +42,7 @@ const AUTO_PR = (process.env.CONTROL_PLANE_AUTO_PR ?? "1") !== "0";
 const requiredEnv: Array<[string, string | undefined]> = [
   ["E2B_API_KEY", E2B_API_KEY],
   ["ZAI_API_KEY", ZAI_API_KEY],
-  ["GITHUB_USER_TOKEN", GITHUB_USER_TOKEN],
+  ["HERMES_GITHUB_WRITE_TOKEN", HERMES_GITHUB_WRITE_TOKEN],
   ["GITHUB_USER_LOGIN", GITHUB_USER_LOGIN],
   ["CONTROL_PLANE_BASE_URL", CONTROL_PLANE_BASE_URL],
   ["HERMES_LAUNCHER_SECRET", HERMES_LAUNCHER_SECRET],
@@ -254,11 +254,11 @@ async function resolveParentAmend(
   // from the spawned session id (hermes/<short of spawn id>), not the
   // original PR branch. Source-of-truth is GitHub itself.
   let headBranch = data.session.branch;
-  if (GITHUB_USER_TOKEN) {
+  if (HERMES_GITHUB_WRITE_TOKEN) {
     try {
       const ghResp = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${number}`, {
         headers: {
-          Authorization: `Bearer ${GITHUB_USER_TOKEN}`,
+          Authorization: `Bearer ${HERMES_GITHUB_WRITE_TOKEN}`,
           Accept: "application/vnd.github+json",
         },
       });
@@ -351,7 +351,7 @@ async function handleCreate(req: Request): Promise<Response> {
       e2bApiKey: E2B_API_KEY!,
       e2bTemplate: E2B_TEMPLATE,
       zaiApiKey: ZAI_API_KEY,
-      githubUserToken: process.env.GITHUB_USER_TOKEN,
+      githubUserToken: process.env.HERMES_GITHUB_WRITE_TOKEN,
       githubUserLogin: process.env.GITHUB_USER_LOGIN,
       githubUserEmail: process.env.GITHUB_USER_EMAIL,
       prMode,

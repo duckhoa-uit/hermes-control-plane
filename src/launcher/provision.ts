@@ -207,7 +207,7 @@ export async function provisionSession(input: ProvisionInput): Promise<Provision
       CONTROL_PLANE_RUNNER_TOKEN: input.runnerToken,
       CONTROL_PLANE_WS: input.controlWsUrl,
       ZAI_API_KEY: input.zaiApiKey ?? "",
-      GITHUB_USER_TOKEN: userToken,
+      HERMES_GITHUB_WRITE_TOKEN: userToken,
       GITHUB_USER_LOGIN: userLogin,
       GITHUB_USER_EMAIL: input.githubUserEmail ?? "",
       GITHUB_OWNER: owner,

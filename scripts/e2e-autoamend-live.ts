@@ -58,8 +58,8 @@ const { owner, repo, number } = parsePrKey(PR_KEY);
 
 async function getHeadSha(): Promise<string> {
   if (args.values["head-sha"]) return args.values["head-sha"]!;
-  const token = process.env.GITHUB_USER_TOKEN || "";
-  if (!token) throw new Error("--head-sha not given and GITHUB_USER_TOKEN not set");
+  const token = process.env.HERMES_GITHUB_WRITE_TOKEN || "";
+  if (!token) throw new Error("--head-sha not given and HERMES_GITHUB_WRITE_TOKEN not set");
   const r = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${number}`, {
     headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" },
   });

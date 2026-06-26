@@ -468,9 +468,9 @@ async function generatePrMetadata(
 
 async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
   // Token / git identity / origin / branch are already wired by the launcher
-  // post-clone (src/launcher/provision.ts step 3). Runner uses GITHUB_USER_TOKEN
+  // post-clone (src/launcher/provision.ts step 3). Runner uses HERMES_GITHUB_WRITE_TOKEN
   // (P1.1 single-user OAuth) to call the PR REST endpoint as the real user.
-  const token = process.env.GITHUB_USER_TOKEN || "";
+  const token = process.env.HERMES_GITHUB_WRITE_TOKEN || "";
   const userLogin = process.env.GITHUB_USER_LOGIN || "";
   const owner = process.env.GITHUB_OWNER || "";
   const repo = process.env.GITHUB_REPO || "";
@@ -497,7 +497,7 @@ async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
   const taskDescription = (payload.taskDescription as string) || "";
 
   if (!token || !owner || !repo) {
-    sendError(`Missing GITHUB_USER_TOKEN / owner / repo (token=${!!token} owner=${owner} repo=${repo})`);
+    sendError(`Missing HERMES_GITHUB_WRITE_TOKEN / owner / repo (token=${!!token} owner=${owner} repo=${repo})`);
     return;
   }
 

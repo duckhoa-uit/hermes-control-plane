@@ -101,7 +101,7 @@ other than the author" work correctly.
    - Expiration: 90 days (rotate quarterly).
 2. Export the PAT plus your identity:
    ```bash
-   export GITHUB_USER_TOKEN=github_pat_xxx
+   export HERMES_GITHUB_WRITE_TOKEN=github_pat_xxx
    export GITHUB_USER_LOGIN=your-github-handle
    export GITHUB_USER_EMAIL=you@example.com   # optional; defaults to
                                               # <login>@users.noreply.github.com
@@ -173,7 +173,7 @@ E2B_API_KEY=e2b_xxxxxxxxxxxxxxxxxxxx
 ZAI_API_KEY=…
 
 # GitHub single-user OAuth (P1.1): PR authored by the real user
-GITHUB_USER_TOKEN=github_pat_xxx
+HERMES_GITHUB_WRITE_TOKEN=github_pat_xxx
 GITHUB_USER_LOGIN=your-github-handle
 GITHUB_USER_EMAIL=you@example.com
 ```
@@ -207,7 +207,7 @@ them inline when launching.
 | `CONTROL_PLANE_LAUNCHER_PORT` | default `8789` |
 | `CONTROL_PLANE_AUTO_PR` | `1` (default) = launcher fires `/create-pr` on `review_ready` |
 | `ZAI_API_KEY` | OpenCode (Z.AI) provider key |
-| `GITHUB_USER_TOKEN` / `GITHUB_USER_LOGIN` / `GITHUB_USER_EMAIL` | per-user PR identity |
+| `HERMES_GITHUB_WRITE_TOKEN` / `GITHUB_USER_LOGIN` / `GITHUB_USER_EMAIL` | per-user PR identity |
 | `HERMES_LAUNCHER_SECRET` | required; shared secret. The launcher (a) sends it on `x-hermes-launcher-secret` when reading the Worker's `/pr-index`, and (b) requires it on every inbound REST call (POST `/sessions`, GET/DELETE `/sessions/:id`, POST `/sessions/:id/resume`); requests without a matching header get 401. The local MCP server bundled in the launcher passes it through automatically. Must match the Worker secret. |
 | `MAX_CONCURRENT_SESSIONS` | default 10; E2B Hobby caps at 20 |
 
@@ -226,7 +226,7 @@ ngrok http 8787
 ```bash
 # Terminal 3 — launcher (sidecar)
 export E2B_API_KEY=… ZAI_API_KEY=…
-export GITHUB_USER_TOKEN=… GITHUB_USER_LOGIN=…
+export HERMES_GITHUB_WRITE_TOKEN=… GITHUB_USER_LOGIN=…
 # Use the ngrok URL for both launcher→Worker and runner→Worker.
 export CONTROL_PLANE_BASE_URL=https://abcd-1234.ngrok-free.app
 export E2B_TEMPLATE=control-plane-runner

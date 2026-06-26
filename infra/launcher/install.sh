@@ -145,7 +145,7 @@ ask() {
 env_complete() {
   [[ -f "$ENV_FILE" ]] || return 1
   grep -q "REPLACE_ME" "$ENV_FILE" && return 1
-  for k in E2B_API_KEY ZAI_API_KEY GITHUB_USER_TOKEN GITHUB_USER_LOGIN CONTROL_PLANE_BASE_URL; do
+  for k in E2B_API_KEY ZAI_API_KEY HERMES_GITHUB_WRITE_TOKEN GITHUB_USER_LOGIN CONTROL_PLANE_BASE_URL; do
     grep -qE "^${k}=..*" "$ENV_FILE" || return 1
   done
   return 0
@@ -163,7 +163,7 @@ else
   log "collecting secrets for $ENV_FILE (Ctrl-C to abort + edit by hand later)"
   ask E2B_API_KEY        "E2B_API_KEY (from https://e2b.dev/dashboard)"
   ask ZAI_API_KEY        "ZAI_API_KEY (from https://z.ai/manage-apikey/apikey-list)"
-  ask GITHUB_USER_TOKEN  "GITHUB_USER_TOKEN (fine-grained PAT, Contents+PullRequests RW)"
+  ask HERMES_GITHUB_WRITE_TOKEN  "HERMES_GITHUB_WRITE_TOKEN (fine-grained PAT, Contents+PullRequests RW)"
   ask GITHUB_USER_LOGIN  "GITHUB_USER_LOGIN (your GitHub handle)"
   ask GITHUB_USER_EMAIL  "GITHUB_USER_EMAIL (blank → <login>@users.noreply.github.com)"
   ask CONTROL_PLANE_BASE_URL    "CONTROL_PLANE_BASE_URL (deployed Worker URL)" \
@@ -175,7 +175,7 @@ else
   ask HERMES_LAUNCHER_SECRET    "HERMES_LAUNCHER_SECRET (gates Worker<->launcher; mirror onto Worker)" \
                          "$HERMES_LAUNCHER_SECRET_DEFAULT"
 
-  for k in E2B_API_KEY ZAI_API_KEY GITHUB_USER_TOKEN GITHUB_USER_LOGIN CONTROL_PLANE_BASE_URL HERMES_LAUNCHER_SECRET; do
+  for k in E2B_API_KEY ZAI_API_KEY HERMES_GITHUB_WRITE_TOKEN GITHUB_USER_LOGIN CONTROL_PLANE_BASE_URL HERMES_LAUNCHER_SECRET; do
     if [[ -z "${!k}" ]]; then
       die "$k is required; re-run install.sh or edit $ENV_FILE by hand"
     fi
@@ -194,7 +194,7 @@ E2B_TEMPLATE=control-plane-runner
 ZAI_API_KEY=$ZAI_API_KEY
 
 # ---- GitHub single-user OAuth (P1.1) ----
-GITHUB_USER_TOKEN=$GITHUB_USER_TOKEN
+HERMES_GITHUB_WRITE_TOKEN=$HERMES_GITHUB_WRITE_TOKEN
 GITHUB_USER_LOGIN=$GITHUB_USER_LOGIN
 ${GITHUB_USER_EMAIL:+GITHUB_USER_EMAIL=$GITHUB_USER_EMAIL}
 
