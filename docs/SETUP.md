@@ -20,7 +20,7 @@ for what's next is in [`ROADMAP.md`](ROADMAP.md).
 
 ```bash
 bun install
-bun run test         # 181 tests should pass, no external creds needed
+bun run test         # full unit + integration suite, no external creds needed
 bun run typecheck    # tsc --noEmit clean
 ```
 
@@ -290,9 +290,9 @@ This SETUP file now focuses purely on local development. Continue to
 
 | Step | Command | Pass criterion |
 |---|---|---|
-| Unit + integration tests | `bun run test` | 181/181 (incl. the in-process DO E2E in `tests/e2e-do.test.ts`, webhook parser tests, MCP follow-up tests, PR index single-flight tests) |
+| Unit + integration tests | `bun run test` | all tests pass (incl. the in-process DO E2E in `tests/e2e-do.test.ts`, webhook parser tests, MCP follow-up tests, PR index single-flight tests) |
 | Typecheck | `bun run typecheck` | no output |
-| Real-workerd E2E | start `bunx wrangler dev`, then `bun run e2e:real` | `Summary: 37 passed, 0 failed` |
+| Real-workerd E2E | start `bunx wrangler dev`, then `bun run e2e:real` | exits 0; `0 failed` in the summary |
 | Full-system E2E (optional, costs LLM credits) | launcher + Worker + ngrok up, then `bun run e2e:full --repo https://github.com/<you>/<repo>` | session reaches `completed`; real PR opened |
 | Worker boots | `bun run dev` then `curl http://localhost:8787/health` | `200 OK` |
 | Template build | `bun run template:build` | `template id written to …` |

@@ -192,7 +192,7 @@ without re-asking. Keep items small enough to ship in one PR.
   - Out of scope (intentional): `issue_comment`,
     `pull_request_review_comment`, `@mention`-driven triggers,
     auto-reply bot comments on the PR (status only in the session log).
-  - 181 tests pass (unit + integration). See DEPLOYMENT §13.3 for
+  - Full test suite green (unit + integration). See DEPLOYMENT §13.3 for
     setup, ARCHITECTURE §3.b for the dispatch flow.
 
 ### P2 — Agent capabilities

@@ -346,7 +346,7 @@ Three layers, fastest to slowest:
 | Layer | File | Real things |
 |---|---|---|
 | Unit + in-process E2E | `tests/` (vitest) | Real `SessionDurableObject` class, hand-rolled `cloudflare:workers` shim for `ctx`/WS/storage. Offline. |
-| Real workerd + fake runner | `scripts/e2e-real.ts` | Real Worker via `bunx wrangler dev`, fake runner over HTTP/WS. 37 checks. |
+| Real workerd + fake runner | `scripts/e2e-real.ts` | Real Worker via `bunx wrangler dev`, fake runner over HTTP/WS. |
 | Full system | `scripts/e2e-full.ts` | Real launcher + real E2B sandbox + real OpenCode + real GitHub PR. Costs LLM credits. |
 
 `scripts/sandbox-debug.ts <sandboxId>` is the incident-response
