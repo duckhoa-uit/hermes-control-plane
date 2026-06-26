@@ -65,6 +65,12 @@ export interface ProvisionInput {
         detailsUrl?: string;
         conclusion?: string;
       };
+
+  // B2: gate the runner's publish phase. When true, the runner emits
+  // runner.ready_to_publish over WS and the DO drives the publish via
+  // the launcher's /publish-pr endpoint instead of pushing from inside
+  // the sandbox.
+  publishViaLauncher?: boolean;
 }
 
 export interface ProvisionResult {
@@ -213,6 +219,11 @@ export async function provisionSession(input: ProvisionInput): Promise<Provision
       GITHUB_OWNER: owner,
       GITHUB_REPO: repo,
       GITHUB_BASE_BRANCH: input.baseBranch ?? "main",
+      // B2: forwarded so the runner can branch its publish phase.
+      // B3 will additionally rip HERMES_GITHUB_WRITE_TOKEN from this
+      // map; for now both tokens still ship so the legacy path keeps
+      // working when the flag is false.
+      HERMES_PUBLISH_VIA_LAUNCHER: input.publishViaLauncher ? "true" : "false",
     };
     if (input.prMode) {
       // Runner reads these to switch into amend mode: skips POST /pulls

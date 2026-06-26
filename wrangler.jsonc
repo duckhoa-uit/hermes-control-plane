@@ -25,7 +25,7 @@
   "vars": {
     "E2B_TEMPLATE": "control-plane-runner",
     // PR #A phase 0 wiring. PR #B (publish-via-launcher) reads this.
-    "HERMES_PUBLISH_VIA_LAUNCHER": "false"
+    "HERMES_PUBLISH_VIA_LAUNCHER": "true"
     // CONTROL_PLANE_LAUNCHER_URL is set via `wrangler secret put` in prod
     // (Cloudflare Tunnel URL of the VPS launcher). For `wrangler dev`, set
     // it inline in .dev.vars instead.
