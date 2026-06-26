@@ -133,10 +133,8 @@ Two consumers of the index:
       in case the PR is reopened).
 
    Reviewer "Request changes" and CI failures are webhook-driven —
-   see the auto-amend section below. We do NOT consume PR comments
-   (`issue_comment`), inline review comments
-   (`pull_request_review_comment`), or `@mentions` — manual follow-up
-   goes through MCP (`send_followup_prompt`).
+   see the auto-amend section below. Manual follow-up goes through
+   MCP (`send_followup_prompt`).
 
 2. **MCP `send_followup_prompt`** — when called against a terminal
    session whose PR is still open, the launcher transparently spawns
@@ -210,9 +208,9 @@ Constraints (locked PR #25):
 - Strict single-flight per PR with a 10-minute TTL safety release for
   crashed amends.
 - Self-trigger guard: `reviewerLogin === ownerLogin` is refused.
-- No inline `pull_request_review_comment` subscription.
-- No bot reply comment on the PR (follow-up status lives in the parent
-  session's event log).
+- Status of an auto-amend lives in the parent session's event log
+  (`pr.autofix.triggered` / `pr.autofix.skipped`); no bot reply comment
+  is posted on the PR.
 
 ## 4. Session state machine
 

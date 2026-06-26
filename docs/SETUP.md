@@ -145,10 +145,6 @@ Auto-amend has hard limits per PR (locked in PR #24+#25):
 4. Save. GitHub sends a `ping` immediately — verify response is `200 OK`
    with `{"ok":true,"kind":"ignored","reason":"ping"}` under **Recent Deliveries**.
 
-Hermes does NOT consume `issue_comment`, `pull_request_review_comment`,
-or `@mentions`. Manual follow-up still goes through the MCP gateway
-(`send_followup_prompt`).
-
 ## 6. Public URL for the runner (ngrok in dev)
 
 The runner inside the sandbox dials your Worker over WebSocket, and

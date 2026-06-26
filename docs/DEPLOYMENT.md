@@ -763,10 +763,8 @@ Auto-amend has hard limits:
 - Dedup by `head_sha` — webhook retries with the same sha are no-op
 - Self-review (reviewer == operator) is refused
 
-Hermes does NOT consume `@hermes` mentions, PR comments
-(`issue_comment`), or inline review comments
-(`pull_request_review_comment`). Manual follow-up still goes through
-the MCP gateway.
+Manual follow-up that isn't review/CI driven goes through the MCP
+gateway (`send_followup_prompt`).
 
 **Setup (per repository or per organization):**
 

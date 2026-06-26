@@ -110,7 +110,7 @@ row in the **Notes / PR** column._
 | 10 | WebSocket hibernation | Cloudflare Agents SDK | DO Hibernation API (`ctx.acceptWebSocket` + tagged attachments) + alarm-driven heartbeat; sockets survive DO hibernation | ✅ | Low (cost) | shipped §12.18 |
 | 11 | Multiplayer / author attribution | Yes, per-prompt author | Single implicit owner; no `author_user_id` on events. Explicitly a single-user app until §14 ships (`docs/DEPLOYMENT.md` multi-user Slack rollout depends on §14). | ❌ | Med | P3.1 / §14 |
 | 12 | PR auth | User GitHub OAuth token | **Single-user shipped:** `GITHUB_USER_TOKEN` env (PAT/OAuth) used by the runner for `git push` + `POST /pulls`; PR `author` = real user. App token is fallback. Multi-user (per-user OAuth storage) still locked design in §14. | 🟡 | Low (single user) | P1.1 single-user shipped; §14 = multi-user |
-| 13 | GitHub webhooks | PR open/merge/close → events; auto-trigger on review feedback / CI failure | **Shipped end-to-end.** `POST /webhooks/github` (HMAC-SHA-256, dedup by `X-GitHub-Delivery`) consumes `pull_request`, `pull_request_review`, `check_run`. Lifecycle: merged→archive, closed→mark. Auto-amend: review.changes_requested + check_run.failure spawn an amend session via launcher (single-flight, cap 3 per PR, dedup by head sha, self-review refused). PR comments / @mentions intentionally NOT consumed — manual follow-up still via MCP. | ✅ | Low | PR #24 + #25; see DEPLOYMENT §13.3 |
+| 13 | GitHub webhooks | PR open/merge/close → events; auto-trigger on review feedback / CI failure | **Shipped end-to-end.** `POST /webhooks/github` (HMAC-SHA-256, dedup by `X-GitHub-Delivery`) consumes `pull_request`, `pull_request_review`, `check_run`. Lifecycle: merged→archive, closed→mark. Auto-amend: review.changes_requested + check_run.failure spawn an amend session via launcher (single-flight, cap 3 per PR, dedup by head sha, self-review refused). Manual follow-up still via MCP. | ✅ | Low | PR #24 + #25; see DEPLOYMENT §13.3 |
 | 14 | Verification tools | Sentry/DD/LD/Braintrust/screenshots/computer-use | Test runner only (per profile) | ❌ | Med | |
 | 15 | Skills/MCPs | Encode shipping conventions | None | ❌ | Low | |
 | 16 | Slack client | Yes (with repo classifier) | None | ❌ | Low | |
@@ -189,9 +189,9 @@ without re-asking. Keep items small enough to ship in one PR.
     `pr.autofix.skipped`.
   - Live-verified end-to-end on `duckhoa-uit/lawn` PRs #4–#11
     (full matrix in DEPLOYMENT §13.3).
-  - Out of scope (intentional): `issue_comment`,
-    `pull_request_review_comment`, `@mention`-driven triggers,
-    auto-reply bot comments on the PR (status only in the session log).
+  - Auto-reply bot comments are intentionally not posted; auto-amend
+    status lives in the parent session's event log
+    (`pr.autofix.triggered` / `pr.autofix.skipped`).
   - Full test suite green (unit + integration). See DEPLOYMENT §13.3 for
     setup, ARCHITECTURE §3.b for the dispatch flow.
 
