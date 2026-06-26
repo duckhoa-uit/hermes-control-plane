@@ -37,3 +37,16 @@ jobs:
       # owns lint). Fails if any tracked file is not formatted.
       - name: Format check (biome)
         run: bun run format:check
+
+      # knip: dead-code / unused-export / unused-dependency detector.
+      # We scope to files+exports+deps+unlisted; unused TYPES are excluded
+      # because we deliberately ship forward-compat type surface in
+      # src/core/types.ts that may not have an internal consumer yet.
+      - name: Dead-code check (knip)
+        run: bun run deadcode
+
+      # jscpd: copy-paste / duplicate-code detector. Threshold 4% gives
+      # headroom over today's 0.12%; CI fails if duplication regresses
+      # past that bar.
+      - name: Duplicate-code check (jscpd)
+        run: bun run dupes

@@ -46,8 +46,8 @@ export function getValidTransitions(from: SessionStatus): SessionStatus[] {
   return VALID_TRANSITIONS[from] ?? [];
 }
 
-export const TERMINAL_STATES: SessionStatus[] = ["completed", "failed", "aborted"];
-export const ACTIVE_STATES: SessionStatus[] = [
+const TERMINAL_STATES: SessionStatus[] = ["completed", "failed", "aborted"];
+const ACTIVE_STATES: SessionStatus[] = [
   "provisioning",
   "runner_connecting",
   "ready",

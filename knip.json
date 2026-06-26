@@ -1,0 +1,23 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": [
+    "src/worker/index.ts",
+    "src/launcher/server.ts",
+    "src/runner/supervisor.ts",
+    "src/runner/sandbox-runner.ts",
+    "src/runner/bridge.ts",
+    "src/mcp/server.ts",
+    "src/testing/{api-client,fake-runner}.ts",
+    "scripts/**/*.ts",
+    "infra/**/*.ts",
+    "tests/**/*.test.ts"
+  ],
+  "project": ["src/**/*.ts", "scripts/**/*.ts", "infra/**/*.ts"],
+  "ignore": ["src/runner/sandbox-runner.ts.txt"],
+  "ignoreBinaries": ["wrangler"],
+  "ignoreDependencies": ["cloudflare", "jscpd"],
+  "ignoreExportsUsedInFile": true,
+  "vitest": {
+    "config": ["vitest.config.ts"]
+  }
+}
