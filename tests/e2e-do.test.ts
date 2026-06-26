@@ -1081,6 +1081,74 @@ describe("E2E: Worker + SessionDurableObject", () => {
     expect(data.baseBranch).toBe("develop");
   });
 
+  it("POST /webhooks/github: pull_request.synchronize does NOT emit pr.closed (only the `closed` action is a lifecycle event)", async () => {
+    const env = makeEnv() as any;
+    env.GITHUB_WEBHOOK_SECRET = "supersecret";
+
+    // Seed: create session + register PR via pr.created.
+    const createResp = await worker.fetch(new Request("https://x/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+    }), env);
+    const { id, runnerToken } = await createResp.json() as any;
+    const wsUrl = `https://x/sessions/${id}/runner?token=${runnerToken}`;
+    const wsResp = await worker.fetch(new Request(wsUrl, { headers: { Upgrade: "websocket" } }), env);
+    const ws = (wsResp as any).webSocket;
+    await new Promise(r => setTimeout(r, 5));
+    ws.send(JSON.stringify({ type: "runner.complete", sessionId: id, payload: { summary: "ok", changedFiles: [] } }));
+    await new Promise(r => setTimeout(r, 10));
+    await worker.fetch(new Request(`https://x/sessions/${id}/create-pr`, { method: "POST" }), env);
+    await new Promise(r => setTimeout(r, 10));
+    ws.send(JSON.stringify({
+      type: "runner.event",
+      sessionId: id,
+      payload: { eventType: "pr.created", eventPayload: { url: "https://github.com/o/r/pull/21", ownerLogin: "alice" } },
+    }));
+    await new Promise(r => setTimeout(r, 10));
+
+    // synchronize delivery (NOT closed) — should be acked but produce
+    // ZERO pr.closed events and leave index status untouched.
+    const payload = {
+      action: "synchronize",
+      number: 21,
+      pull_request: {
+        number: 21,
+        html_url: "https://github.com/o/r/pull/21",
+        state: "open", merged: false, merged_at: null,
+        base: { ref: "main" }, head: { ref: "hermes/x" }, user: { login: "alice" },
+      },
+      repository: { full_name: "o/r" }, sender: { login: "alice" },
+    };
+    const body = JSON.stringify(payload);
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey("raw", enc.encode("supersecret"),
+      { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const buf = await crypto.subtle.sign("HMAC", key, enc.encode(body));
+    const hex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+
+    const resp = await worker.fetch(new Request("https://x/webhooks/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "pull_request",
+        "x-github-delivery": "del-sync-1",
+        "x-hub-signature-256": "sha256=" + hex,
+      },
+      body,
+    }), env);
+    expect(resp.status).toBe(200);
+    const j = await resp.json();
+    expect(j).toMatchObject({ ok: true, kind: "pull_request", archived: false });
+
+    // Index row is still `open`, NOT bumped to closed.
+    expect(prIndexRows.get("o/r#21")?.status).toBe("open");
+
+    // Event log has NO pr.closed / pr.merged events.
+    const state = await env.SESSION_DO.get(env.SESSION_DO.idFromString(id)).getState();
+    const lifecycle = state.events.filter((e: any) => e.type === "pr.closed" || e.type === "pr.merged");
+    expect(lifecycle.length).toBe(0);
+  });
+
   it("POST /webhooks/github: unknown PR (not Hermes-opened) is acked without dispatch", async () => {
     const env = makeEnv() as any;
     env.GITHUB_WEBHOOK_SECRET = "supersecret";

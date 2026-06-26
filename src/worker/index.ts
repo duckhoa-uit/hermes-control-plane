@@ -230,40 +230,41 @@ export default {
           );
         }
 
-        // Update the index row's lifecycle status. We only flip on the
-        // 'closed' action; opened/reopened/edited/synchronize stay open.
-        const isClose = parsed.action === "closed";
-        if (isClose) {
-          await prIndex.markStatus(parsed.prKey, parsed.merged ? "merged" : "closed");
-        }
-
-        // Dispatch to the SessionDurableObject for state-machine work
-        // (emit event, archive on merged).
+        // Lifecycle actions we care about. GitHub also fires `opened`,
+        // `reopened`, `edited`, `synchronize`, `ready_for_review`, etc.
+        // for the `pull_request` event — none of those map onto a Hermes
+        // lifecycle transition, so we ack the delivery (the dedup ring
+        // already recorded it) and skip the SESSION_DO dispatch. Without
+        // this guard, every `synchronize` from the runner's own
+        // `git push` would emit a spurious `pr.closed` (merged=false).
         let archived = false;
-        try {
-          const sessId = env.SESSION_DO.idFromString(row.sessionId);
-          const stub = env.SESSION_DO.get(sessId);
-          const res = await asRpc(stub).ingestPrLifecycleEvent({
-            merged: parsed.merged,
-            prUrl: parsed.prUrl,
-            deliveryId: parsed.deliveryId,
-            senderLogin: parsed.senderLogin,
-          });
-          archived = res.archived;
-        } catch (err) {
-          console.error(
-            `[webhook] SESSION_DO.ingestPrLifecycleEvent failed for ${row.sessionId}: ` +
-            `${(err as Error).message}`,
-          );
-          // Don't 5xx — we already updated the index row and dedup'd the
-          // delivery. GitHub retrying won't fix a missing/corrupt DO.
-        }
+        if (parsed.action === "closed") {
+          await prIndex.markStatus(parsed.prKey, parsed.merged ? "merged" : "closed");
+          try {
+            const sessId = env.SESSION_DO.idFromString(row.sessionId);
+            const stub = env.SESSION_DO.get(sessId);
+            const res = await asRpc(stub).ingestPrLifecycleEvent({
+              merged: parsed.merged,
+              prUrl: parsed.prUrl,
+              deliveryId: parsed.deliveryId,
+              senderLogin: parsed.senderLogin,
+            });
+            archived = res.archived;
+          } catch (err) {
+            console.error(
+              `[webhook] SESSION_DO.ingestPrLifecycleEvent failed for ${row.sessionId}: ` +
+              `${(err as Error).message}`,
+            );
+            // Don't 5xx — we already updated the index row and dedup'd the
+            // delivery. GitHub retrying won't fix a missing/corrupt DO.
+          }
 
-        // Drop the row once the PR is merged so the index doesn't grow
-        // unbounded. Closed-unmerged stays so future re-open events
-        // still land on the right session.
-        if (parsed.merged) {
-          await prIndex.unregister(parsed.prKey);
+          // Drop the row once the PR is merged so the index doesn't grow
+          // unbounded. Closed-unmerged stays so future re-open events
+          // still land on the right session.
+          if (parsed.merged) {
+            await prIndex.unregister(parsed.prKey);
+          }
         }
 
         console.log(
