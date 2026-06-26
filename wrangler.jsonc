@@ -10,18 +10,23 @@
   },
   "durable_objects": {
     "bindings": [
-      { "name": "SESSION_DO", "class_name": "SessionDurableObject" }
+      { "name": "SESSION_DO", "class_name": "SessionDurableObject" },
+      { "name": "PR_INDEX_DO", "class_name": "PrIndexDurableObject" }
     ]
   },
   "migrations": [
     // Free-plan Workers require SQLite-backed Durable Objects.
     // (Paid plans accept new_classes too; SQLite works on both.)
-    { "tag": "v1", "new_sqlite_classes": ["SessionDurableObject"] }
+    { "tag": "v1", "new_sqlite_classes": ["SessionDurableObject"] },
+    // v2 (webhooks/PR-followup): singleton PR index DO. Existing
+    // SessionDurableObject instances are untouched by this migration.
+    { "tag": "v2", "new_sqlite_classes": ["PrIndexDurableObject"] }
   ],
   "vars": {
     "E2B_TEMPLATE": "control-plane-runner"
     // CONTROL_PLANE_LAUNCHER_URL is set via `wrangler secret put` in prod
     // (Cloudflare Tunnel URL of the VPS launcher). For `wrangler dev`, set
     // it inline in .dev.vars instead.
+    // GITHUB_WEBHOOK_SECRET is also a wrangler secret.
   }
 }

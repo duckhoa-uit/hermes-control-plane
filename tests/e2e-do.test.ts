@@ -223,6 +223,8 @@ class FakeStub {
   abortSession() { return (this.instance as any).abortSession(); }
   createPR() { return (this.instance as any).createPR(); }
   sendPrompt(text: string) { return (this.instance as any).sendPrompt(text); }
+  ingestPrLifecycleEvent(input: any) { return (this.instance as any).ingestPrLifecycleEvent(input); }
+  appendAutofixEvent(input: any) { return (this.instance as any).appendAutofixEvent(input); }
 }
 
 interface FakeEnv {
@@ -230,6 +232,21 @@ interface FakeEnv {
     newUniqueId(): { toString(): string };
     idFromString(s: string): { toString(): string };
     get(id: { toString(): string }): FakeStub;
+  };
+  PR_INDEX_DO: {
+    idFromName(name: string): { toString(): string };
+    get(id: { toString(): string }): {
+      register(prKey: string, sessionId: string, ownerLogin: string): Promise<any>;
+      lookup(prKey: string): Promise<any>;
+      markStatus(prKey: string, status: string): Promise<any>;
+      recordDelivery(prKey: string, deliveryId: string): Promise<boolean>;
+      incrementAutofix(prKey: string): Promise<number | null>;
+      unregister(prKey: string): Promise<boolean>;
+      tryClaimAmendSlot(prKey: string, headSha: string, sessionId: string, cap: number): Promise<any>;
+      transferAmendSlot(prKey: string, newSessionId: string): Promise<void>;
+      releaseAmendSlot(prKey: string, sessionId: string): Promise<void>;
+      rollbackAmendClaim(prKey: string, sessionId: string): Promise<void>;
+    };
   };
   E2B_TEMPLATE: string;
   E2B_API_KEY?: string;
@@ -239,6 +256,25 @@ interface FakeEnv {
 
 let counter = 0;
 const instances = new Map<string, { instance: SessionDurableObject; ctx: FakeDOState }>();
+// Captured calls to PR_INDEX_DO.register so tests can assert wiring.
+export const prIndexRegisterCalls: { prKey: string; sessionId: string; ownerLogin: string }[] = [];
+
+// Process-wide in-memory PR index — mirrors the real singleton DO so the
+// webhook handler can lookup/markStatus/recordDelivery against the same
+// row that onPRCreated registered. Reset in beforeEach.
+type FakeIndexRow = {
+  prKey: string;
+  sessionId: string;
+  ownerLogin: string;
+  status: "open" | "merged" | "closed";
+  autofixCount: number;
+  lastUpdated: number;
+  recentDeliveries: string[];
+  lastAmendedSha?: string;
+  inflightAmendStartedAt?: number;
+  inflightSessionId?: string;
+};
+export const prIndexRows = new Map<string, FakeIndexRow>();
 
 function makeEnv(): FakeEnv {
   return {
@@ -263,6 +299,99 @@ function makeEnv(): FakeEnv {
         return new FakeStub(entry.instance, (req) => (entry!.instance as any).fetch(req));
       },
     },
+    PR_INDEX_DO: {
+      idFromName(name: string) { return { toString: () => `pr-index:${name}` }; },
+      get(_id: { toString(): string }) {
+        return {
+          async register(prKey: string, sessionId: string, ownerLogin: string) {
+            prIndexRegisterCalls.push({ prKey, sessionId, ownerLogin });
+            const existing = prIndexRows.get(prKey);
+            const row: FakeIndexRow = {
+              prKey,
+              sessionId,
+              ownerLogin,
+              status: "open",
+              autofixCount: existing?.autofixCount ?? 0,
+              lastUpdated: Date.now(),
+              recentDeliveries: existing?.recentDeliveries ?? [],
+              lastAmendedSha: existing?.lastAmendedSha,
+              inflightAmendStartedAt: existing?.inflightAmendStartedAt,
+              inflightSessionId: existing?.inflightSessionId,
+            };
+            prIndexRows.set(prKey, row);
+            return row;
+          },
+          async lookup(prKey: string) {
+            return prIndexRows.get(prKey) ?? null;
+          },
+          async markStatus(prKey: string, status: "open" | "merged" | "closed") {
+            const row = prIndexRows.get(prKey);
+            if (!row) return null;
+            row.status = status;
+            row.lastUpdated = Date.now();
+            return row;
+          },
+          async recordDelivery(prKey: string, deliveryId: string): Promise<boolean> {
+            const row = prIndexRows.get(prKey);
+            if (!row) return true;
+            if (row.recentDeliveries.includes(deliveryId)) return false;
+            row.recentDeliveries.push(deliveryId);
+            while (row.recentDeliveries.length > 16) row.recentDeliveries.shift();
+            return true;
+          },
+          async incrementAutofix(prKey: string): Promise<number | null> {
+            const row = prIndexRows.get(prKey);
+            if (!row) return null;
+            row.autofixCount += 1;
+            return row.autofixCount;
+          },
+          async unregister(prKey: string): Promise<boolean> {
+            return prIndexRows.delete(prKey);
+          },
+          async tryClaimAmendSlot(prKey: string, headSha: string, sessionId: string, cap: number) {
+            const row = prIndexRows.get(prKey);
+            if (!row) return { ok: false, reason: "unknown_pr" };
+            if (row.status !== "open") return { ok: false, reason: "cap_exceeded", row };
+            if (row.autofixCount >= cap) return { ok: false, reason: "cap_exceeded", row };
+            if (row.lastAmendedSha === headSha) return { ok: false, reason: "duplicate_sha", row };
+            const now = Date.now();
+            if (row.inflightAmendStartedAt && now - row.inflightAmendStartedAt < 10 * 60 * 1000) {
+              return { ok: false, reason: "inflight", row };
+            }
+            row.autofixCount += 1;
+            row.lastAmendedSha = headSha;
+            row.inflightAmendStartedAt = now;
+            row.inflightSessionId = sessionId;
+            row.lastUpdated = now;
+            return { ok: true, autofixCount: row.autofixCount };
+          },
+          async transferAmendSlot(prKey: string, newSessionId: string) {
+            const row = prIndexRows.get(prKey);
+            if (!row || !row.inflightAmendStartedAt) return;
+            row.inflightSessionId = newSessionId;
+            row.lastUpdated = Date.now();
+          },
+          async releaseAmendSlot(prKey: string, sessionId: string) {
+            const row = prIndexRows.get(prKey);
+            if (!row) return;
+            if (row.inflightSessionId && row.inflightSessionId !== sessionId) return;
+            row.inflightAmendStartedAt = undefined;
+            row.inflightSessionId = undefined;
+            row.lastUpdated = Date.now();
+          },
+          async rollbackAmendClaim(prKey: string, sessionId: string) {
+            const row = prIndexRows.get(prKey);
+            if (!row) return;
+            if (row.inflightSessionId !== sessionId) return;
+            row.autofixCount = Math.max(0, row.autofixCount - 1);
+            row.lastAmendedSha = undefined;
+            row.inflightAmendStartedAt = undefined;
+            row.inflightSessionId = undefined;
+            row.lastUpdated = Date.now();
+          },
+        };
+      },
+    },
     E2B_TEMPLATE: "control-plane-runner",
     E2B_API_KEY: "test-key", // present so provisionSandbox doesn't fail
     CONTROL_PLANE_LAUNCHER_URL: "http://launcher.invalid",
@@ -276,7 +405,7 @@ const PROFILE: Partial<ProjectProfile> = {
   allowedTools: ["read", "edit"],
 };
 
-beforeEach(() => { instances.clear(); counter = 0; });
+beforeEach(() => { instances.clear(); counter = 0; prIndexRegisterCalls.length = 0; prIndexRows.clear(); });
 
 // ---------- Tests ----------
 
@@ -418,17 +547,28 @@ describe("E2E: Worker + SessionDurableObject", () => {
     const prCmd = runnerInbound.find(m => m.type === "command" && m.command?.type === "pr.create");
     expect(prCmd).toBeDefined();
 
-    // Runner reports pr.created
+    // Runner reports pr.created (with ownerLogin → PR_INDEX_DO.register).
     sendRunner({
       type: "runner.event",
       sessionId: id,
-      payload: { eventType: "pr.created", eventPayload: { url: "https://github.com/x/y/pull/1" } },
+      payload: {
+        eventType: "pr.created",
+        eventPayload: {
+          url: "https://github.com/x/y/pull/1",
+          ownerLogin: "alice",
+        },
+      },
     });
     await new Promise(r => setTimeout(r, 10));
 
     const state2 = await env.SESSION_DO.get(env.SESSION_DO.idFromString(id)).getState();
     expect(state2.session.status).toBe("completed");
     expect(state2.artifacts.prUrl).toBe("https://github.com/x/y/pull/1");
+
+    // PR Index DO must have one register() call for this PR.
+    expect(prIndexRegisterCalls).toEqual([
+      { prKey: "x/y#1", sessionId: id, ownerLogin: "alice" },
+    ]);
   });
 
   it("event log persists per-key (storage.list returns events in seq order)", async () => {
@@ -694,5 +834,964 @@ describe("E2E: Worker + SessionDurableObject", () => {
 
     const state2 = await env.SESSION_DO.get(env.SESSION_DO.idFromString(id)).getState();
     expect(state2.session.status).toBe("running");
+  });
+  // ---- GitHub webhook route ----
+
+  it("POST /webhooks/github: rejects missing secret with 503", async () => {
+    const env = makeEnv() as any;
+    delete env.GITHUB_WEBHOOK_SECRET;
+    const resp = await worker.fetch(
+      new Request("https://x/webhooks/github", {
+        method: "POST",
+        headers: { "x-github-event": "ping", "x-github-delivery": "d1" },
+        body: "{}",
+      }),
+      env,
+    );
+    expect(resp.status).toBe(503);
+  });
+
+  it("POST /webhooks/github: rejects bad HMAC with 401", async () => {
+    const env = makeEnv() as any;
+    env.GITHUB_WEBHOOK_SECRET = "supersecret";
+    const resp = await worker.fetch(
+      new Request("https://x/webhooks/github", {
+        method: "POST",
+        headers: {
+          "x-github-event": "pull_request",
+          "x-github-delivery": "d2",
+          "x-hub-signature-256": "sha256=" + "0".repeat(64),
+        },
+        body: '{"foo":"bar"}',
+      }),
+      env,
+    );
+    expect(resp.status).toBe(401);
+  });
+
+  it("POST /webhooks/github: unknown PR (not in index) acks 200 with kind=unknown_pr", async () => {
+    const env = makeEnv() as any;
+    env.GITHUB_WEBHOOK_SECRET = "supersecret";
+    const payload = {
+      action: "closed",
+      number: 7,
+      pull_request: {
+        number: 7,
+        html_url: "https://github.com/o/r/pull/7",
+        state: "closed",
+        merged: true,
+        merged_at: "2026-06-26T00:00:00Z",
+        base: { ref: "main" },
+        head: { ref: "hermes/x" },
+        user: { login: "alice" },
+      },
+      repository: { full_name: "o/r" },
+      sender: { login: "alice" },
+    };
+    const body = JSON.stringify(payload);
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      "raw",
+      enc.encode("supersecret"),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const buf = await crypto.subtle.sign("HMAC", key, enc.encode(body));
+    const hex = Array.from(new Uint8Array(buf))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    const resp = await worker.fetch(
+      new Request("https://x/webhooks/github", {
+        method: "POST",
+        headers: {
+          "x-github-event": "pull_request",
+          "x-github-delivery": "d3",
+          "x-hub-signature-256": "sha256=" + hex,
+        },
+        body,
+      }),
+      env,
+    );
+    expect(resp.status).toBe(200);
+    const json = await resp.json();
+    expect(json).toMatchObject({ ok: true, kind: "unknown_pr" });
+  });
+
+  it("POST /webhooks/github: pull_request.closed(merged=true) -> session archived + index unregistered", async () => {
+    const env = makeEnv() as any;
+    env.GITHUB_WEBHOOK_SECRET = "supersecret";
+
+    // 1. Drive a session to `completed` with a registered PR.
+    const createResp = await worker.fetch(new Request("https://x/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+    }), env);
+    const { id, runnerToken } = await createResp.json() as any;
+    const wsUrl = `https://x/sessions/${id}/runner?token=${runnerToken}`;
+    const wsResp = await worker.fetch(new Request(wsUrl, { headers: { Upgrade: "websocket" } }), env);
+    const ws = (wsResp as any).webSocket;
+    const sendRunner = (m: any) => ws.send(JSON.stringify(m));
+
+    await new Promise(r => setTimeout(r, 5));
+    sendRunner({ type: "runner.event", sessionId: id, payload: { eventType: "agent.done", eventPayload: {} } });
+    sendRunner({ type: "runner.complete", sessionId: id, payload: { summary: "ok", changedFiles: [] } });
+    await new Promise(r => setTimeout(r, 10));
+    await worker.fetch(new Request(`https://x/sessions/${id}/create-pr`, { method: "POST" }), env);
+    await new Promise(r => setTimeout(r, 10));
+    sendRunner({
+      type: "runner.event",
+      sessionId: id,
+      payload: {
+        eventType: "pr.created",
+        eventPayload: { url: "https://github.com/o/r/pull/9", ownerLogin: "alice" },
+      },
+    });
+    await new Promise(r => setTimeout(r, 10));
+    // Confirm completed + indexed.
+    const s1 = await env.SESSION_DO.get(env.SESSION_DO.idFromString(id)).getState();
+    expect(s1.session.status).toBe("completed");
+    expect(prIndexRows.get("o/r#9")?.sessionId).toBe(id);
+
+    // 2. Sign + deliver a pull_request.closed (merged) webhook.
+    const payload = {
+      action: "closed",
+      number: 9,
+      pull_request: {
+        number: 9,
+        html_url: "https://github.com/o/r/pull/9",
+        state: "closed", merged: true, merged_at: "2026-06-26T00:00:00Z",
+        base: { ref: "main" }, head: { ref: "hermes/x" }, user: { login: "alice" },
+      },
+      repository: { full_name: "o/r" }, sender: { login: "alice" },
+    };
+    const body = JSON.stringify(payload);
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey("raw", enc.encode("supersecret"),
+      { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const buf = await crypto.subtle.sign("HMAC", key, enc.encode(body));
+    const hex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+
+    const resp = await worker.fetch(new Request("https://x/webhooks/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "pull_request",
+        "x-github-delivery": "del-merged-1",
+        "x-hub-signature-256": "sha256=" + hex,
+      },
+      body,
+    }), env);
+    expect(resp.status).toBe(200);
+    const j = await resp.json();
+    expect(j).toMatchObject({ ok: true, kind: "pull_request", archived: true });
+
+    // Session state should be `archived`; PR row gone from the index.
+    const s2 = await env.SESSION_DO.get(env.SESSION_DO.idFromString(id)).getState();
+    expect(s2.session.status).toBe("archived");
+    expect(prIndexRows.has("o/r#9")).toBe(false);
+    // Event log records pr.merged with the delivery id.
+    const merged = s2.events.find((e: any) => e.type === "pr.merged");
+    expect(merged?.payload?.deliveryId).toBe("del-merged-1");
+  });
+
+  it("POST /webhooks/github: duplicate delivery is deduped (no second event, no extra transitions)", async () => {
+    const env = makeEnv() as any;
+    env.GITHUB_WEBHOOK_SECRET = "supersecret";
+
+    // Seed the PR index with an open PR for a fresh session.
+    const createResp = await worker.fetch(new Request("https://x/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+    }), env);
+    const { id, runnerToken } = await createResp.json() as any;
+    const wsUrl = `https://x/sessions/${id}/runner?token=${runnerToken}`;
+    const wsResp = await worker.fetch(new Request(wsUrl, { headers: { Upgrade: "websocket" } }), env);
+    const ws = (wsResp as any).webSocket;
+    await new Promise(r => setTimeout(r, 5));
+    ws.send(JSON.stringify({ type: "runner.complete", sessionId: id, payload: { summary: "ok", changedFiles: [] } }));
+    await new Promise(r => setTimeout(r, 10));
+    await worker.fetch(new Request(`https://x/sessions/${id}/create-pr`, { method: "POST" }), env);
+    await new Promise(r => setTimeout(r, 10));
+    ws.send(JSON.stringify({
+      type: "runner.event",
+      sessionId: id,
+      payload: {
+        eventType: "pr.created",
+        eventPayload: { url: "https://github.com/o/r/pull/11", ownerLogin: "alice" },
+      },
+    }));
+    await new Promise(r => setTimeout(r, 10));
+
+    // pr.closed (NOT merged) → emit one pr.closed, no archive.
+    const payload = {
+      action: "closed",
+      number: 11,
+      pull_request: {
+        number: 11,
+        html_url: "https://github.com/o/r/pull/11",
+        state: "closed", merged: false, merged_at: null,
+        base: { ref: "main" }, head: { ref: "hermes/x" }, user: { login: "alice" },
+      },
+      repository: { full_name: "o/r" }, sender: { login: "alice" },
+    };
+    const body = JSON.stringify(payload);
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey("raw", enc.encode("supersecret"),
+      { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const buf = await crypto.subtle.sign("HMAC", key, enc.encode(body));
+    const hex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+    const headers = {
+      "x-github-event": "pull_request",
+      "x-github-delivery": "del-dup-1",
+      "x-hub-signature-256": "sha256=" + hex,
+    };
+
+    // First delivery: processed.
+    const r1 = await worker.fetch(new Request("https://x/webhooks/github", { method: "POST", headers, body }), env);
+    expect(r1.status).toBe(200);
+    expect(await r1.json()).toMatchObject({ ok: true, kind: "pull_request", archived: false });
+
+    // Second delivery, same delivery id: deduped.
+    const r2 = await worker.fetch(new Request("https://x/webhooks/github", { method: "POST", headers, body }), env);
+    expect(r2.status).toBe(200);
+    expect(await r2.json()).toMatchObject({ ok: true, kind: "duplicate" });
+
+    // Event log still has exactly one pr.closed.
+    const state = await env.SESSION_DO.get(env.SESSION_DO.idFromString(id)).getState();
+    const closed = state.events.filter((e: any) => e.type === "pr.closed");
+    expect(closed.length).toBe(1);
+    // Session remains `completed` (not archived) because unmerged close.
+    expect(state.session.status).toBe("completed");
+    // Index row still present (closed-unmerged keeps the row).
+    expect(prIndexRows.get("o/r#11")?.status).toBe("closed");
+  });
+
+  it("POST /webhooks/github: pull_request.reopened on a closed-unmerged PR flips index status back to open", async () => {
+    const env = makeEnv() as any;
+    env.GITHUB_WEBHOOK_SECRET = "supersecret";
+
+    // Seed a session with a registered PR.
+    const createResp = await worker.fetch(new Request("https://x/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+    }), env);
+    const { id, runnerToken } = await createResp.json() as any;
+    const wsUrl = `https://x/sessions/${id}/runner?token=${runnerToken}`;
+    const wsResp = await worker.fetch(new Request(wsUrl, { headers: { Upgrade: "websocket" } }), env);
+    const ws = (wsResp as any).webSocket;
+    await new Promise(r => setTimeout(r, 5));
+    ws.send(JSON.stringify({ type: "runner.complete", sessionId: id, payload: { summary: "ok", changedFiles: [] } }));
+    await new Promise(r => setTimeout(r, 10));
+    await worker.fetch(new Request(`https://x/sessions/${id}/create-pr`, { method: "POST" }), env);
+    await new Promise(r => setTimeout(r, 10));
+    ws.send(JSON.stringify({
+      type: "runner.event",
+      sessionId: id,
+      payload: {
+        eventType: "pr.created",
+        eventPayload: { url: "https://github.com/o/r/pull/19", ownerLogin: "alice" },
+      },
+    }));
+    await new Promise(r => setTimeout(r, 10));
+
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey("raw", enc.encode("supersecret"),
+      { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const sign = async (body: string) => {
+      const buf = await crypto.subtle.sign("HMAC", key, enc.encode(body));
+      return "sha256=" + Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+    };
+
+    // 1. closed-unmerged -> status="closed", row retained.
+    const closedBody = JSON.stringify({
+      action: "closed", number: 19,
+      pull_request: {
+        number: 19, html_url: "https://github.com/o/r/pull/19",
+        state: "closed", merged: false, merged_at: null,
+        base: { ref: "main" }, head: { ref: "hermes/x" }, user: { login: "alice" },
+      },
+      repository: { full_name: "o/r" }, sender: { login: "alice" },
+    });
+    const r1 = await worker.fetch(new Request("https://x/webhooks/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "pull_request",
+        "x-github-delivery": "del-reopen-close",
+        "x-hub-signature-256": await sign(closedBody),
+      },
+      body: closedBody,
+    }), env);
+    expect(r1.status).toBe(200);
+    expect(prIndexRows.get("o/r#19")?.status).toBe("closed");
+
+    // 2. reopened -> status flips back to "open".
+    const reopenBody = JSON.stringify({
+      action: "reopened", number: 19,
+      pull_request: {
+        number: 19, html_url: "https://github.com/o/r/pull/19",
+        state: "open", merged: false, merged_at: null,
+        base: { ref: "main" }, head: { ref: "hermes/x" }, user: { login: "alice" },
+      },
+      repository: { full_name: "o/r" }, sender: { login: "alice" },
+    });
+    const r2 = await worker.fetch(new Request("https://x/webhooks/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "pull_request",
+        "x-github-delivery": "del-reopen-open",
+        "x-hub-signature-256": await sign(reopenBody),
+      },
+      body: reopenBody,
+    }), env);
+    expect(r2.status).toBe(200);
+    const j2 = await r2.json();
+    expect(j2).toMatchObject({ ok: true, kind: "pull_request", archived: false });
+    expect(prIndexRows.get("o/r#19")?.status).toBe("open");
+  });
+
+  // ---- Worker GET /pr-index ----
+
+  it("GET /pr-index?key=…: returns the row registered by onPRCreated", async () => {
+    const env = makeEnv() as any;
+    env.HERMES_LAUNCHER_SECRET = "launcher-secret";
+    const createResp = await worker.fetch(new Request("https://x/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+    }), env);
+    const { id, runnerToken } = await createResp.json() as any;
+    const wsUrl = `https://x/sessions/${id}/runner?token=${runnerToken}`;
+    const wsResp = await worker.fetch(new Request(wsUrl, { headers: { Upgrade: "websocket" } }), env);
+    const ws = (wsResp as any).webSocket;
+    await new Promise(r => setTimeout(r, 5));
+    ws.send(JSON.stringify({ type: "runner.complete", sessionId: id, payload: { summary: "ok", changedFiles: [] } }));
+    await new Promise(r => setTimeout(r, 10));
+    await worker.fetch(new Request(`https://x/sessions/${id}/create-pr`, { method: "POST" }), env);
+    await new Promise(r => setTimeout(r, 10));
+    ws.send(JSON.stringify({
+      type: "runner.event",
+      sessionId: id,
+      payload: { eventType: "pr.created", eventPayload: { url: "https://github.com/o/r/pull/13", ownerLogin: "alice" } },
+    }));
+    await new Promise(r => setTimeout(r, 10));
+
+    const resp = await worker.fetch(new Request("https://x/pr-index?key=" + encodeURIComponent("o/r#13"), {
+      headers: { "x-hermes-launcher-secret": "launcher-secret" },
+    }), env);
+    expect(resp.status).toBe(200);
+    const { row } = (await resp.json()) as any;
+    expect(row).toMatchObject({ prKey: "o/r#13", sessionId: id, ownerLogin: "alice", status: "open" });
+  });
+
+  it("GET /pr-index missing key -> 400", async () => {
+    const env = makeEnv() as any;
+    env.HERMES_LAUNCHER_SECRET = "launcher-secret";
+    const resp = await worker.fetch(new Request("https://x/pr-index", {
+      headers: { "x-hermes-launcher-secret": "launcher-secret" },
+    }), env);
+    expect(resp.status).toBe(400);
+  });
+
+  it("GET /pr-index unknown PR -> 404", async () => {
+    const env = makeEnv() as any;
+    env.HERMES_LAUNCHER_SECRET = "launcher-secret";
+    const resp = await worker.fetch(new Request("https://x/pr-index?key=o/r%23999", {
+      headers: { "x-hermes-launcher-secret": "launcher-secret" },
+    }), env);
+    expect(resp.status).toBe(404);
+  });
+
+  it("GET /pr-index without HERMES_LAUNCHER_SECRET set on Worker -> 503", async () => {
+    const env = makeEnv() as any;
+    delete env.HERMES_LAUNCHER_SECRET;
+    const resp = await worker.fetch(new Request("https://x/pr-index?key=o/r%23999"), env);
+    expect(resp.status).toBe(503);
+  });
+
+  it("GET /pr-index with missing or wrong secret header -> 401", async () => {
+    const env = makeEnv() as any;
+    env.HERMES_LAUNCHER_SECRET = "launcher-secret";
+    const noHeader = await worker.fetch(new Request("https://x/pr-index?key=o/r%23999"), env);
+    expect(noHeader.status).toBe(401);
+    const wrong = await worker.fetch(new Request("https://x/pr-index?key=o/r%23999", {
+      headers: { "x-hermes-launcher-secret": "nope" },
+    }), env);
+    expect(wrong.status).toBe(401);
+  });
+
+  // ---- DO getState surfaces repoUrl + baseBranch (consumed by launcher amend resolver) ----
+
+  it("getState returns repoUrl + baseBranch from the profile", async () => {
+    const env = makeEnv() as any;
+    const createResp = await worker.fetch(new Request("https://x/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: "p1",
+        taskDescription: "t",
+        repoUrl: "https://github.com/o/r",
+        profile: { ...PROFILE, defaultBranch: "develop" },
+      }),
+    }), env);
+    const { id } = await createResp.json() as any;
+    const getResp = await worker.fetch(new Request(`https://x/sessions/${id}`), env);
+    expect(getResp.status).toBe(200);
+    const data = (await getResp.json()) as any;
+    expect(data.repoUrl).toBe("https://github.com/o/r");
+    expect(data.baseBranch).toBe("develop");
+  });
+
+  it("POST /webhooks/github: pull_request.synchronize does NOT emit pr.closed (only the `closed` action is a lifecycle event)", async () => {
+    const env = makeEnv() as any;
+    env.GITHUB_WEBHOOK_SECRET = "supersecret";
+
+    // Seed: create session + register PR via pr.created.
+    const createResp = await worker.fetch(new Request("https://x/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+    }), env);
+    const { id, runnerToken } = await createResp.json() as any;
+    const wsUrl = `https://x/sessions/${id}/runner?token=${runnerToken}`;
+    const wsResp = await worker.fetch(new Request(wsUrl, { headers: { Upgrade: "websocket" } }), env);
+    const ws = (wsResp as any).webSocket;
+    await new Promise(r => setTimeout(r, 5));
+    ws.send(JSON.stringify({ type: "runner.complete", sessionId: id, payload: { summary: "ok", changedFiles: [] } }));
+    await new Promise(r => setTimeout(r, 10));
+    await worker.fetch(new Request(`https://x/sessions/${id}/create-pr`, { method: "POST" }), env);
+    await new Promise(r => setTimeout(r, 10));
+    ws.send(JSON.stringify({
+      type: "runner.event",
+      sessionId: id,
+      payload: { eventType: "pr.created", eventPayload: { url: "https://github.com/o/r/pull/21", ownerLogin: "alice" } },
+    }));
+    await new Promise(r => setTimeout(r, 10));
+
+    // synchronize delivery (NOT closed) — should be acked but produce
+    // ZERO pr.closed events and leave index status untouched.
+    const payload = {
+      action: "synchronize",
+      number: 21,
+      pull_request: {
+        number: 21,
+        html_url: "https://github.com/o/r/pull/21",
+        state: "open", merged: false, merged_at: null,
+        base: { ref: "main" }, head: { ref: "hermes/x" }, user: { login: "alice" },
+      },
+      repository: { full_name: "o/r" }, sender: { login: "alice" },
+    };
+    const body = JSON.stringify(payload);
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey("raw", enc.encode("supersecret"),
+      { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const buf = await crypto.subtle.sign("HMAC", key, enc.encode(body));
+    const hex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+
+    const resp = await worker.fetch(new Request("https://x/webhooks/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "pull_request",
+        "x-github-delivery": "del-sync-1",
+        "x-hub-signature-256": "sha256=" + hex,
+      },
+      body,
+    }), env);
+    expect(resp.status).toBe(200);
+    const j = await resp.json();
+    expect(j).toMatchObject({ ok: true, kind: "pull_request", archived: false });
+
+    // Index row is still `open`, NOT bumped to closed.
+    expect(prIndexRows.get("o/r#21")?.status).toBe("open");
+
+    // Event log has NO pr.closed / pr.merged events.
+    const state = await env.SESSION_DO.get(env.SESSION_DO.idFromString(id)).getState();
+    const lifecycle = state.events.filter((e: any) => e.type === "pr.closed" || e.type === "pr.merged");
+    expect(lifecycle.length).toBe(0);
+  });
+
+  it("POST /webhooks/github: unknown PR (not Hermes-opened) is acked without dispatch", async () => {
+    const env = makeEnv() as any;
+    env.GITHUB_WEBHOOK_SECRET = "supersecret";
+
+    const payload = {
+      action: "closed",
+      number: 99,
+      pull_request: {
+        number: 99,
+        html_url: "https://github.com/o/r/pull/99",
+        state: "closed", merged: true, merged_at: "2026-06-26T00:00:00Z",
+        base: { ref: "main" }, head: { ref: "feat/x" }, user: { login: "bob" },
+      },
+      repository: { full_name: "o/r" }, sender: { login: "bob" },
+    };
+    const body = JSON.stringify(payload);
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey("raw", enc.encode("supersecret"),
+      { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const buf = await crypto.subtle.sign("HMAC", key, enc.encode(body));
+    const hex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+
+    const resp = await worker.fetch(new Request("https://x/webhooks/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "pull_request",
+        "x-github-delivery": "del-unknown",
+        "x-hub-signature-256": "sha256=" + hex,
+      },
+      body,
+    }), env);
+    expect(resp.status).toBe(200);
+    expect(await resp.json()).toMatchObject({ ok: true, kind: "unknown_pr" });
+  });
+
+  // ---- Auto-amend on reviewer feedback + CI failure ----
+
+  // Helper that signs an arbitrary webhook body with the configured
+  // secret + builds a Request. Centralizing this keeps the integration
+  // tests below readable.
+  async function postWebhook(env: any, event: string, deliveryId: string, payload: unknown): Promise<Response> {
+    const body = JSON.stringify(payload);
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      "raw", enc.encode(env.GITHUB_WEBHOOK_SECRET),
+      { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+    );
+    const buf = await crypto.subtle.sign("HMAC", key, enc.encode(body));
+    const hex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+    return worker.fetch(new Request("https://x/webhooks/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": event,
+        "x-github-delivery": deliveryId,
+        "x-hub-signature-256": "sha256=" + hex,
+      },
+      body,
+    }), env);
+  }
+
+  // Drives a session to `completed` with a registered PR.
+  async function seedPr(env: any, prKey: string, prUrl: string): Promise<string> {
+    const createResp = await worker.fetch(new Request("https://x/sessions", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+    }), env);
+    const { id, runnerToken } = await createResp.json() as any;
+    const wsResp = await worker.fetch(
+      new Request(`https://x/sessions/${id}/runner?token=${runnerToken}`, { headers: { Upgrade: "websocket" } }),
+      env,
+    );
+    const ws = (wsResp as any).webSocket;
+    await new Promise(r => setTimeout(r, 5));
+    ws.send(JSON.stringify({ type: "runner.complete", sessionId: id, payload: { summary: "ok", changedFiles: [] } }));
+    await new Promise(r => setTimeout(r, 10));
+    await worker.fetch(new Request(`https://x/sessions/${id}/create-pr`, { method: "POST" }), env);
+    await new Promise(r => setTimeout(r, 10));
+    ws.send(JSON.stringify({
+      type: "runner.event", sessionId: id,
+      payload: { eventType: "pr.created", eventPayload: { url: prUrl, ownerLogin: "alice" } },
+    }));
+    await new Promise(r => setTimeout(r, 10));
+    return id;
+  }
+
+  function reviewChangesPayload(prNumber: number, headSha: string, reviewer: string, body: string | null = "fix the loop") {
+    return {
+      action: "submitted",
+      pull_request: {
+        number: prNumber,
+        html_url: `https://github.com/o/r/pull/${prNumber}`,
+        state: "open",
+        head: { sha: headSha, ref: "hermes/x" },
+        base: { ref: "main" },
+      },
+      review: {
+        id: 1,
+        state: "changes_requested",
+        body,
+        user: { login: reviewer, type: "User" },
+        submitted_at: "2026-06-26T00:00:00Z",
+      },
+      repository: { full_name: "o/r" },
+      sender: { login: reviewer, type: "User" },
+    };
+  }
+
+  function checkRunFailedPayload(prNumber: number, headSha: string, name: string, conclusion: "failure" | "timed_out" = "failure") {
+    return {
+      action: "completed",
+      check_run: {
+        id: 1, name, head_sha: headSha,
+        status: "completed", conclusion,
+        html_url: "https://github.com/o/r/runs/1",
+        details_url: "https://github.com/o/r/actions/runs/1",
+        pull_requests: [{ number: prNumber, head: { ref: "hermes/x", sha: headSha } }],
+      },
+      repository: { full_name: "o/r" },
+      sender: { login: "github-actions[bot]", type: "Bot" },
+    };
+  }
+
+  // Mock global fetch for the launcher call. Vitest does not auto-restore
+  // between tests in the same file; manage manually.
+  let savedFetch: typeof globalThis.fetch;
+  function mockLauncher(handler: (req: Request) => Promise<Response>): void {
+    savedFetch = globalThis.fetch;
+    globalThis.fetch = async (input: any, init?: any) => {
+      const req = input instanceof Request ? input : new Request(input, init);
+      const url = new URL(req.url);
+      // Only intercept the launcher's /sessions; everything else goes to
+      // the real fetch (none expected in these tests).
+      if (url.host === "launcher.test" && url.pathname === "/sessions") {
+        return handler(req);
+      }
+      return savedFetch(input, init);
+    };
+  }
+  function restoreFetch(): void {
+    if (savedFetch) globalThis.fetch = savedFetch;
+  }
+
+  it("review_changes_requested: claims slot, calls launcher, emits pr.autofix.triggered on parent", async () => {
+    const env = makeEnv() as any;
+    env.GITHUB_WEBHOOK_SECRET = "supersecret";
+    env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
+    const parentId = await seedPr(env, "o/r#42", "https://github.com/o/r/pull/42");
+
+    env.HERMES_LAUNCHER_SECRET = "test-launcher-secret";
+    let launcherCall: any = null;
+    let launcherSecretHeader: string | null = null;
+    mockLauncher(async (req) => {
+      launcherSecretHeader = req.headers.get("x-hermes-launcher-secret");
+      launcherCall = await req.json();
+      return new Response(JSON.stringify({ sessionId: "sess-amend-1", sandboxId: "sbx-1" }), { ...({ status: 201 }), headers: { "content-type": "application/json" } });
+    });
+    try {
+      const resp = await postWebhook(env, "pull_request_review", "del-review-1",
+        reviewChangesPayload(42, "sha-1", "reviewer1", "rename foo -> bar"));
+      expect(resp.status).toBe(200);
+      const body = await resp.json() as any;
+      expect(body).toMatchObject({
+        dispatched: true,
+        newSessionId: "sess-amend-1",
+        autofixCount: 1,
+      });
+    } finally { restoreFetch(); }
+
+    // Launcher got the shared secret header so its auth check accepts the call.
+    expect(launcherSecretHeader).toBe("test-launcher-secret");
+    // Launcher got parentSessionId + a built taskDescription that quotes the review body.
+    expect(launcherCall).toMatchObject({ parentSessionId: parentId });
+    expect(launcherCall.taskDescription).toContain("rename foo -> bar");
+    expect(launcherCall.taskDescription).toContain("@reviewer1");
+
+    // Parent session has a pr.autofix.triggered event.
+    const state = await env.SESSION_DO.get(env.SESSION_DO.idFromString(parentId)).getState();
+    const triggered = state.events.find((e: any) => e.type === "pr.autofix.triggered");
+    expect(triggered.payload).toMatchObject({
+      trigger: "review_changes_requested",
+      deliveryId: "del-review-1",
+      headSha: "sha-1",
+      reviewerLogin: "reviewer1",
+      newSessionId: "sess-amend-1",
+    });
+
+    // Slot is now held by the SPAWNED session id (transferAmendSlot).
+    expect(prIndexRows.get("o/r#42")?.inflightSessionId).toBe("sess-amend-1");
+    expect(prIndexRows.get("o/r#42")?.autofixCount).toBe(1);
+  });
+
+  it("review.approved / review.commented are ignored (no dispatch, no event)", async () => {
+    const env = makeEnv() as any;
+    env.GITHUB_WEBHOOK_SECRET = "supersecret";
+    env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
+    await seedPr(env, "o/r#43", "https://github.com/o/r/pull/43");
+
+    let called = false;
+    mockLauncher(async () => { called = true; return new Response(JSON.stringify({}), { ...({ status: 500 }), headers: { "content-type": "application/json" } }); });
+    try {
+      const approved = reviewChangesPayload(43, "sha-A", "reviewer2", "lgtm");
+      (approved.review as any).state = "approved";
+      const resp = await postWebhook(env, "pull_request_review", "del-rev-app", approved);
+      expect(resp.status).toBe(200);
+      const j = await resp.json() as any;
+      expect(j).toMatchObject({ kind: "ignored" });
+    } finally { restoreFetch(); }
+    expect(called).toBe(false);
+    expect(prIndexRows.get("o/r#43")?.inflightSessionId).toBeUndefined();
+  });
+
+  it("self-review (reviewer === ownerLogin) is skipped with skipReason=self_review", async () => {
+    const env = makeEnv() as any;
+    env.GITHUB_WEBHOOK_SECRET = "supersecret";
+    env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
+    const parentId = await seedPr(env, "o/r#44", "https://github.com/o/r/pull/44");
+
+    let called = false;
+    mockLauncher(async () => { called = true; return new Response(JSON.stringify({}), { ...({ status: 500 }), headers: { "content-type": "application/json" } }); });
+    try {
+      const resp = await postWebhook(env, "pull_request_review", "del-rev-self",
+        reviewChangesPayload(44, "sha-self", "alice", "i had second thoughts"));
+      expect(resp.status).toBe(200);
+      expect((await resp.json() as any).reason).toBe("self_review");
+    } finally { restoreFetch(); }
+    expect(called).toBe(false);
+    const state = await env.SESSION_DO.get(env.SESSION_DO.idFromString(parentId)).getState();
+    const ev = state.events.find((e: any) => e.type === "pr.autofix.skipped");
+    expect(ev.payload.skipReason).toBe("self_review");
+  });
+
+  it("self-check_run (sender User === ownerLogin) is skipped with skipReason=self_check_run", async () => {
+    const env = makeEnv() as any;
+    env.GITHUB_WEBHOOK_SECRET = "supersecret";
+    env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
+    const parentId = await seedPr(env, "o/r#53", "https://github.com/o/r/pull/53");
+
+    // Workflow ran under operator's User PAT instead of github-actions[bot].
+    const payload = {
+      action: "completed",
+      check_run: {
+        id: 1, name: "ci / unit", head_sha: "sha-self-cr",
+        status: "completed", conclusion: "failure",
+        html_url: "https://github.com/o/r/runs/1",
+        details_url: "https://github.com/o/r/actions/runs/1",
+        pull_requests: [{ number: 53, head: { ref: "hermes/x", sha: "sha-self-cr" } }],
+      },
+      repository: { full_name: "o/r" },
+      sender: { login: "alice", type: "User" }, // operator login, User type
+    };
+    let called = false;
+    mockLauncher(async () => { called = true; return new Response(JSON.stringify({}), { ...({ status: 500 }), headers: { "content-type": "application/json" } }); });
+    try {
+      const resp = await postWebhook(env, "check_run", "del-cr-self", payload);
+      expect(resp.status).toBe(200);
+      expect((await resp.json() as any).reason).toBe("self_check_run");
+    } finally { restoreFetch(); }
+    expect(called).toBe(false);
+    const state = await env.SESSION_DO.get(env.SESSION_DO.idFromString(parentId)).getState();
+    const ev = state.events.find((e: any) => e.type === "pr.autofix.skipped");
+    expect(ev.payload.skipReason).toBe("self_check_run");
+  });
+
+  it("check_run.failure with sender=github-actions[bot] (Bot) is NOT treated as self even if name collides", async () => {
+    const env = makeEnv() as any;
+    env.GITHUB_WEBHOOK_SECRET = "supersecret";
+    env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
+    await seedPr(env, "o/r#54", "https://github.com/o/r/pull/54");
+    // Sender is a Bot with login "alice" (same as ownerLogin); we still
+    // dispatch because the senderType guard requires "User".
+    const payload = {
+      action: "completed",
+      check_run: {
+        id: 1, name: "ci / unit", head_sha: "sha-bot",
+        status: "completed", conclusion: "failure",
+        html_url: "https://github.com/o/r/runs/1",
+        details_url: "https://github.com/o/r/actions/runs/1",
+        pull_requests: [{ number: 54, head: { ref: "hermes/x", sha: "sha-bot" } }],
+      },
+      repository: { full_name: "o/r" },
+      sender: { login: "alice", type: "Bot" },
+    };
+    mockLauncher(async () => new Response(JSON.stringify({ sessionId: "sess-bot", sandboxId: "sbx-b" }), { ...({ status: 201 }), headers: { "content-type": "application/json" } }));
+    try {
+      const resp = await postWebhook(env, "check_run", "del-bot", payload);
+      expect((await resp.json() as any).dispatched).toBe(true);
+    } finally { restoreFetch(); }
+  });
+
+  it("check_run.failure: dispatches with built taskDescription including detailsUrl", async () => {
+    const env = makeEnv() as any;
+    env.GITHUB_WEBHOOK_SECRET = "supersecret";
+    env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
+    const parentId = await seedPr(env, "o/r#45", "https://github.com/o/r/pull/45");
+
+    let launcherCall: any = null;
+    mockLauncher(async (req) => {
+      launcherCall = await req.json();
+      return new Response(JSON.stringify({ sessionId: "sess-cr-1", sandboxId: "sbx-2" }), { ...({ status: 201 }), headers: { "content-type": "application/json" } });
+    });
+    try {
+      const resp = await postWebhook(env, "check_run", "del-cr-1",
+        checkRunFailedPayload(45, "sha-cr", "ci / unit"));
+      const j = await resp.json() as any;
+      expect(j).toMatchObject({ dispatched: true, newSessionId: "sess-cr-1" });
+    } finally { restoreFetch(); }
+    expect(launcherCall.parentSessionId).toBe(parentId);
+    expect(launcherCall.taskDescription).toContain("ci / unit");
+    expect(launcherCall.taskDescription).toContain("https://github.com/o/r/actions/runs/1");
+    const state = await env.SESSION_DO.get(env.SESSION_DO.idFromString(parentId)).getState();
+    const ev = state.events.find((e: any) => e.type === "pr.autofix.triggered");
+    expect(ev.payload.checkName).toBe("ci / unit");
+  });
+
+  it("cap_exceeded: 4th trigger after 3 successful amends is rejected", async () => {
+    const env = makeEnv() as any;
+    env.GITHUB_WEBHOOK_SECRET = "supersecret";
+    env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
+    const parentId = await seedPr(env, "o/r#46", "https://github.com/o/r/pull/46");
+
+    let n = 0;
+    mockLauncher(async () => {
+      n++;
+      return new Response(JSON.stringify({ sessionId: `sess-cap-${n}`, sandboxId: `sbx-${n}` }), { ...({ status: 201 }), headers: { "content-type": "application/json" } });
+    });
+    try {
+      for (let i = 1; i <= 3; i++) {
+        const resp = await postWebhook(env, "pull_request_review", `del-cap-${i}`,
+          reviewChangesPayload(46, `sha-cap-${i}`, "rev"));
+        const j = await resp.json() as any;
+        expect(j.dispatched).toBe(true);
+        // simulate spawned session reaching terminal so the next claim can succeed
+        prIndexRows.get("o/r#46")!.inflightAmendStartedAt = undefined;
+        prIndexRows.get("o/r#46")!.inflightSessionId = undefined;
+      }
+      const resp = await postWebhook(env, "pull_request_review", "del-cap-4",
+        reviewChangesPayload(46, "sha-cap-4", "rev"));
+      const j = await resp.json() as any;
+      expect(j).toMatchObject({ dispatched: false, reason: "cap_exceeded" });
+    } finally { restoreFetch(); }
+    expect(n).toBe(3);
+    const state = await env.SESSION_DO.get(env.SESSION_DO.idFromString(parentId)).getState();
+    const triggered = state.events.filter((e: any) => e.type === "pr.autofix.triggered");
+    const skipped = state.events.filter((e: any) => e.type === "pr.autofix.skipped");
+    expect(triggered.length).toBe(3);
+    expect(skipped.length).toBe(1);
+    expect(skipped[0].payload.skipReason).toBe("cap_exceeded");
+  });
+
+  it("duplicate_sha: second review on the same head sha is skipped", async () => {
+    const env = makeEnv() as any;
+    env.GITHUB_WEBHOOK_SECRET = "supersecret";
+    env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
+    await seedPr(env, "o/r#47", "https://github.com/o/r/pull/47");
+
+    mockLauncher(async () => new Response(JSON.stringify({ sessionId: "sess-dup-1", sandboxId: "sbx-d" }), { ...({ status: 201 }), headers: { "content-type": "application/json" } }));
+    try {
+      const r1 = await postWebhook(env, "pull_request_review", "del-dup-1",
+        reviewChangesPayload(47, "sha-X", "rev"));
+      expect((await r1.json() as any).dispatched).toBe(true);
+      // Pretend the first amend finished, releasing the slot.
+      prIndexRows.get("o/r#47")!.inflightAmendStartedAt = undefined;
+      prIndexRows.get("o/r#47")!.inflightSessionId = undefined;
+      // Same head sha (e.g. reviewer re-submits): refused.
+      const r2 = await postWebhook(env, "pull_request_review", "del-dup-2",
+        reviewChangesPayload(47, "sha-X", "rev"));
+      expect(await r2.json()).toMatchObject({ dispatched: false, reason: "duplicate_sha" });
+    } finally { restoreFetch(); }
+  });
+
+  it("inflight: concurrent triggers — second is refused while first is running", async () => {
+    const env = makeEnv() as any;
+    env.GITHUB_WEBHOOK_SECRET = "supersecret";
+    env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
+    await seedPr(env, "o/r#48", "https://github.com/o/r/pull/48");
+
+    mockLauncher(async () => new Response(JSON.stringify({ sessionId: "sess-inf-1", sandboxId: "sbx-i" }), { ...({ status: 201 }), headers: { "content-type": "application/json" } }));
+    try {
+      const r1 = await postWebhook(env, "pull_request_review", "del-inf-1",
+        reviewChangesPayload(48, "sha-A", "rev"));
+      expect((await r1.json() as any).dispatched).toBe(true);
+      // First still inflight (we did NOT clear it). Second must be refused.
+      const r2 = await postWebhook(env, "check_run", "del-inf-2",
+        checkRunFailedPayload(48, "sha-B", "ci"));
+      expect(await r2.json()).toMatchObject({ dispatched: false, reason: "inflight" });
+    } finally { restoreFetch(); }
+  });
+
+  it("launcher unreachable: slot is released so next trigger can retry", async () => {
+    const env = makeEnv() as any;
+    env.GITHUB_WEBHOOK_SECRET = "supersecret";
+    env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
+    await seedPr(env, "o/r#49", "https://github.com/o/r/pull/49");
+
+    let callCount = 0;
+    mockLauncher(async () => {
+      callCount++;
+      if (callCount === 1) return new Response(JSON.stringify({ error: "boom" }), { ...({ status: 500 }), headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify({ sessionId: "sess-r-1", sandboxId: "sbx-r" }), { ...({ status: 201 }), headers: { "content-type": "application/json" } });
+    });
+    try {
+      const r1 = await postWebhook(env, "pull_request_review", "del-recover-1",
+        reviewChangesPayload(49, "sha-A", "rev"));
+      expect(await r1.json()).toMatchObject({ dispatched: false, reason: "launcher_500" });
+      // Rollback must have cleared autofixCount + lastAmendedSha so a
+      // retry on the SAME sha is allowed.
+      expect(prIndexRows.get("o/r#49")?.autofixCount).toBe(0);
+      expect(prIndexRows.get("o/r#49")?.lastAmendedSha).toBeUndefined();
+      const r2 = await postWebhook(env, "pull_request_review", "del-recover-2",
+        reviewChangesPayload(49, "sha-A", "rev"));
+      expect((await r2.json() as any).dispatched).toBe(true);
+    } finally { restoreFetch(); }
+    expect(callCount).toBe(2);
+  });
+
+  it("launcher 2xx without sessionId: rollback claim + dispatched=false (slot not stuck)", async () => {
+    const env = makeEnv() as any;
+    env.GITHUB_WEBHOOK_SECRET = "supersecret";
+    env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
+    await seedPr(env, "o/r#52", "https://github.com/o/r/pull/52");
+
+    // Launcher returns 200 OK but the body has no sessionId — could be a
+    // misconfigured launcher, a proxy injecting a static page, etc.
+    mockLauncher(async () => new Response(JSON.stringify({ ok: true }), {
+      ...({ status: 200 }), headers: { "content-type": "application/json" },
+    }));
+    try {
+      const r1 = await postWebhook(env, "pull_request_review", "del-nosess-1",
+        reviewChangesPayload(52, "sha-N", "rev"));
+      expect(await r1.json()).toMatchObject({ dispatched: false, reason: "launcher_no_session_id" });
+      // Slot must be fully released (no inflight, autofixCount rolled back,
+      // lastAmendedSha cleared) so a retry on the same sha is allowed.
+      const row = prIndexRows.get("o/r#52");
+      expect(row?.inflightAmendStartedAt).toBeUndefined();
+      expect(row?.inflightSessionId).toBeUndefined();
+      expect(row?.autofixCount).toBe(0);
+      expect(row?.lastAmendedSha).toBeUndefined();
+    } finally { restoreFetch(); }
+
+    // Second attempt with a real sessionId succeeds (proves the slot is
+    // fully reclaimable after the no-sessionId rollback).
+    mockLauncher(async () => new Response(JSON.stringify({ sessionId: "sess-recover", sandboxId: "sbx" }), {
+      ...({ status: 201 }), headers: { "content-type": "application/json" },
+    }));
+    try {
+      const r2 = await postWebhook(env, "pull_request_review", "del-nosess-2",
+        reviewChangesPayload(52, "sha-N", "rev"));
+      expect((await r2.json() as any).dispatched).toBe(true);
+    } finally { restoreFetch(); }
+  });
+
+  it("CONTROL_PLANE_LAUNCHER_URL unset: skip with reason=launcher_not_configured", async () => {
+    const env = makeEnv() as any;
+    env.GITHUB_WEBHOOK_SECRET = "supersecret";
+    delete env.CONTROL_PLANE_LAUNCHER_URL;
+    const parentId = await seedPr(env, "o/r#50", "https://github.com/o/r/pull/50");
+    const resp = await postWebhook(env, "pull_request_review", "del-no-launch",
+      reviewChangesPayload(50, "sha-N", "rev"));
+    expect(await resp.json()).toMatchObject({ dispatched: false, reason: "launcher_not_configured" });
+    const state = await env.SESSION_DO.get(env.SESSION_DO.idFromString(parentId)).getState();
+    const skipped = state.events.find((e: any) => e.type === "pr.autofix.skipped");
+    expect(skipped.payload.skipReason).toBe("launcher_not_configured");
+  });
+
+  it("HERMES_AUTOFIX_CAP env override is honored", async () => {
+    const env = makeEnv() as any;
+    env.GITHUB_WEBHOOK_SECRET = "supersecret";
+    env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
+    env.HERMES_AUTOFIX_CAP = "1";
+    await seedPr(env, "o/r#51", "https://github.com/o/r/pull/51");
+    mockLauncher(async () => new Response(JSON.stringify({ sessionId: "sess-x", sandboxId: "sbx-x" }), { ...({ status: 201 }), headers: { "content-type": "application/json" } }));
+    try {
+      const r1 = await postWebhook(env, "pull_request_review", "del-cap1-1",
+        reviewChangesPayload(51, "sha-1", "rev"));
+      expect((await r1.json() as any).dispatched).toBe(true);
+      prIndexRows.get("o/r#51")!.inflightAmendStartedAt = undefined;
+      prIndexRows.get("o/r#51")!.inflightSessionId = undefined;
+      const r2 = await postWebhook(env, "pull_request_review", "del-cap1-2",
+        reviewChangesPayload(51, "sha-2", "rev"));
+      expect(await r2.json()).toMatchObject({ dispatched: false, reason: "cap_exceeded" });
+    } finally { restoreFetch(); }
   });
 });

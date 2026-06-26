@@ -71,14 +71,23 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // ---- HTTP ----
 
+const LAUNCHER_SECRET = process.env.HERMES_LAUNCHER_SECRET || "";
+
 async function http<T = any>(
   method: "GET" | "POST" | "DELETE",
   url: string,
   body?: unknown,
 ): Promise<{ status: number; body: T; raw: string }> {
+  // Launcher REST routes are gated by HERMES_LAUNCHER_SECRET; always
+  // send the header so this script works against launchers that enforce
+  // auth and noops against ones that don't.
+  const isLauncher = url.startsWith(LAUNCHER);
+  const headers: Record<string, string> = {};
+  if (body) headers["Content-Type"] = "application/json";
+  if (isLauncher && LAUNCHER_SECRET) headers["x-hermes-launcher-secret"] = LAUNCHER_SECRET;
   const resp = await fetch(url, {
     method,
-    headers: body ? { "Content-Type": "application/json" } : undefined,
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   });
   const raw = await resp.text();

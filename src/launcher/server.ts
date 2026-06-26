@@ -32,6 +32,7 @@ const E2B_TEMPLATE = process.env.E2B_TEMPLATE ?? "control-plane-runner";
 const ZAI_API_KEY = process.env.ZAI_API_KEY;
 const GITHUB_USER_TOKEN = process.env.GITHUB_USER_TOKEN;
 const GITHUB_USER_LOGIN = process.env.GITHUB_USER_LOGIN;
+const HERMES_LAUNCHER_SECRET = process.env.HERMES_LAUNCHER_SECRET;
 const MAX_CONCURRENT_SESSIONS = Number(process.env.MAX_CONCURRENT_SESSIONS ?? 10);
 // When false, the sidecar will NOT auto-trigger /create-pr on review_ready.
 // Useful for e2e tests that need to send follow-up prompts before the
@@ -44,6 +45,7 @@ const requiredEnv: Array<[string, string | undefined]> = [
   ["GITHUB_USER_TOKEN", GITHUB_USER_TOKEN],
   ["GITHUB_USER_LOGIN", GITHUB_USER_LOGIN],
   ["CONTROL_PLANE_BASE_URL", CONTROL_PLANE_BASE_URL],
+  ["HERMES_LAUNCHER_SECRET", HERMES_LAUNCHER_SECRET],
 ];
 const missing = requiredEnv.filter(([, v]) => !v).map(([k]) => k);
 if (missing.length > 0) {
@@ -51,7 +53,12 @@ if (missing.length > 0) {
   process.exit(1);
 }
 
-const TERMINAL_STATUSES = new Set(["completed", "failed", "aborted"]);
+// Sandbox-cleanup terminal set. Includes `archived` because a webhook
+// (pull_request.closed merged=true) can transition completed -> archived
+// before the watcher next polls; without `archived` here the watcher
+// would never observe a terminal state and the sandbox would stay
+// tracked until the 24h E2B deadline.
+const TERMINAL_STATUSES = new Set(["completed", "failed", "aborted", "archived"]);
 
 interface ActiveSession {
   sandboxId: string;
@@ -142,15 +149,138 @@ if (status === "review_ready" && !prTriggered && AUTO_PR) {
 
 interface CreateBody {
   taskDescription: string;
-  repoUrl: string;
+  repoUrl?: string;
   projectId?: string;
   baseBranch?: string;
+  // Follow-up amend: when set, the launcher resolves repoUrl/baseBranch
+  // and the prMode triple from the parent session's state + the global
+  // PR index. The caller only needs to supply taskDescription.
+  parentSessionId?: string;
+}
+
+interface PrIndexRowWire {
+  prKey: string;
+  sessionId: string;
+  ownerLogin: string;
+  status: "open" | "merged" | "closed";
+  autofixCount: number;
+}
+
+/** Constant-time string compare for shared-secret auth on launcher
+ *  REST routes. Avoids leaking match length via early-exit equality. */
+function timingSafeEqualStrings(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < a.length; i++) {
+    mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return mismatch === 0;
+}
+
+async function resolveParentAmend(
+  parentSessionId: string,
+): Promise<{
+  ok: true;
+  repoUrl: string;
+  baseBranch: string;
+  prMode: { branch: string; prNumber: number; prUrl: string };
+} | { ok: false; status: number; error: string; reason: string }> {
+  // 1. Parent session state — needs repoUrl, baseBranch, branch, prUrl.
+  const sResp = await fetch(`${CONTROL_PLANE_BASE_URL}/sessions/${parentSessionId}`);
+  if (sResp.status === 404) {
+    return { ok: false, status: 404, error: "parent session not found", reason: "parentSessionId does not exist" };
+  }
+  if (!sResp.ok) {
+    return { ok: false, status: 502, error: "worker getState failed", reason: `${sResp.status}` };
+  }
+  const data = (await sResp.json()) as {
+    session: { id: string; branch: string; status: string } | null;
+    artifacts: { prUrl?: string } | null;
+    repoUrl: string | null;
+    baseBranch: string | null;
+  };
+  if (!data.session || !data.repoUrl) {
+    return { ok: false, status: 410, error: "parent session has no repo", reason: "session state is incomplete" };
+  }
+  const prUrl = data.artifacts?.prUrl;
+  if (!prUrl) {
+    return { ok: false, status: 409, error: "parent has no PR yet", reason: "the parent session never reached pr.created — amend mode requires an existing PR" };
+  }
+  // 2. Parse the PR URL into (owner, repo, number) and look up in the index.
+  const m = prUrl.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+  if (!m) {
+    return { ok: false, status: 500, error: "cannot parse parent PR URL", reason: prUrl };
+  }
+  const owner = m[1], repo = m[2], number = Number(m[3]);
+  const prKey = `${owner}/${repo}#${number}`;
+  const idxResp = await fetch(`${CONTROL_PLANE_BASE_URL}/pr-index?key=${encodeURIComponent(prKey)}`, {
+    headers: { "x-hermes-launcher-secret": HERMES_LAUNCHER_SECRET! },
+  });
+  if (idxResp.status === 404) {
+    return { ok: false, status: 410, error: "PR no longer indexed", reason: "the PR was unregistered (merged or unknown) — start a fresh session instead of amending" };
+  }
+  if (!idxResp.ok) {
+    return { ok: false, status: 502, error: "PR index lookup failed", reason: `${idxResp.status}` };
+  }
+  const idx = (await idxResp.json()) as { row: PrIndexRowWire };
+  if (idx.row.status !== "open") {
+    return { ok: false, status: 410, error: `PR is ${idx.row.status}`, reason: "amend mode requires the PR to still be open" };
+  }
+  // The parent's session.branch is NOT reliable as the PR head ref:
+  // when the parent is itself an amend session, its branch field was set
+  // from the spawned session id (hermes/<short of spawn id>), not the
+  // original PR branch. Source-of-truth is GitHub itself.
+  let headBranch = data.session.branch;
+  if (GITHUB_USER_TOKEN) {
+    try {
+      const ghResp = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${number}`, {
+        headers: {
+          Authorization: `Bearer ${GITHUB_USER_TOKEN}`,
+          Accept: "application/vnd.github+json",
+        },
+      });
+      if (ghResp.ok) {
+        const pr = (await ghResp.json()) as { head?: { ref?: string } };
+        if (pr.head?.ref) headBranch = pr.head.ref;
+      } else {
+        log(`resolveParentAmend: GitHub /pulls/${number} ${ghResp.status} — falling back to session.branch=${data.session.branch}`);
+      }
+    } catch (err) {
+      log(`resolveParentAmend: GitHub /pulls/${number} error: ${(err as Error).message} — falling back to session.branch`);
+    }
+  }
+  return {
+    ok: true,
+    repoUrl: data.repoUrl,
+    baseBranch: data.baseBranch ?? "main",
+    prMode: { branch: headBranch, prNumber: number, prUrl },
+  };
 }
 
 async function handleCreate(req: Request): Promise<Response> {
   const body = (await req.json()) as CreateBody;
-  if (!body.taskDescription || !body.repoUrl) {
-    return Response.json({ error: "taskDescription and repoUrl required" }, { status: 400 });
+  let repoUrl = body.repoUrl;
+  let baseBranch = body.baseBranch;
+  let prMode: { branch: string; prNumber: number; prUrl: string } | undefined;
+
+  if (body.parentSessionId) {
+    const resolved = await resolveParentAmend(body.parentSessionId);
+    if (!resolved.ok) {
+      return Response.json(
+        { error: resolved.error, reason: resolved.reason, parentSessionId: body.parentSessionId },
+        { status: resolved.status },
+      );
+    }
+    repoUrl = resolved.repoUrl;
+    baseBranch = resolved.baseBranch;
+    prMode = resolved.prMode;
+  }
+
+  if (!body.taskDescription || !repoUrl) {
+    return Response.json(
+      { error: "taskDescription and (repoUrl or parentSessionId resolving to a repoUrl) required" },
+      { status: 400 },
+    );
   }
 
   // M3 concurrency guard (host-side).
@@ -169,7 +299,10 @@ async function handleCreate(req: Request): Promise<Response> {
     body: JSON.stringify({
       projectId: body.projectId ?? "default",
       taskDescription: body.taskDescription,
-      repoUrl: body.repoUrl,
+      repoUrl,
+      // Tell the DO this is an amend session so its slot-release hook
+      // works even on early abort (before pr.updated is emitted).
+      amendPrUrl: prMode?.prUrl,
     }),
   });
   if (!wResp.ok) {
@@ -187,14 +320,15 @@ async function handleCreate(req: Request): Promise<Response> {
       sessionId: session.id,
       runnerToken: session.runnerToken,
       controlWsUrl: CONTROL_PLANE_BASE_URL!,
-      repoUrl: body.repoUrl,
-      baseBranch: body.baseBranch,
+      repoUrl,
+      baseBranch,
       e2bApiKey: E2B_API_KEY!,
       e2bTemplate: E2B_TEMPLATE,
       zaiApiKey: ZAI_API_KEY,
       githubUserToken: process.env.GITHUB_USER_TOKEN,
       githubUserLogin: process.env.GITHUB_USER_LOGIN,
       githubUserEmail: process.env.GITHUB_USER_EMAIL,
+      prMode,
     });
   } catch (err) {
     await fetch(`${CONTROL_PLANE_BASE_URL}/sessions/${session.id}/abort`, { method: "POST" });
@@ -212,7 +346,10 @@ async function handleCreate(req: Request): Promise<Response> {
   });
   watchSession(session.id);
 
-  log(`session ${session.id.slice(0, 8)} provisioned sandbox=${provisioned.sandboxId}`);
+  log(
+    `session ${session.id.slice(0, 8)} provisioned sandbox=${provisioned.sandboxId}` +
+    (prMode ? ` amend=${prMode.branch}#${prMode.prNumber}` : ""),
+  );
 
   return Response.json(
     {
@@ -220,6 +357,10 @@ async function handleCreate(req: Request): Promise<Response> {
       sandboxId: provisioned.sandboxId,
       streamUrl: `${CONTROL_PLANE_BASE_URL}/sessions/${session.id}/stream`,
       stateUrl: `${CONTROL_PLANE_BASE_URL}/sessions/${session.id}`,
+      // Reflect amend wiring back to the caller (MCP tool surfaces this in
+      // structuredContent so the agent can mention the branch in chat).
+      parentSessionId: body.parentSessionId,
+      prMode: prMode ?? null,
     },
     { status: 201 },
   );
@@ -366,6 +507,7 @@ async function main(): Promise<void> {
   const mcpHandler = buildMcpHandler({
     workerBaseUrl: CONTROL_PLANE_BASE_URL!,
     launcherBaseUrl: `http://localhost:${PORT}`,
+    launcherSecret: HERMES_LAUNCHER_SECRET!,
     log,
   });
 
@@ -375,10 +517,28 @@ async function main(): Promise<void> {
     async fetch(req: Request): Promise<Response> {
       const url = new URL(req.url);
       try {
+        // /health: unauthenticated so operators can probe without provisioning
+        // a secret. Returns no sensitive state.
         if (url.pathname === "/health") return await handleHealth();
+
+        // /mcp: served on the same port for transport reasons, but its
+        // trust boundary is the gateway (Hermes Agent) which carries its
+        // own auth. We intentionally do NOT gate /mcp with
+        // HERMES_LAUNCHER_SECRET — the gateway and the worker reach the
+        // launcher over separate paths.
         if (url.pathname === "/mcp") {
           return await mcpHandler(req);
         }
+
+        // Everything else (POST /sessions, GET/DELETE /sessions/:id,
+        // POST /sessions/:id/resume) spawns or manipulates E2B sandboxes
+        // and is gated behind the shared launcher secret. Both the Worker
+        // and the local MCP server send the same header.
+        const provided = req.headers.get("x-hermes-launcher-secret") ?? "";
+        if (!timingSafeEqualStrings(provided, HERMES_LAUNCHER_SECRET!)) {
+          return Response.json({ error: "unauthorized" }, { status: 401 });
+        }
+
         if (url.pathname === "/sessions" && req.method === "POST") {
           return await handleCreate(req);
         }

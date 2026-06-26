@@ -20,7 +20,7 @@ for what's next is in [`ROADMAP.md`](ROADMAP.md).
 
 ```bash
 bun install
-bun run test         # 87 tests should pass, no external creds needed
+bun run test         # full unit + integration suite, no external creds needed
 bun run typecheck    # tsc --noEmit clean
 ```
 
@@ -109,6 +109,42 @@ other than the author" work correctly.
 3. Make sure GitHub has signed-commit / fork-permission settings that
    allow your PAT to push to the target repos.
 
+## 5b. GitHub webhook (PR lifecycle + auto-amend)
+
+Hermes consumes 3 GitHub event types per repository it touches:
+
+| Event | What Hermes does |
+|---|---|
+| `Pull requests` | merged → archive session + drop the PR index row; closed → mark index `closed`. |
+| `Pull request reviews` | reviewer "Request changes" → spawn an amend session that pushes a follow-up commit onto the same PR (no new PR). |
+| `Check runs` | conclusion `failure` / `timed_out` → spawn an amend session to fix the CI failure. |
+
+Auto-amend has hard limits per PR (locked in PR #24+#25):
+- Cap of **3** amend sessions (`HERMES_AUTOFIX_CAP` env override on the Worker).
+- Strict single-flight (concurrent triggers refused with `reason: "inflight"`).
+- Dedup by head `sha` (webhook retries on the same sha are no-op).
+- Self-review (reviewer == PR author) refused.
+
+**Setup (per repo or per org):**
+
+1. Sinh secret:
+   ```bash
+   openssl rand -hex 32
+   ```
+2. Set it on the Worker:
+   ```bash
+   echo "<secret>" | bunx wrangler secret put GITHUB_WEBHOOK_SECRET
+   # local dev: put GITHUB_WEBHOOK_SECRET=… in .dev.vars
+   ```
+3. GitHub repo settings → **Webhooks → Add webhook**:
+   - **Payload URL:** `https://<your-worker>.workers.dev/webhooks/github`
+   - **Content type:** `application/json`
+   - **Secret:** paste the same value
+   - **SSL verification:** Enable
+   - **Events:** select *"Let me select individual events"*, tick **Pull requests**, **Pull request reviews**, **Check runs**. Untick the default *Pushes*.
+4. Save. GitHub sends a `ping` immediately — verify response is `200 OK`
+   with `{"ok":true,"kind":"ignored","reason":"ping"}` under **Recent Deliveries**.
+
 ## 6. Public URL for the runner (ngrok in dev)
 
 The runner inside the sandbox dials your Worker over WebSocket, and
@@ -156,6 +192,10 @@ them inline when launching.
 | `CONTROL_PLANE_LAUNCHER_URL` | required for the M5 resume path; DO POSTs here to thaw paused sandboxes |
 | `E2B_TEMPLATE` | template alias; defaults to `control-plane-runner` |
 | `E2B_API_KEY` | the Worker doesn't call E2B, but refuses to provision when unset |
+| `GITHUB_WEBHOOK_SECRET` | HMAC secret for `POST /webhooks/github`; required to ingest PR lifecycle / auto-amend events |
+| `HERMES_LAUNCHER_SECRET` | shared secret used for both directions: launcher → Worker `/pr-index` AND Worker → launcher `/sessions`+`/resume`. Required on the Worker (else `/pr-index` 503s). The Worker sends it on the `x-hermes-launcher-secret` header for every launcher REST call. Must match the launcher's `HERMES_LAUNCHER_SECRET` env. |
+| `HERMES_AUTOFIX_CAP` | optional; max auto-amend sessions per PR (default `3`) |
+| `CONTROL_PLANE_LAUNCHER_URL` | required when GITHUB_WEBHOOK_SECRET is set — Worker POSTs to launcher /sessions to spawn amend sessions. In local dev set to an ngrok URL pointing at the launcher (`:8789`). |
 
 **Launcher env (process env, see `infra/launcher/env.example`):**
 
@@ -168,6 +208,7 @@ them inline when launching.
 | `CONTROL_PLANE_AUTO_PR` | `1` (default) = launcher fires `/create-pr` on `review_ready` |
 | `ZAI_API_KEY` | OpenCode (Z.AI) provider key |
 | `GITHUB_USER_TOKEN` / `GITHUB_USER_LOGIN` / `GITHUB_USER_EMAIL` | per-user PR identity |
+| `HERMES_LAUNCHER_SECRET` | required; shared secret. The launcher (a) sends it on `x-hermes-launcher-secret` when reading the Worker's `/pr-index`, and (b) requires it on every inbound REST call (POST `/sessions`, GET/DELETE `/sessions/:id`, POST `/sessions/:id/resume`); requests without a matching header get 401. The local MCP server bundled in the launcher passes it through automatically. Must match the Worker secret. |
 | `MAX_CONCURRENT_SESSIONS` | default 10; E2B Hobby caps at 20 |
 
 ## 8. Run end-to-end (three terminals)
@@ -247,9 +288,9 @@ This SETUP file now focuses purely on local development. Continue to
 
 | Step | Command | Pass criterion |
 |---|---|---|
-| Unit + integration tests | `bun run test` | 100/100 (includes the in-process DO E2E in `tests/e2e-do.test.ts`) |
+| Unit + integration tests | `bun run test` | all tests pass (incl. the in-process DO E2E in `tests/e2e-do.test.ts`, webhook parser tests, MCP follow-up tests, PR index single-flight tests) |
 | Typecheck | `bun run typecheck` | no output |
-| Real-workerd E2E | start `bunx wrangler dev`, then `bun run e2e:real` | `Summary: 37 passed, 0 failed` |
+| Real-workerd E2E | start `bunx wrangler dev`, then `bun run e2e:real` | exits 0; `0 failed` in the summary |
 | Full-system E2E (optional, costs LLM credits) | launcher + Worker + ngrok up, then `bun run e2e:full --repo https://github.com/<you>/<repo>` | session reaches `completed`; real PR opened |
 | Worker boots | `bun run dev` then `curl http://localhost:8787/health` | `200 OK` |
 | Template build | `bun run template:build` | `template id written to …` |
@@ -257,6 +298,9 @@ This SETUP file now focuses purely on local development. Continue to
 | Orphan sweeper | restart launcher; existing tagged sandboxes whose sessions are terminal die | sweep log `scanned=N killed=N kept=0` |
 | Full e2e | `POST /sessions` on launcher | session reaches `completed`; real PR opened; E2B list empty after |
 | **P1.1 PR author** | `gh pr view <N> --json author` on the resulting PR | `author.login == $GITHUB_USER_LOGIN` and `author.is_bot == false` |
-| **Access — auth wall** (prod only) | open `https://<worker>/sessions` in a private browser window | Cloudflare Access login page appears (not a 405/200) |
+| **Webhook ping ack** | repo → Webhooks → click your hook → tab **Recent Deliveries** → look at the ping | response `200 OK`, body `{"ok":true,"kind":"ignored","reason":"ping"}` |
+| **Webhook lifecycle** | open a PR via Hermes, merge it on GitHub | within ~10 s, parent session reaches `archived`; `GET /pr-index?key=owner/repo#N` returns 404 |
+| **Webhook auto-amend (review)** | submit a `REQUEST_CHANGES` review on an open Hermes PR from a different account | within ~30 s, a 2nd commit lands on the same PR; parent session event log has `pr.autofix.triggered { trigger: "review_changes_requested" }` |
+| | **Access — auth wall** (prod only) | open `https://<worker>/sessions` in a private browser window | Cloudflare Access login page appears (not a 405/200) |
 | **Access — runner bypass** (prod only) | run an e2e session against the deployed launcher | runner connects, session reaches `completed`, real PR opens — proves `/sessions/*/runner` was *not* gated |
 | **Access — health bypass** (prod only) | `curl https://<worker>/health` with no cookie | 200 OK, no Access redirect |

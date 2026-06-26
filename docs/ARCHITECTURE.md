@@ -29,6 +29,7 @@ Three processes, three responsibilities:
 | Process | Role | Why it's separate |
 |---|---|---|
 | **Worker + Durable Object** (`src/worker/`) | State machine, event log, WebSocket hub, approval gate. One DO instance per session. | Cheap, hibernatable, single-writer per session. |
+| **PR Index Durable Object** (`src/worker/pr-index-do.ts`) | Singleton DO mapping `owner/repo#N` -> { sessionId, ownerLogin, status, autofixCount }. Consumed by the GitHub webhook handler and by MCP `send_followup_prompt`. | One row per Hermes-opened PR is far cheaper than scanning all `SessionDurableObject` instances for a match. |
 | **Launcher** (`src/launcher/`) | Owns the E2B SDK + GitHub PAT. Creates/destroys sandboxes, sweeps orphans, calls the Worker for state. | The Workers runtime crashes silently when driving the E2B SDK through long `waitUntil` work (`workerd` aborts during the SDK's long-poll loop — see [`ROADMAP.md §9.2`](./ROADMAP.md)). The launcher absorbs all long-lived I/O. |
 | **Runner** (`src/runner/`) | Runs *inside* the sandbox. Drives `opencode serve` over HTTP/SSE, streams events, opens the PR. Bundled into a pre-baked E2B template (`control-plane-runner`). | Has to be next to the repo + the OpenCode server (it speaks the OpenCode HTTP/SSE API on `localhost:4096`). |
 
@@ -109,6 +110,107 @@ is at [`ROADMAP.md §12.18`](./ROADMAP.md#1218-cloudflare-best-practices-refacto
   the design assumes ≤ 1 runner per session.
 - DO has **one** alarm slot; today it's used for the heartbeat
   watchdog. Future scheduled work needs a queue-of-times pattern.
+
+## 3.b PR lifecycle & amend mode
+
+When the runner emits `pr.created`, the SessionDurableObject calls
+`PR_INDEX_DO.register(prKey, sessionId, ownerLogin)` (fire-and-forget
+via `ctx.waitUntil`). The index row keeps the PR addressable globally
+for the lifetime of the open PR.
+
+Two consumers of the index:
+
+1. **`POST /webhooks/github`** — verified by HMAC-SHA-256 against
+   `GITHUB_WEBHOOK_SECRET`. Scope is narrow on purpose: we subscribe
+   to `pull_request` events only. The handler:
+   1. looks up the PR in the index;
+   2. dedupes by `X-GitHub-Delivery` (bounded 16-entry ring per PR);
+   3. flips the row's `status` (`open` -> `merged` | `closed`);
+   4. dispatches `SESSION_DO.ingestPrLifecycleEvent` to append
+      `pr.merged` / `pr.closed` to the session's event log and (on
+      merge) transition `completed -> archived`;
+   5. unregisters the row on merge (closed-unmerged keeps the row
+      in case the PR is reopened).
+
+   Reviewer "Request changes" and CI failures are webhook-driven —
+   see the auto-amend section below. Manual follow-up goes through
+   MCP (`send_followup_prompt`).
+
+2. **MCP `send_followup_prompt`** — when called against a terminal
+   session whose PR is still open, the launcher transparently spawns
+   a fresh session in **amend mode** against the same PR
+   (`parentSessionId`). The new sandbox checks out the existing PR
+   branch instead of creating `hermes/<short>`, and the runner skips
+   `POST /pulls` — it just pushes the new commit and emits
+   `pr.updated` (idempotent on `artifacts.prUrl`). The result: the
+   same PR number gets a follow-up commit, no second PR is opened.
+
+```
+                  pr.created
+SessionDurableObject ──────────► PR_INDEX_DO ◄─────── POST /webhooks/github
+                                  │  ▲                (lookup, markStatus,
+                                  │  │                 recordDelivery,
+                                  │  │                 tryClaimAmendSlot,
+                                  │  │                 transferAmendSlot,
+                                  │  │                 releaseAmendSlot)
+                                  │  │
+                MCP send_followup_prompt (terminal + PR open)
+                                  │
+                                  ▼
+                  POST /sessions { parentSessionId }
+                                  │
+                                  ▼
+                  provisionSession({ prMode })
+                  └─ sandbox: git fetch origin <branch>;
+                              git checkout -B <branch> origin/<branch>
+                  └─ runner: skip POST /pulls; emit pr.updated
+```
+
+### Auto-amend on reviewer feedback + CI failure
+
+The webhook handler also subscribes to two additional GitHub events and
+spawns a fresh amend session when they fire on a PR Hermes opened:
+
+```
+GitHub  ┌── pull_request_review.submitted (state=changes_requested) ──┐
+        │                                                              │
+        └── check_run.completed (conclusion ∈ {failure, timed_out}) ───┤
+                                                                       ▼
+                                                    POST /webhooks/github
+                                                                       │
+                                            HMAC verify, dedup delivery
+                                                                       │
+                                          PR_INDEX_DO.lookup(prKey) ──┐│
+                                                                     ││
+                       PR_INDEX_DO.tryClaimAmendSlot(prKey,           ││
+                              headSha, parentSessionId, cap=3)        ││
+                                  ok? │   │ fail (cap_exceeded /      ││
+                                      │   │       duplicate_sha /     ││
+                                      │   │       inflight /          ││
+                                      │   │       self_review)        ││
+                                      ▼   │                           ││
+       POST /sessions on launcher with    │                           ││
+       { parentSessionId, taskDescription │                           ││
+         built from review body / CI logs}│                           ││
+                  │                       │                           ││
+                  ▼                       ▼                           ▼▼
+       newSessionId returned         pr.autofix.skipped         pr.autofix.skipped
+       PR_INDEX_DO.transferAmendSlot                            (kind=ignored,
+       pr.autofix.triggered                                      reason: stable)
+                  │
+                  ▼
+       spawned session amends the PR
+       on terminal → releaseAmendSlot
+```
+
+Constraints (locked PR #25):
+- Cap of 3 amend sessions per PR (env `HERMES_AUTOFIX_CAP`).
+- Strict single-flight per PR with a 10-minute TTL safety release for
+  crashed amends.
+- Self-trigger guard: `reviewerLogin === ownerLogin` is refused.
+- Status of an auto-amend lives in the parent session's event log
+  (`pr.autofix.triggered` / `pr.autofix.skipped`); no bot reply comment
+  is posted on the PR.
 
 ## 4. Session state machine
 
@@ -242,7 +344,7 @@ Three layers, fastest to slowest:
 | Layer | File | Real things |
 |---|---|---|
 | Unit + in-process E2E | `tests/` (vitest) | Real `SessionDurableObject` class, hand-rolled `cloudflare:workers` shim for `ctx`/WS/storage. Offline. |
-| Real workerd + fake runner | `scripts/e2e-real.ts` | Real Worker via `bunx wrangler dev`, fake runner over HTTP/WS. 37 checks. |
+| Real workerd + fake runner | `scripts/e2e-real.ts` | Real Worker via `bunx wrangler dev`, fake runner over HTTP/WS. |
 | Full system | `scripts/e2e-full.ts` | Real launcher + real E2B sandbox + real OpenCode + real GitHub PR. Costs LLM credits. |
 
 `scripts/sandbox-debug.ts <sandboxId>` is the incident-response

@@ -4,7 +4,7 @@ Three files in this directory:
 
 | File | Purpose |
 |---|---|
-| `install.sh` | One-shot bootstrap for a fresh Debian/Ubuntu VPS. Creates the `hermes-cp` user, installs bun + cloudflared, clones this repo, builds `launcher.js`, drops the systemd unit, and writes `/etc/hermes-control-plane/launcher.env` (prompts interactively for the 5 secrets, or reads them from env vars if already exported, or just drops the template when run non-interactively / with `CONTROL_PLANE_NO_PROMPT=1`). Idempotent — re-run to update the bundle from the latest `main`. |
+| `install.sh` | One-shot bootstrap for a fresh Debian/Ubuntu VPS. Creates the `hermes-cp` user, installs bun + cloudflared, clones this repo, builds `launcher.js`, drops the systemd unit, and writes `/etc/hermes-control-plane/launcher.env` (prompts interactively for the 6 secrets, or reads them from env vars if already exported, or just drops the template when run non-interactively / with `CONTROL_PLANE_NO_PROMPT=1`). Idempotent — re-run to update the bundle from the latest `main`. |
 | `control-plane-launcher.service` | systemd unit. Loads `/etc/hermes-control-plane/launcher.env`, runs `bun /opt/hermes-control-plane/launcher.js` as the `hermes-cp` user, restarts on crash. |
 | `env.example` | Template for `/etc/hermes-control-plane/launcher.env`. Copy + fill in real values. |
 
@@ -61,7 +61,14 @@ After it finishes, the script prints the 6 remaining manual steps:
 2. `sudo systemctl enable --now control-plane-launcher`.
 3. Smoke-test: `curl http://localhost:8789/health`.
 4. Set up Cloudflare Tunnel for `launcher.<your-domain>` → `localhost:8789`.
-5. From your dev machine: `wrangler secret put CONTROL_PLANE_LAUNCHER_URL`, then `bun run deploy`.
+5. From your dev machine: mirror the launcher secrets onto the Worker:
+   ```bash
+   echo "<tunnel-url>" | bun x wrangler secret put CONTROL_PLANE_LAUNCHER_URL
+   ssh <vps> 'sudo grep ^HERMES_LAUNCHER_SECRET= /etc/hermes-control-plane/launcher.env | cut -d= -f2-' \
+     | bun x wrangler secret put HERMES_LAUNCHER_SECRET
+   bun run deploy
+   ```
+   `HERMES_LAUNCHER_SECRET` MUST be byte-identical on both sides; the Worker uses it to authenticate `POST /sessions` and `POST /sessions/:id/resume` calls to the launcher, and the launcher uses it on the inbound `x-hermes-launcher-secret` header check. A mismatch surfaces as `dispatched: false, reason: "launcher_401"` in webhook responses.
 6. Wire Hermes Agent → MCP server + skill: edit `~/.hermes/config.yaml` with `mcp_servers.hermes-control-plane.url: http://localhost:8789/mcp` and `skills.external_dirs: [/opt/hermes-control-plane/src/skills]`. Full runbook: [`infra/mcp/README.md`](../mcp/README.md).
 
 You should see:

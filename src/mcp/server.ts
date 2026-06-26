@@ -25,6 +25,10 @@ export interface McpServerWiring {
   workerBaseUrl: string;
   /** Local launcher URL (used for POST /sessions, DELETE /sessions/:id). */
   launcherBaseUrl: string;
+  /** Shared secret sent on `x-hermes-launcher-secret` for launcher REST
+   *  calls (POST /sessions, DELETE /sessions/:id). Matches the launcher's
+   *  HERMES_LAUNCHER_SECRET env. */
+  launcherSecret: string;
   /** Logger — pass the launcher's existing log() to keep one log stream. */
   log: (msg: string) => void;
 }
@@ -115,7 +119,10 @@ function makeServer(w: McpServerWiring): McpServer {
     async (input) => {
       const r = await fetch(`${w.launcherBaseUrl}/sessions`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "x-hermes-launcher-secret": w.launcherSecret,
+        },
         body: JSON.stringify(input),
       });
       const body = await r.text();
@@ -198,50 +205,148 @@ function makeServer(w: McpServerWiring): McpServer {
   );
 
   // ──────────────────────────────────────────────────────────────────────
-  // 3. send_followup_prompt — POST /sessions/:id/prompt on the Worker.
+  // 3. send_followup_prompt — three flows depending on session state:
   //
-  // Sends a follow-up prompt mid-session. If the runner is connected the
-  // prompt is delivered immediately; if the sandbox is paused (M5) the
-  // Worker returns 202 recoverable and the launcher resumes the sandbox.
+  //   a. session running / paused — POST /sessions/:id/prompt on the
+  //      Worker (the existing M5 path; sandbox resumes if paused).
+  //   b. session terminal AND its PR is still open in PR_INDEX_DO —
+  //      transparently spawn a NEW session in amend mode against the
+  //      same PR via POST /sessions on the launcher with parentSessionId.
+  //      The new sessionId is returned so the agent can track the
+  //      follow-up turn.
+  //   c. session terminal AND no open PR — return an error explaining
+  //      the user should start a fresh session.
+  //
+  // Transparent re-provision is the design intent (see plan §3). The
+  // caller does not need to know whether the existing sandbox was
+  // reused or a fresh one was spawned; the structuredContent carries
+  // newSessionId when a spawn happened.
   // ──────────────────────────────────────────────────────────────────────
   server.registerTool(
     "send_followup_prompt",
     {
       title: "Send a follow-up prompt to a running session",
       description:
-        "Append a new prompt to an existing session. The runner picks it up " +
-        "after the current turn (or on resume if the sandbox is paused). " +
-        "Returns 202 with recoverable=true when a resume is in flight.",
+        "Append a new prompt to an existing session. If the session is still " +
+        "running, the prompt is delivered after the current turn (or on " +
+        "resume if the sandbox is paused). If the session already ended " +
+        "(completed/failed/aborted) AND its PR is still open, a fresh " +
+        "session is transparently spawned in amend mode to push another " +
+        "commit onto the same PR — the new sessionId is returned. If the " +
+        "PR was merged or closed, the call fails with a 410. " +
+        "IMPORTANT: when this call spawns a new amend session, the returned " +
+        "sessionId is in `provisioning`/`runner_connecting` state — the " +
+        "runner has NOT yet connected. Subscribe to streamUrl and wait for " +
+        "`session.status_changed -> ready` before calling " +
+        "send_followup_prompt against the new sessionId; otherwise the " +
+        "prompt will be queued behind the spawn's initial task and the two " +
+        "agent.prompt commands may race when the runner finally connects.",
       inputSchema: {
         sessionId: z.string().describe("sessionId returned by start_coding_task."),
         text: z.string().min(1).describe("Plain-English follow-up prompt."),
       },
     },
     async ({ sessionId, text }) => {
-      const r = await fetch(`${w.workerBaseUrl}/sessions/${sessionId}/prompt`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
-      const body = await r.text();
-      if (!r.ok && r.status !== 202) {
+      // 1. Inspect the session.
+      const stateResp = await fetch(`${w.workerBaseUrl}/sessions/${sessionId}`);
+      if (!stateResp.ok) {
         return {
           isError: true,
-          content: [{ type: "text", text: `worker ${r.status}: ${body}` }],
+          content: [{ type: "text", text: `worker ${stateResp.status}: ${await stateResp.text()}` }],
         };
       }
-      const data = body ? JSON.parse(body) : {};
+      const state = (await stateResp.json()) as {
+        session?: { status: string } | null;
+        artifacts?: { prUrl?: string } | null;
+      };
+      const status = state.session?.status ?? "unknown";
+      const TERMINAL = new Set(["completed", "failed", "aborted", "archived"]);
+
+      if (!TERMINAL.has(status)) {
+        // Flow (a): forward to the existing prompt path.
+        const r = await fetch(`${w.workerBaseUrl}/sessions/${sessionId}/prompt`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        const body = await r.text();
+        if (!r.ok && r.status !== 202) {
+          return {
+            isError: true,
+            content: [{ type: "text", text: `worker ${r.status}: ${body}` }],
+          };
+        }
+        const data = body ? JSON.parse(body) : {};
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                r.status === 202
+                  ? `Prompt queued; sandbox resume in flight. ${JSON.stringify(data)}`
+                  : `Prompt delivered. ${JSON.stringify(data)}`,
+            },
+          ],
+          structuredContent: { status: r.status, sessionId, ...data },
+        };
+      }
+
+      // Terminal: try the amend path. Re-provision will fail with a clear
+      // reason if the PR is no longer open / never existed.
+      w.log(
+        `[mcp] send_followup_prompt: session ${sessionId.slice(0, 8)} is ${status}; ` +
+        `attempting transparent amend re-provision`,
+      );
+      const provResp = await fetch(`${w.launcherBaseUrl}/sessions`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-hermes-launcher-secret": w.launcherSecret,
+        },
+        body: JSON.stringify({ parentSessionId: sessionId, taskDescription: text }),
+      });
+      const provBody = await provResp.text();
+      if (!provResp.ok) {
+        // 410 = PR merged/closed/missing — explain and tell the caller to
+        // start a fresh session via start_coding_task.
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text:
+                `Cannot follow up: session ${sessionId} is ${status} and ` +
+                `amend re-provision failed (${provResp.status}): ${provBody}. ` +
+                `Use start_coding_task to begin a new session.`,
+            },
+          ],
+        };
+      }
+      const data = JSON.parse(provBody) as {
+        sessionId: string;
+        sandboxId: string;
+        streamUrl?: string;
+        prMode?: { branch: string; prNumber: number; prUrl: string } | null;
+      };
       return {
         content: [
           {
             type: "text",
             text:
-              r.status === 202
-                ? `Prompt queued; sandbox resume in flight. ${JSON.stringify(data)}`
-                : `Prompt delivered. ${JSON.stringify(data)}`,
+              `Spawned amend session ${data.sessionId} (sandbox ${data.sandboxId})` +
+              (data.prMode ? ` amending ${data.prMode.prUrl}` : "") +
+              `. Subscribe to ${data.streamUrl ?? `${w.workerBaseUrl}/sessions/${data.sessionId}/stream`} ` +
+              `for the new pr.updated event.`,
           },
         ],
-        structuredContent: { status: r.status, ...data },
+        structuredContent: {
+          status: provResp.status,
+          parentSessionId: sessionId,
+          newSessionId: data.sessionId,
+          sandboxId: data.sandboxId,
+          streamUrl: data.streamUrl,
+          prMode: data.prMode ?? undefined,
+        },
       };
     },
   );
@@ -264,6 +369,7 @@ function makeServer(w: McpServerWiring): McpServer {
     async ({ sessionId }) => {
       const r = await fetch(`${w.launcherBaseUrl}/sessions/${sessionId}`, {
         method: "DELETE",
+        headers: { "x-hermes-launcher-secret": w.launcherSecret },
       });
       const body = await r.text().catch(() => "");
       if (!r.ok) {

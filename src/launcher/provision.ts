@@ -34,6 +34,17 @@ export interface ProvisionInput {
   githubUserToken?: string;
   githubUserLogin?: string;
   githubUserEmail?: string;
+
+  // Amend mode (follow-up to an already-open PR). When set, the sandbox
+  // checks out the PR's branch instead of creating a fresh hermes/<n>
+  // branch, and the runner skips POST /pulls (it just pushes the new
+  // commit and emits pr.updated). Optional; when unset, behaviour is the
+  // pre-existing "new PR" flow.
+  prMode?: {
+    branch: string;     // existing branch on origin (PR head)
+    prNumber: number;   // existing PR number on origin
+    prUrl: string;      // PR html_url, re-emitted on pr.updated
+  };
 }
 
 export interface ProvisionResult {
@@ -105,16 +116,45 @@ export async function provisionSession(input: ProvisionInput): Promise<Provision
     const userLogin = input.githubUserLogin ?? "";
     if (owner && repo && userToken && userLogin) {
       const gitEmail = input.githubUserEmail || `${userLogin}@users.noreply.github.com`;
-      const branch = `hermes/${input.sessionId.slice(-8)}`;
       const remoteUrl = `https://${userToken}:x-oauth-basic@github.com/${owner}/${repo}.git`;
-      const setup = [
+      const setupCmds: string[] = [
         `cd ${REPO_DIR}`,
         `git config user.name '${userLogin.replace(/'/g, "'\\''")}'`,
         `git config user.email '${gitEmail.replace(/'/g, "'\\''")}'`,
         `git remote set-url origin '${remoteUrl}'`,
-        `git checkout -B ${branch}`,
-      ].join(" && ");
-      await sbx.commands.run(setup, { timeoutMs: 30_000 });
+      ];
+      if (input.prMode) {
+        // Amend: fetch the PR branch and check it out. We cloned with
+        // --depth 1 --single-branch so the remote refspec only tracks
+        // HEAD; we have to fetch the PR branch by its full ref AND
+        // unshallow it (push will fail without enough history). The
+        // explicit refspec also creates the origin/<branch> tracking
+        // ref the subsequent checkout points at.
+        const br = input.prMode.branch.replace(/'/g, "'\\''");
+        setupCmds.push(
+          `git fetch --depth 50 origin '+refs/heads/${br}:refs/remotes/origin/${br}'`,
+        );
+        setupCmds.push(`git checkout -B '${br}' 'origin/${br}'`);
+      } else {
+        // Fresh session: create a new hermes/<short-session-id> branch.
+        const branch = `hermes/${input.sessionId.slice(-8)}`;
+        setupCmds.push(`git checkout -B ${branch}`);
+      }
+      const setup = await sbx.commands.run(
+        // Suffix with `; echo __exit=$?` so we capture the real exit code
+        // from the chain — E2B SDK throws on non-zero, so wrap in `(... ; true)`
+        // and grep the exit ourselves to get a useful error message.
+        `(${setupCmds.join(" && ")}; echo "__setup_exit=$?") 2>&1`,
+        { timeoutMs: 30_000 },
+      );
+      const setupExitMatch = setup.stdout.match(/__setup_exit=(\d+)/);
+      const setupExit = setupExitMatch ? Number(setupExitMatch[1]) : 0;
+      if (setupExit !== 0) {
+        await killOnce();
+        throw new Error(
+          `git setup failed (exit ${setupExit}): ${setup.stdout.trim().split("\n").slice(-10).join(" | ")}`,
+        );
+      }
     }
 
     // 4. Drop the per-session start config. The supervisor (baked into the
@@ -132,6 +172,13 @@ export async function provisionSession(input: ProvisionInput): Promise<Provision
       GITHUB_REPO: repo,
       GITHUB_BASE_BRANCH: input.baseBranch ?? "main",
     };
+    if (input.prMode) {
+      // Runner reads these to switch into amend mode: skips POST /pulls
+      // and emits pr.updated instead of pr.created on push.
+      startConfig.CONTROL_PLANE_PR_MODE_BRANCH = input.prMode.branch;
+      startConfig.CONTROL_PLANE_PR_MODE_NUMBER = String(input.prMode.prNumber);
+      startConfig.CONTROL_PLANE_PR_MODE_URL = input.prMode.prUrl;
+    }
     await sbx.files.write(START_CONFIG_PATH, JSON.stringify(startConfig));
 
     return { sandboxId: sbx.sandboxId, kill: killOnce };

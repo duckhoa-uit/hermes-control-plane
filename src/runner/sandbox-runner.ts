@@ -284,7 +284,25 @@ async function runPromptTurn(taskDescription: string, context: string): Promise<
   const sid = await ensureOpencodeSession(taskDescription);
   // Hermes passes the user's task as `context` (already includes task body
   // per docs/ROADMAP.md §M1). Send it verbatim.
-  const text = context || taskDescription;
+  let text = context || taskDescription;
+  // Amend mode: prepend a directive so the agent does not try to open a
+  // new PR. The runner enforces this in runPrCreation regardless, but
+  // telling the model up-front avoids wasted turns talking about it.
+  const amendBr = process.env.CONTROL_PLANE_PR_MODE_BRANCH || "";
+  const amendNum = process.env.CONTROL_PLANE_PR_MODE_NUMBER || "";
+  const amendUrl = process.env.CONTROL_PLANE_PR_MODE_URL || "";
+  if (amendBr && amendNum && amendUrl) {
+    text =
+      `# Hermes amend mode\n` +
+      `You are continuing work on an EXISTING open pull request:\n` +
+      `- Branch: ${amendBr}\n` +
+      `- PR #${amendNum}: ${amendUrl}\n\n` +
+      `Make the requested change on this branch. Do NOT open a new PR — ` +
+      `the runner will push your commits onto the existing branch and ` +
+      `the PR will update automatically.\n\n` +
+      `---\n\n` +
+      text;
+  }
   sendEvent("agent.started", { taskDescription });
 
   try {
@@ -326,9 +344,6 @@ async function runPromptTurn(taskDescription: string, context: string): Promise<
 }
 
 async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
-  const branch = (payload.branch as string) || `hermes/${Date.now()}`;
-  const title = (payload.title as string) || `Hermes: ${payload.taskDescription ?? "automated change"}`;
-  const body = (payload.body as string) || "Automated PR created by hermes-control-plane.";
   // Token / git identity / origin / branch are already wired by the launcher
   // post-clone (src/launcher/provision.ts step 3). Runner uses GITHUB_USER_TOKEN
   // (P1.1 single-user OAuth) to call the PR REST endpoint as the real user.
@@ -337,6 +352,25 @@ async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
   const owner = process.env.GITHUB_OWNER || "";
   const repo = process.env.GITHUB_REPO || "";
   const baseBranch = process.env.GITHUB_BASE_BRANCH || "main";
+
+  // Amend mode: launcher passes the existing PR's branch / number / URL via
+  // CONTROL_PLANE_PR_MODE_*. When set, we skip `POST /pulls` (the PR already
+  // exists) and emit pr.updated instead of pr.created.
+  const amendBranch = process.env.CONTROL_PLANE_PR_MODE_BRANCH || "";
+  const amendNumber = process.env.CONTROL_PLANE_PR_MODE_NUMBER || "";
+  const amendUrl = process.env.CONTROL_PLANE_PR_MODE_URL || "";
+  const amendMode = Boolean(amendBranch && amendNumber && amendUrl);
+
+  const branch = amendMode
+    ? amendBranch
+    : ((payload.branch as string) || `hermes/${Date.now()}`);
+  // Branch names containing characters valid in git but special in the
+  // shell (e.g. `$`, backticks) reach us through CONTROL_PLANE_PR_MODE_BRANCH
+  // (set from GitHub's pull_request.head.ref). Escape for single-quoted
+  // shell interpolation the same way provision.ts does.
+  const brSh = branch.replace(/'/g, "'\\''");
+  const title = (payload.title as string) || `Hermes: ${payload.taskDescription ?? "automated change"}`;
+  const body = (payload.body as string) || "Automated PR created by hermes-control-plane.";
 
   if (!token || !owner || !repo) {
     sendError(`Missing GITHUB_USER_TOKEN / owner / repo (token=${!!token} owner=${owner} repo=${repo})`);
@@ -350,15 +384,28 @@ async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
       await execStrict(`git commit -m "${title.replace(/"/g, '\"')}"`);
     } else {
       // Agent already committed during the run. Verify HEAD has something
-      // worth opening a PR for.
-      const aheadCount = (await execCmd(`git rev-list --count origin/${baseBranch}..HEAD`)).trim();
+      // worth pushing.
+      // In amend mode the comparison base is the PR branch's previous tip
+      // (origin/<branch>); in fresh mode it is the project's base branch.
+      const cmpBase = amendMode ? `'origin/${brSh}'` : `origin/${baseBranch}`;
+      const aheadCount = (await execCmd(`git rev-list --count ${cmpBase}..HEAD`)).trim();
       if (aheadCount === "0" || aheadCount === "") {
-        sendError("No changes staged for PR");
+        sendError(amendMode ? "No new commits to push" : "No changes staged for PR");
         return;
       }
     }
-    const pushOut = await execStrict(`git push --set-upstream origin ${branch} 2>&1`);
+    const pushOut = await execStrict(`git push --set-upstream origin '${brSh}' 2>&1`);
     sendEvent("git.branch.pushed", { branch, pushOutput: pushOut.slice(-500), authorIdentity: userLogin });
+
+    if (amendMode) {
+      // PR already exists; do NOT call POST /pulls. Re-emit the existing
+      // URL via pr.updated so the DO can flip into completed without
+      // re-registering a different PR.
+      const number = Number(amendNumber);
+      sendEvent("pr.updated", { url: amendUrl, number, branch, ownerLogin: userLogin });
+      sendComplete({ prUrl: amendUrl, ownerLogin: userLogin });
+      return;
+    }
 
     const prResp = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls`, {
       method: "POST",
@@ -375,8 +422,8 @@ async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
       return;
     }
     const prJson = (await prResp.json()) as { html_url: string; number: number };
-    sendEvent("pr.created", { url: prJson.html_url, number: prJson.number, branch });
-    sendComplete({ prUrl: prJson.html_url });
+    sendEvent("pr.created", { url: prJson.html_url, number: prJson.number, branch, ownerLogin: userLogin });
+    sendComplete({ prUrl: prJson.html_url, ownerLogin: userLogin });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     sendError(`PR creation failed: ${msg}`);

@@ -110,7 +110,7 @@ row in the **Notes / PR** column._
 | 10 | WebSocket hibernation | Cloudflare Agents SDK | DO Hibernation API (`ctx.acceptWebSocket` + tagged attachments) + alarm-driven heartbeat; sockets survive DO hibernation | ✅ | Low (cost) | shipped §12.18 |
 | 11 | Multiplayer / author attribution | Yes, per-prompt author | Single implicit owner; no `author_user_id` on events. Explicitly a single-user app until §14 ships (`docs/DEPLOYMENT.md` multi-user Slack rollout depends on §14). | ❌ | Med | P3.1 / §14 |
 | 12 | PR auth | User GitHub OAuth token | **Single-user shipped:** `GITHUB_USER_TOKEN` env (PAT/OAuth) used by the runner for `git push` + `POST /pulls`; PR `author` = real user. App token is fallback. Multi-user (per-user OAuth storage) still locked design in §14. | 🟡 | Low (single user) | P1.1 single-user shipped; §14 = multi-user |
-| 13 | GitHub webhooks | PR open/merge/close → events | None | ❌ | Med | |
+| 13 | GitHub webhooks | PR open/merge/close → events; auto-trigger on review feedback / CI failure | **Shipped end-to-end.** `POST /webhooks/github` (HMAC-SHA-256, dedup by `X-GitHub-Delivery`) consumes `pull_request`, `pull_request_review`, `check_run`. Lifecycle: merged→archive, closed→mark. Auto-amend: review.changes_requested + check_run.failure spawn an amend session via launcher (single-flight, cap 3 per PR, dedup by head sha, self-review refused). Manual follow-up still via MCP. | ✅ | Low | PR #24 + #25; see DEPLOYMENT §13.3 |
 | 14 | Verification tools | Sentry/DD/LD/Braintrust/screenshots/computer-use | Test runner only (per profile) | ❌ | Med | |
 | 15 | Skills/MCPs | Encode shipping conventions | None | ❌ | Low | |
 | 16 | Slack client | Yes (with repo classifier) | None | ❌ | Low | |
@@ -167,9 +167,33 @@ without re-asking. Keep items small enough to ship in one PR.
     → 412 with `auth_url`; expired token auto-refreshes; integration test
     for both authored-by-bot (pre-OAuth) and authored-by-user (post-OAuth)
     paths.
-- [ ] **P1.2 GitHub webhook ingestion.** New route `/webhooks/github` updates
-  `session_artifacts.pr_url` and emits `pr.opened|merged|closed` events.
-  - Verify: webhook replay test → corresponding events appended.
+- [x] **P1.2 GitHub webhook ingestion (lifecycle + auto-amend).** Shipped
+  in two passes on the `feat/webhooks-followup` branch:
+  - **Lifecycle (PR #24):** `POST /webhooks/github` (HMAC-SHA-256)
+    consumes `pull_request`. Routes through `PrIndexDurableObject`
+    (singleton DO, idFromName("global")) → dispatches
+    `SESSION_DO.ingestPrLifecycleEvent`. Event types `pr.merged` and
+    `pr.closed` land on the session log; merged PRs transition
+    `completed → archived` and unregister the PR row. Dedup by
+    `X-GitHub-Delivery` (bounded 16-entry ring per PR).
+  - **Auto-amend (PR #25):** subscribes `pull_request_review` and
+    `check_run`. On reviewer `changes_requested` OR check_run
+    `failure`/`timed_out`, the handler `tryClaimAmendSlot(prKey,
+    headSha, parentSessionId, cap)` then POSTs `/sessions` on the
+    launcher with `parentSessionId` and a built `taskDescription`.
+    Spawned session releases the slot on its own terminal transition.
+    Guards: cap (default 3, `HERMES_AUTOFIX_CAP`), strict single-flight
+    (`inflight` reject), dedup by `head_sha` (`duplicate_sha` reject),
+    self-review refused (`reviewerLogin === ownerLogin`).
+    New event types: `pr.updated`, `pr.autofix.triggered`,
+    `pr.autofix.skipped`.
+  - Live-verified end-to-end on `duckhoa-uit/lawn` PRs #4–#11
+    (full matrix in DEPLOYMENT §13.3).
+  - Auto-reply bot comments are intentionally not posted; auto-amend
+    status lives in the parent session's event log
+    (`pr.autofix.triggered` / `pr.autofix.skipped`).
+  - Full test suite green (unit + integration). See DEPLOYMENT §13.3 for
+    setup, ARCHITECTURE §3.b for the dispatch flow.
 
 ### P2 — Agent capabilities
 

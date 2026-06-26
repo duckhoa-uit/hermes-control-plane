@@ -4,6 +4,13 @@ Background coding agent control plane. A user posts a task; the system spins up
 a sandboxed [OpenCode](https://opencode.ai) session, the agent makes the
 changes, opens a real GitHub PR, then tears the sandbox down.
 
+When the PR is opened, a per-PR webhook hook drives the rest of the
+lifecycle automatically: reviewer "Request changes" or CI failures spawn
+an *amend session* that pushes a follow-up commit onto the same PR
+(no new PR opened). Merge → session archives. See
+[`docs/DEPLOYMENT.md §13.3`](docs/DEPLOYMENT.md#133-github-webhook-pr-lifecycle)
+for the full matrix.
+
 Docs:
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — how the system works today (stable snapshot).
 - [`docs/SETUP.md`](docs/SETUP.md) — local-development setup.
@@ -87,7 +94,7 @@ key, a fine-grained GitHub PAT. Step-by-step is in
 | Method | Path | Body / notes |
 |--------|------|---|
 | `GET` | `/health` | sidecar status + active sessions + cap |
-| `POST` | `/sessions` | `{ taskDescription, repoUrl, projectId?, baseBranch? }`. Returns `{ sessionId, sandboxId, streamUrl, stateUrl }` |
+| `POST` | `/sessions` | `{ taskDescription, repoUrl?, projectId?, baseBranch?, parentSessionId? }`. When `parentSessionId` is set, repo + base + amend triple are resolved from the parent's state + the global PR index (no new PR is opened — the runner pushes onto the parent PR's branch). Returns `{ sessionId, sandboxId, streamUrl, stateUrl, parentSessionId?, prMode? }`. |
 | `GET` | `/sessions/:id` | passthrough to Worker state |
 | `DELETE` | `/sessions/:id` | kill sandbox + abort DO session (works even if sidecar forgot the session) |
 | `POST` | `/sessions/:id/resume` | called by the DO to thaw a paused sandbox (`Sandbox.connect`) |
@@ -106,10 +113,15 @@ key, a fine-grained GitHub PAT. Step-by-step is in
 | `POST` | `/sessions/:id/abort` | force-abort |
 | `POST` | `/sessions/:id/prompt` | follow-up prompt (runner must still be connected) |
 | `POST` | `/sessions/:id/create-pr` | triggered automatically by the launcher on `review_ready` |
+| `POST` | `/webhooks/github` | HMAC-SHA-256 verified webhook. Consumes `pull_request` (lifecycle: merged→archive, closed→mark), `pull_request_review` (changes_requested→auto-amend session), `check_run` (failure/timed_out→auto-amend session). See [`docs/DEPLOYMENT.md` §13.3](docs/DEPLOYMENT.md). |
+| `GET` | `/pr-index?key=<owner/repo#N>` | Look up the PR index row (used by the launcher to verify a parent PR is still open before amend re-provision). |
 
 ## Tech stack
 
 - **Control plane**: Cloudflare Workers + Durable Objects (DO Storage is the sole persistent store; D1/R2 were removed in §12.16 of ROADMAP)
+  - SessionDurableObject — one DO instance per agent session.
+  - PrIndexDurableObject — singleton DO (`idFromName("global")`) mapping `owner/repo#N` -> session. Lets `POST /webhooks/github` and MCP `send_followup_prompt` find the parent session of an open PR. New event types: `pr.updated`, `pr.merged`, `pr.closed`, `pr.autofix.triggered`, `pr.autofix.skipped`.
+  - Auto-amend (PR #25): the webhook handler also spawns amend sessions on `pull_request_review.submitted` (state=changes_requested) and `check_run.completed` (failure / timed_out). Strict single-flight per PR + cap of 3 (`HERMES_AUTOFIX_CAP`).
 - **Sandbox lifecycle**: Bun sidecar, E2B Sandboxes (Hobby tier)
 - **Sandbox interior**: Node 22 + bun + `opencode serve` (HTTP/SSE) + custom supervisor/runner
 - **Agent runtime**: OpenCode driving Z.AI (`zai-coding-plan/glm-5.2` default)

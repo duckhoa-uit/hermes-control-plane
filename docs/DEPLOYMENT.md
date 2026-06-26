@@ -688,6 +688,10 @@ wrangler login
 wrangler secret put E2B_API_KEY              # required; Worker refuses to provision otherwise
 wrangler secret put PUBLIC_BASE_URL          # https://hermes.<your-domain>.workers.dev
 wrangler secret put CONTROL_PLANE_LAUNCHER_URL      # https://<your-launcher-host>:8789 (Cloudflare Tunnel URL of the launcher VPS)
+wrangler secret put GITHUB_WEBHOOK_SECRET    # required for PR-lifecycle + auto-amend webhooks (see §13.3)
+wrangler secret put HERMES_LAUNCHER_SECRET   # required; shared secret. Used in BOTH directions: launcher → Worker /pr-index, AND Worker → launcher /sessions+/resume. Must match the launcher's HERMES_LAUNCHER_SECRET env.
+# Optional — auto-amend cap per PR (default 3). Set as a plain var, not a secret.
+# wrangler.jsonc → vars.HERMES_AUTOFIX_CAP = "5"
 
 bun run deploy
 ```
@@ -731,6 +735,91 @@ Run it under a process supervisor (systemd, pm2, the platform's
 restart policy). On boot it runs the orphan sweep, so a crash +
 restart is safe. The canonical `infra/launcher/install.sh` +
 `env.example` cover the systemd path.
+
+### 13.3 GitHub webhook (PR lifecycle)
+
+Hermes consumes one GitHub webhook event so the control plane knows
+when a Hermes-opened PR is **merged** or **closed**. The session
+transitions to `archived` (on merge) and the PR row is dropped from
+the global PR index DO.
+
+> **Why a webhook at all?** Without it, Hermes only knows the PR exists
+> and never gets a signal that it merged — so `send_followup_prompt`
+> against a merged PR cannot fail-closed, the event log misses
+> `pr.merged`/`pr.closed`, and the PR index grows monotonically. The
+> webhook is the only mechanism that closes the PR lifecycle loop.
+
+**Scope** (locked in PR #24 + #25):
+
+| Event | Why |
+|---|---|
+| `Pull requests` | merged/closed lifecycle (transition session to archived) |
+| `Pull request reviews` | reviewer "Request changes" auto-spawns an amend session |
+| `Check runs` | CI conclusion `failure` / `timed_out` auto-spawns an amend session |
+
+Auto-amend has hard limits:
+- Cap of **3** amend sessions per PR (override via `HERMES_AUTOFIX_CAP`)
+- Strict single-flight per PR — concurrent triggers wait for the
+  in-flight amend to finish (no queue; the rejected trigger ack 200)
+- Dedup by `head_sha` — webhook retries with the same sha are no-op
+- Self-review (reviewer == operator) is refused
+
+Manual follow-up that isn't review/CI driven goes through the MCP
+gateway (`send_followup_prompt`).
+
+**Setup (per repository or per organization):**
+
+1. In the GitHub repo / org settings → **Webhooks → Add webhook**.
+2. **Payload URL:** `https://hermes.<your-domain>.workers.dev/webhooks/github`
+3. **Content type:** `application/json`
+4. **Secret:** generate a long random string (e.g. `openssl rand -hex 32`).
+   Save it; you will also pass it to the Worker.
+5. **SSL verification:** Enable.
+6. **Which events?** Select *"Let me select individual events"* and
+   tick **Pull requests**, **Pull request reviews**, **Check runs**.
+   (Untick the default "Pushes".)
+7. **Active:** Enable.
+8. On the Worker:
+   ```bash
+   echo "<paste-the-secret>" | wrangler secret put GITHUB_WEBHOOK_SECRET
+   ```
+
+That's it. The Worker verifies `X-Hub-Signature-256` against the
+secret, parses the payload, looks up the PR in the global PR index DO
+(populated when Hermes opened the PR), and dispatches the lifecycle
+transition into the relevant session.
+
+**What the Worker does NOT need:**
+- A GitHub App or OAuth client — webhooks are repo-scoped and don't
+  require app installation.
+- An incoming firewall exception — GitHub originates the call to your
+  workers.dev domain; no inbound port on the launcher.
+
+**Local testing.** Use `gh webhook forward` against a `wrangler dev`
+instance. Set `GITHUB_WEBHOOK_SECRET` in `.dev.vars`. See
+`tests/github-webhook.test.ts` for the on-the-wire shape of the events
+we accept. For end-to-end live testing without GitHub, sign synthetic
+webhook bodies with `scripts/e2e-autoamend-live.ts`:
+
+```bash
+GITHUB_WEBHOOK_SECRET=… bun run scripts/e2e-autoamend-live.ts \
+  --pr-key duckhoa-uit/lawn#11 \
+  --pr-url https://github.com/duckhoa-uit/lawn/pull/11 \
+  --case review|check_run|duplicate_sha|inflight|cap
+```
+
+**Live verification matrix** (PRs on `duckhoa-uit/lawn`, see PR #24 + #25):
+
+| Scenario | Trigger | PR | Outcome |
+|---|---|---|---|
+| `pull_request.opened` → register in PR index | real GitHub | #4–11 | row created on the singleton PR_INDEX_DO |
+| `pull_request.closed` (merged=false) | real GitHub | #6 | session log gets `pr.closed`; index `status` flips to `closed` |
+| `pull_request.closed` (merged=true) | real GitHub | #7 | session transitions `completed → archived`; index row unregistered |
+| `pull_request_review.submitted` (changes_requested) | real GitHub review by 2nd account | #8 | amend session spawned; commit pushed onto same PR; `pr.autofix.triggered { trigger: "review_changes_requested" }` |
+| `check_run.completed` (failure) | real GitHub Actions on a marker-file workflow | #11 | amend session spawned; agent removed marker file; subsequent CI run **succeeded** |
+| `duplicate_sha` guard | real GitHub redelivery | #8 | 2nd review on same head sha → 200 `duplicate_sha` |
+| `inflight` guard | synthetic (back-to-back deliveries) | #10 | 2nd delivery while spawn in flight → 200 `inflight` |
+| `cap_exceeded` guard | synthetic | #10 | after 3 amends, 4th refused with `cap_exceeded` |
 
 ---
 

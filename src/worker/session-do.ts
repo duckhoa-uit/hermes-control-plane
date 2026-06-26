@@ -18,6 +18,7 @@ import type {
   SessionArtifacts,
 } from "../core/types";
 import { EventLog } from "../core/event-log";
+import { getPrIndexStub, prKeyFromUrl } from "./pr-index-do";
 import { canTransition, isTerminal } from "../core/state-machine";
 import { generateCommandId, generateRunnerToken, generateRequestId } from "../core/id";
 import { HEARTBEAT_INTERVAL_MS, HEARTBEAT_TIMEOUT_MS, PAUSED_HEARTBEAT_THRESHOLD_MS, WS_TAGS } from "../core/constants";
@@ -72,6 +73,7 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     profile: ProjectProfile,
     taskDescription: string,
     controlBaseUrl: string,
+    amendPrUrl?: string,
   ): Promise<Session> {
     // Skill: durable-objects/gotchas "Race Condition Despite Single-Threading".
     // The mutate-then-persist sequence has an await point, so block any
@@ -97,8 +99,14 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
       this.profile = profile;
       this.runnerToken = generateRunnerToken();
       this.controlBaseUrl = controlBaseUrl;
+      // Amend mode pre-population: store the existing PR URL on artifacts
+      // immediately so the transition() slot-release hook can identify
+      // the PR even if the session aborts before pr.updated fires.
+      if (amendPrUrl) {
+        this.artifacts = { sessionId, prUrl: amendPrUrl, changedFiles: [] };
+      }
 
-      this.appendEvent("session.created", "system", { taskDescription, projectId: profile.id });
+      this.appendEvent("session.created", "system", { taskDescription, projectId: profile.id, amendPrUrl });
       await this.persist();
 
       // Kick off sandbox provisioning in the background. The HTTP response
@@ -178,8 +186,37 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     if (errorMsg) this.session.errorMessage = errorMsg;
 
     this.appendEvent("session.status_changed", "system", { from, to, error: errorMsg });
+    // Persist the session row so a hibernated/restored DO sees the new
+    // status. Without this, `restore()` reads the stale `created` row even
+    // though the event log shows we are completed/archived — the MCP
+    // follow-up flow then mis-classifies the session as live. Fire-and-
+    // forget via waitUntil so transition() stays sync for the existing
+    // callers.
+    this.ctx.waitUntil(this.persist());
 
-    // Auto-teardown sandbox on any terminal state.
+    // Release the PR_INDEX_DO single-flight slot if this is an auto-amend
+    // session reaching a terminal state. Idempotent + only releases when
+    // the inflight sessionId matches, so non-amend sessions are a no-op
+    // (cheap RPC call; could be skipped, but skipping requires knowing
+    // whether we are an amend session which we do not track on Session).
+    if (
+      (to === "completed" || to === "failed" || to === "aborted" || to === "archived") &&
+      this.artifacts?.prUrl
+    ) {
+      const sessionId = this.session.id;
+      const prUrl = this.artifacts.prUrl;
+      this.ctx.waitUntil((async () => {
+        try {
+          const prKey = prKeyFromUrl(prUrl);
+          const stub = getPrIndexStub(this.env);
+          await (stub as unknown as {
+            releaseAmendSlot(k: string, s: string): Promise<void>;
+          }).releaseAmendSlot(prKey, sessionId);
+        } catch (err) {
+          console.error(`[DO] releaseAmendSlot failed: ${(err as Error).message}`);
+        }
+      })());
+    }
   }
 
   // ---- Event log ----
@@ -379,10 +416,16 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
         if (msg.payload) {
           const eventType = msg.payload.eventType as HermesEventType;
           const eventPayload = (msg.payload.eventPayload as Record<string, unknown>) ?? {};
-          // pr.created carries the real GitHub URL — route to the PR-completion
-          // handler instead of appending a duplicate untracked event.
-          if (eventType === "pr.created") {
-            this.onPRCreated((eventPayload.url as string) ?? "");
+          // pr.created / pr.updated both carry the real GitHub URL — route
+          // to the PR-completion handler so transitions + PR-index register
+          // happen once. pr.updated is emitted by the runner in amend mode
+          // (existing PR, push only).
+          if (eventType === "pr.created" || eventType === "pr.updated") {
+            this.onPRCreated(
+              (eventPayload.url as string) ?? "",
+              (eventPayload.ownerLogin as string) ?? "",
+              eventType,
+            );
           } else {
             this.appendEvent(eventType, "opencode", eventPayload);
           }
@@ -409,7 +452,14 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     // PR creation case: payload has prUrl. Route to onPRCreated; this is
     // idempotent if pr.created already advanced us to completed.
     if (payload?.prUrl) {
-      this.onPRCreated(payload.prUrl as string);
+      // runner.complete carries the PR URL after either flow (create or
+      // amend); the discrete pr.created/pr.updated event has already been
+      // emitted on the WS, so we don't re-emit it here — onPRCreated
+      // dedups on artifacts.prUrl.
+      this.onPRCreated(
+        payload.prUrl as string,
+        (payload.ownerLogin as string) ?? "",
+      );
       return;
     }
 
@@ -576,17 +626,42 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
 
   // ---- PR created callback ----
 
-  onPRCreated(prUrl: string): void {
+  onPRCreated(
+    prUrl: string,
+    ownerLogin: string = "",
+    eventKind: "pr.created" | "pr.updated" = "pr.created",
+  ): void {
     if (!this.artifacts) {
       this.artifacts = { sessionId: this.session?.id ?? "", changedFiles: [] };
     }
-    if (this.artifacts.prUrl === prUrl && this.session && isTerminal(this.session.status)) {
+    const alreadyRegistered = this.artifacts.prUrl === prUrl;
+    if (alreadyRegistered && this.session && isTerminal(this.session.status)) {
       // Already processed; idempotent no-op.
       return;
     }
     this.artifacts.prUrl = prUrl;
 
-    this.appendEvent("pr.created", "runner", { url: prUrl });
+    this.appendEvent(eventKind, "runner", { url: prUrl, ownerLogin });
+
+    // Register the PR in the global index so webhook deliveries and
+    // follow-up MCP calls can map this PR back to our session id.
+    // Fire-and-forget — the worker rolls the storage write into the
+    // current request lifetime; a failure to register only loses the
+    // lifecycle update path, not the PR itself.
+    if (!alreadyRegistered && this.session) {
+      const sessionId = this.session.id;
+      this.ctx.waitUntil((async () => {
+        try {
+          const prKey = prKeyFromUrl(prUrl);
+          const stub = getPrIndexStub(this.env);
+          await (stub as unknown as {
+            register(k: string, s: string, o: string): Promise<unknown>;
+          }).register(prKey, sessionId, ownerLogin);
+        } catch (err) {
+          console.error(`[DO] PR_INDEX_DO.register failed: ${(err as Error).message}`);
+        }
+      })());
+    }
 
     if (this.session?.status === "creating_pr" && canTransition("creating_pr", "completed")) {
       this.transition("completed");
@@ -603,16 +678,19 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     await this.ctx.storage.put("session", this.session);
     if (this.profile) await this.ctx.storage.put("profile", this.profile);
     if (this.runnerToken) await this.ctx.storage.put("runnerToken", this.runnerToken);
+    if (this.artifacts) await this.ctx.storage.put("artifacts", this.artifacts);
   }
 
   async restore(): Promise<void> {
     const session = await this.ctx.storage.get<Session>("session");
     const profile = await this.ctx.storage.get<ProjectProfile>("profile");
     const token = await this.ctx.storage.get<string>("runnerToken");
+    const artifacts = await this.ctx.storage.get<SessionArtifacts>("artifacts");
 
     if (session) this.session = session;
     if (profile) this.profile = profile;
     if (token) this.runnerToken = token;
+    if (artifacts) this.artifacts = artifacts;
 
     // Restore the event log from per-key entries. list() returns keys in
     // lexicographic order — eventKey() zero-pads to keep that == seq order.
@@ -633,9 +711,10 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     profile: ProjectProfile,
     taskDescription: string,
     controlBaseUrl: string,
+    amendPrUrl?: string,
   ): Promise<Session & { runnerToken: string | null }> {
     await this.ensureRestored();
-    const session = await this.init(profile, taskDescription, controlBaseUrl);
+    const session = await this.init(profile, taskDescription, controlBaseUrl, amendPrUrl);
     return { ...session, runnerToken: this.runnerToken };
   }
 
@@ -643,12 +722,19 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     session: Session | null;
     events: HermesEvent[];
     artifacts: SessionArtifacts | null;
+    repoUrl: string | null;
+    baseBranch: string | null;
   }> {
     await this.ensureRestored();
     return {
       session: this.session,
       events: this.eventLog.getAll(),
       artifacts: this.artifacts,
+      // Surface just the project fields the launcher needs to re-provision
+      // for amend mode. Keeping the full profile out for now — it carries
+      // model + tool allow-lists that are not part of the public contract.
+      repoUrl: this.profile?.repoUrl ?? null,
+      baseBranch: this.profile?.defaultBranch ?? null,
     };
   }
 
@@ -668,6 +754,80 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     await this.ensureRestored();
     this.handleCreatePR();
     return { ok: true };
+  }
+
+  // Called by the webhook handler when a verified pull_request event
+  // for THIS session's PR arrives. Idempotent — callers must dedup by
+  // X-GitHub-Delivery against the PR index BEFORE this runs.
+  //
+  // Transitions (only the completed branch is reachable today; we keep
+  // the guards explicit so failing/aborted sessions still get the event
+  // logged without throwing):
+  //   completed + pr.merged   -> emit pr.merged, transition to archived
+  //   completed + pr.closed   -> emit pr.closed, stay completed
+  //   other     + pr.merged   -> emit only (no transition)
+  //   other     + pr.closed   -> emit only
+  /** Append a pr.autofix.triggered (or pr.autofix.skipped) event to the
+   *  parent session's event log so the user sees the cause-and-effect in
+   *  one place. Called by the webhook handler after a successful (or
+   *  rejected) tryClaimAmendSlot. Idempotent on (deliveryId, trigger):
+   *  the index DO dedup ring already covers webhook-level retries. */
+  async appendAutofixEvent(input: {
+    triggered: boolean;
+    trigger: "review_changes_requested" | "check_run_failed";
+    deliveryId: string;
+    headSha: string;
+    newSessionId?: string;          // present when triggered === true
+    skipReason?: string;            // present when triggered === false
+    reviewerLogin?: string;         // review trigger
+    checkName?: string;             // check_run trigger
+    detailsUrl?: string;            // check_run trigger
+  }): Promise<{ ok: true }> {
+    await this.ensureRestored();
+    if (!this.session) return { ok: true };
+    this.appendEvent(
+      input.triggered ? "pr.autofix.triggered" : "pr.autofix.skipped",
+      "system",
+      {
+        trigger: input.trigger,
+        deliveryId: input.deliveryId,
+        headSha: input.headSha,
+        newSessionId: input.newSessionId,
+        skipReason: input.skipReason,
+        reviewerLogin: input.reviewerLogin,
+        checkName: input.checkName,
+        detailsUrl: input.detailsUrl,
+      },
+    );
+    return { ok: true };
+  }
+
+  async ingestPrLifecycleEvent(input: {
+    merged: boolean;
+    prUrl: string;
+    deliveryId: string;
+    senderLogin: string;
+  }): Promise<{ ok: true; archived: boolean }> {
+    await this.ensureRestored();
+    if (!this.session) return { ok: true, archived: false };
+
+    const type = input.merged ? "pr.merged" : "pr.closed";
+    this.appendEvent(type, "system", {
+      prUrl: input.prUrl,
+      deliveryId: input.deliveryId,
+      senderLogin: input.senderLogin,
+    });
+
+    let archived = false;
+    if (
+      input.merged &&
+      this.session.status === "completed" &&
+      canTransition("completed", "archived")
+    ) {
+      this.transition("archived");
+      archived = true;
+    }
+    return { ok: true, archived };
   }
 
   async sendPrompt(text: string): Promise<PromptResult> {
@@ -740,7 +900,13 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
             try {
               const r = await fetch(
                 `${launcherUrl}/sessions/${sessionId}/resume`,
-                { method: "POST", headers: { "content-type": "application/json" } },
+                {
+                  method: "POST",
+                  headers: {
+                    "content-type": "application/json",
+                    "x-hermes-launcher-secret": this.env.HERMES_LAUNCHER_SECRET ?? "",
+                  },
+                },
               );
               if (!r.ok) {
                 const body = await r.text().catch(() => "<no body>");
