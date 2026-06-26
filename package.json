@@ -21,15 +21,18 @@
     "launch": "bun run scripts/launch-session.ts",
     "launcher": "bun run src/launcher/server.ts",
     "e2e:real": "bun run scripts/e2e-real.ts",
-    "e2e:full": "bun run scripts/e2e-full.ts"
+    "e2e:full": "bun run scripts/e2e-full.ts",
+    "prepare": "husky"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.1",
     "@cloudflare/workers-types": "^4.20250620.0",
     "@types/node": "^26.0.0",
     "@types/ws": "^8.18.1",
+    "husky": "^9.1.7",
     "jscpd": "^5.0.11",
     "knip": "^6.21.0",
+    "lint-staged": "^17.0.8",
     "oxlint": "^1.71.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0",
@@ -41,5 +44,13 @@
     "e2b": "^2.30.5",
     "ws": "^8.21.0",
     "zod": "^4.4.3"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,mjs,json,jsonc,md}": [
+      "biome format --write --no-errors-on-unmatched"
+    ],
+    "*.{ts,tsx,js,mjs}": [
+      "oxlint --fix"
+    ]
   }
 }
