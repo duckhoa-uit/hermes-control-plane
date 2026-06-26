@@ -9,6 +9,7 @@ import { verifyGithubHmac, parseGithubWebhook } from "./github-webhook";
 import type { PromptResult } from "./session-do";
 import type { ProjectProfile, Session, HermesEvent, SessionArtifacts } from "../core/types";
 import { timingSafeEqualStrings } from "../core/secrets";
+import { createLogger, requestIdFrom } from "../core/logger";
 
 // RPC contract surface — explicit interface so TS does not have to walk the
 // full DO class (whose return shapes contain Record<string, unknown> which
@@ -139,23 +140,78 @@ export default {
       });
     }
 
+    // Generate (or accept) a request ID and bind it for the rest of the
+    // request. Every log line emitted under `log` carries `requestId`, and
+    // downstream fetch()/RPC calls echo it back via the X-Request-Id
+    // header so the launcher + DO logs stay correlatable.
+    const requestId = requestIdFrom(request.headers);
+    const log = createLogger({
+      service: "worker",
+      fields: { requestId },
+    });
+
+    const startedAt = Date.now();
     try {
-      console.log(`[debug] ${request.method} ${path} Upgrade=${request.headers.get("Upgrade")}`);
-      const resp = await dispatchRoute(request, env, url, path);
-      if (resp) return resp;
-      return new Response(JSON.stringify({ error: "Not found" }), {
-        status: 404,
-        headers: CORS_HEADERS,
+      log.debug("request.received", {
+        method: request.method,
+        path,
+        upgrade: request.headers.get("Upgrade") ?? undefined,
       });
+      const resp = await dispatchRoute(request, env, url, path);
+      const status = resp?.status ?? 404;
+      log.info("request.completed", {
+        method: request.method,
+        path,
+        status,
+        durationMs: Date.now() - startedAt,
+      });
+      log.metric("worker.request", 1, { path, status });
+      if (resp) return withRequestId(resp, requestId);
+      return withRequestId(
+        new Response(JSON.stringify({ error: "Not found" }), {
+          status: 404,
+          headers: CORS_HEADERS,
+        }),
+        requestId,
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
-      return new Response(JSON.stringify({ error: message }), {
-        status: 500,
-        headers: CORS_HEADERS,
+      log.error("request.failed", {
+        method: request.method,
+        path,
+        durationMs: Date.now() - startedAt,
+        error: message,
       });
+      log.metric("worker.request", 1, { path, status: 500 });
+      return withRequestId(
+        new Response(JSON.stringify({ error: message }), {
+          status: 500,
+          headers: CORS_HEADERS,
+        }),
+        requestId,
+      );
     }
   },
 };
+
+// Echo the request ID back to the caller so a client can paste it into a
+// bug report and an operator can grep for it across both runtimes. We
+// mutate `resp.headers` in place when possible (the body / status are
+// already set by the caller, and re-wrapping in `new Response(resp.body, …)`
+// would detach a WebSocket attached to the response — DO upgrade responses
+// carry one).
+function withRequestId(resp: Response, requestId: string): Response {
+  try {
+    resp.headers.set("x-request-id", requestId);
+  } catch {
+    // Some test shims hand back frozen Headers. We could rebuild the
+    // Response here, but doing so drops `resp.webSocket`, which is the
+    // entire point of WS upgrade responses. Falling through silently is
+    // strictly better than breaking real callers; the request-id is also
+    // already in every log line, so the only loss is the response header.
+  }
+  return resp;
+}
 
 /** Returns a Response when a route matches; null lets the caller emit 404. */
 async function dispatchRoute(
