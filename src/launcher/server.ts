@@ -36,7 +36,6 @@ const GITHUB_WRITE_TOKEN = process.env.GITHUB_WRITE_TOKEN;
 // origin remote.  Optional only because launcher unit tests + the
 // offline CLI can run without a real PAT; production launchers should
 // always supply both tokens.
-const GITHUB_READ_TOKEN = process.env.GITHUB_READ_TOKEN;
 const GITHUB_USER_LOGIN = process.env.GITHUB_USER_LOGIN;
 const LAUNCHER_SHARED_SECRET = process.env.LAUNCHER_SHARED_SECRET;
 const MAX_CONCURRENT_SESSIONS = Number(process.env.MAX_CONCURRENT_SESSIONS ?? 10);

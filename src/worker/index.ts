@@ -4,9 +4,8 @@
 // ============================================================
 
 import { SessionDurableObject } from "./session-do";
-import { PrIndexDurableObject } from "./pr-index-do";
+import { PrIndexDurableObject, getPrIndexStub } from "./pr-index-do";
 import { verifyGithubHmac, parseGithubWebhook } from "./github-webhook";
-import { getPrIndexStub } from "./pr-index-do";
 import type { PromptResult } from "./session-do";
 import type { ProjectProfile, Session, HermesEvent, SessionArtifacts } from "../core/types";
 

@@ -160,9 +160,6 @@ let opencodeSessionId: string | null = null;
 let sseAbort: AbortController | null = null;
 // Track the *opencode* turn currently in flight, so SSE events outside it
 // can be ignored (e.g. plugin.added bursts on first boot).
-// We accumulate the most recent text/tool part state so we can emit
-// transition events without re-sending payloads.
-const seenToolCalls = new Set<string>();
 // Sum tokens across turns; emitted as artifacts.usage at terminal.
 const usageRollup: {
   input: number;

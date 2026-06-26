@@ -10,7 +10,6 @@
 // ============================================================
 
 import { WebSocket } from "ws";
-import { spawn, type ChildProcess } from "node:child_process";
 
 const BASE = process.argv[2] ?? "http://localhost:8787";
 const WS_BASE = BASE.replace(/^http/, "ws");
@@ -506,7 +505,7 @@ async function main() {
     await scenarioPromptQueuedWhenRunnerOffline();
     await scenarioAbort();
     await scenarioPromptOnTerminal();
-  } catch (e) {
+  } catch {
     // Step-failure already logged; continue to summary.
   }
 

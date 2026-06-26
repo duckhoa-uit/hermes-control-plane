@@ -185,7 +185,6 @@ async function main() {
   const sessionId: string = create.body.sessionId;
   const sandboxId: string = create.body.sandboxId;
   const streamUrl: string = create.body.streamUrl;
-  const stateUrl: string = create.body.stateUrl;
   info(`sessionId: ${sessionId}`);
   info(`sandboxId: ${sandboxId}`);
   info(`streamUrl: ${streamUrl}`);

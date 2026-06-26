@@ -31,7 +31,12 @@
     "no-fallthrough": "error",
     "no-constant-condition": ["error", { "checkLoops": false }],
     "promise/no-return-wrap": "error",
-    "import/no-duplicates": "warn"
+    "promise/always-return": "off",
+    "import/no-duplicates": "warn",
+    "no-await-in-loop": "off",
+    "no-underscore-dangle": "off",
+    "no-useless-concat": "off",
+    "unicorn/consistent-function-scoping": "off"
   },
   "ignorePatterns": [
     "node_modules",

@@ -29,7 +29,6 @@ const OPENCODE_HOST = "127.0.0.1";
 const OPENCODE_PORT = 4096;
 const OPENCODE_READY_LOG = "/var/log/opencode-serve.log";
 const SERVE_READY_TIMEOUT_MS = 120_000;
-const SERVE_READY_LINE = "opencode server listening";
 
 interface StartConfig {
   CONTROL_PLANE_SESSION_ID: string;
@@ -99,7 +98,9 @@ async function spawnOpencodeServe(): Promise<ChildProcess> {
 
 function isPortListening(host: string, port: number): Promise<boolean> {
   return new Promise((resolve) => {
-    const { Socket } = require("net") as typeof import("net");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- baked supervisor must be sync-loadable from the snapshot, ESM-only `import { Socket } from "node:net"` breaks pkg-bundling.
+    const net = require("node:net");
+    const Socket = net.Socket;
     const sock = new Socket();
     let done = false;
     const finish = (ok: boolean) => {

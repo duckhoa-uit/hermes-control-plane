@@ -210,7 +210,7 @@ async function waitForSlotFree(maxMs = 180_000): Promise<void> {
       console.log(`#${i}:`, JSON.stringify(r, null, 2));
       if (r.body.dispatched) {
         console.log("  waiting 5s before next…");
-        await new Promise((r) => setTimeout(r, 5000));
+        await new Promise((resolve) => setTimeout(resolve, 5000));
       }
     }
   } else {

@@ -10,6 +10,8 @@ import {
   verifyGithubHmac,
   parseGithubWebhook,
   type PullRequestEventPayload,
+  type PullRequestReviewEventPayload,
+  type CheckRunEventPayload,
 } from "../src/worker/github-webhook";
 
 const SECRET = "test-secret";
@@ -195,11 +197,6 @@ describe("parseGithubWebhook", () => {
 });
 
 // ---- pull_request_review fixtures + tests ----
-
-import type {
-  PullRequestReviewEventPayload,
-  CheckRunEventPayload,
-} from "../src/worker/github-webhook";
 
 function reviewPayload(
   overrides: Partial<PullRequestReviewEventPayload> = {},

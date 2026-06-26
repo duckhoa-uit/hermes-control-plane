@@ -5,7 +5,7 @@
 // ============================================================
 
 import type { RunnerCommand } from "../core/types";
-import { HEARTBEAT_INTERVAL_MS, OPENCODE_PORT } from "../core/constants";
+import { HEARTBEAT_INTERVAL_MS } from "../core/constants";
 
 // ---- Config from env ----
 
@@ -171,7 +171,15 @@ async function handleControlMessage(msg: { type: string; command?: RunnerCommand
 // ---- Agent prompt handling ----
 
 async function handleAgentPrompt(cmd: RunnerCommand): Promise<void> {
-  const { taskDescription, context, model, allowedTools } = cmd.payload as {
+  // `allowedTools` is part of the wire contract but currently consumed
+  // upstream (OpenCode honors its session-level tool config); destructure
+  // and discard so changes in the contract still surface as TS errors.
+  const {
+    taskDescription,
+    context,
+    model,
+    allowedTools: _allowedTools,
+  } = cmd.payload as {
     taskDescription: string;
     context: string;
     model: string;
