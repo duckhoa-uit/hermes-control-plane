@@ -20,6 +20,7 @@ Docs:
 - [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md) — on-call runbook: dashboards, alert channels, and the per-symptom triage steps. Alert rule declarations live in [`infra/observability/alerts.yaml`](infra/observability/alerts.yaml).
 - [`docs/error-tracking.md`](docs/error-tracking.md) — Sentry integration + the error→GitHub-issue webhook pipeline.
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — gap analysis vs. [Ramp Inspect](https://builders.ramp.com/post/why-we-built-our-background-agent), prioritized roadmap, implementation diaries, and the locked P1.1 OAuth design (§14).
+- [`docs/api-reference.md`](docs/api-reference.md) and [`docs/events-reference.md`](docs/events-reference.md) and [`docs/state-machine.mmd`](docs/state-machine.mmd) — auto-generated from source by `bun run docs:gen`; refreshed on every push to main by `.github/workflows/docs-refresh.yml`.
 
 ## Architecture
 
