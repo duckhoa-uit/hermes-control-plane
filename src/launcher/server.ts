@@ -156,6 +156,29 @@ interface CreateBody {
   // and the prMode triple from the parent session's state + the global
   // PR index. The caller only needs to supply taskDescription.
   parentSessionId?: string;
+  // PR #A / A1: optional, validated as /^[a-z0-9-]{1,40}$/. When supplied,
+  // the new fresh-PR branch becomes `hermes/<suffix>-<id4>` instead of
+  // `hermes/<id8>` so reviewers see a meaningful branch name in the
+  // GitHub branch picker. Ignored for amend sessions (those reuse the
+  // existing PR branch). Invalid values fall back to default silently.
+  branchSuffix?: string;
+  // A5: structured amend trigger metadata. Webhook handler (worker) sets
+  // this when spawning an auto-amend session; the runner reads it from
+  // start.json env to choose a per-trigger preamble. Optional —
+  // manual_followup (operator-driven follow-up via send_followup_prompt)
+  // never sets it.
+  amendTrigger?:
+    | {
+        kind: "review_changes_requested";
+        reviewerLogin?: string;
+        reviewBody?: string;
+      }
+    | {
+        kind: "ci_failure";
+        checkName?: string;
+        detailsUrl?: string;
+        conclusion?: string;
+      };
 }
 
 interface PrIndexRowWire {
@@ -303,6 +326,9 @@ async function handleCreate(req: Request): Promise<Response> {
       // Tell the DO this is an amend session so its slot-release hook
       // works even on early abort (before pr.updated is emitted).
       amendPrUrl: prMode?.prUrl,
+      // A1: pass-through so the DO computes the same branch the
+      // provisioner does. Amend mode ignores it (reuses PR branch).
+      branchSuffix: prMode ? undefined : body.branchSuffix,
     }),
   });
   if (!wResp.ok) {
@@ -329,6 +355,8 @@ async function handleCreate(req: Request): Promise<Response> {
       githubUserLogin: process.env.GITHUB_USER_LOGIN,
       githubUserEmail: process.env.GITHUB_USER_EMAIL,
       prMode,
+      branchSuffix: body.branchSuffix,
+      amendTrigger: body.amendTrigger,
     });
   } catch (err) {
     await fetch(`${CONTROL_PLANE_BASE_URL}/sessions/${session.id}/abort`, { method: "POST" });
@@ -336,6 +364,32 @@ async function handleCreate(req: Request): Promise<Response> {
       { error: "provision failed", sessionId: session.id, detail: (err as Error).message },
       { status: 500 },
     );
+  }
+
+  // 2b. A4: push repo-level agent instructions (AGENTS.md / CLAUDE.md /
+  //     CONVENTIONS.md) to the DO BEFORE the watchSession poller kicks in
+  //     and well before the runner WS connects, so renderContextPackage()
+  //     picks them up on the very first prompt.  Best-effort; a failure
+  //     here is logged but does not abort the session — the agent simply
+  //     loses the optional repo-level guidance.
+  if (provisioned.repoInstructions) {
+    try {
+      const r = await fetch(
+        `${CONTROL_PLANE_BASE_URL}/sessions/${session.id}/repo-instructions`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(provisioned.repoInstructions),
+        },
+      );
+      if (!r.ok) {
+        log(
+          `repo-instructions POST failed for ${session.id.slice(0, 8)}: ${r.status} ${(await r.text()).slice(0, 200)}`,
+        );
+      }
+    } catch (err) {
+      log(`repo-instructions POST error for ${session.id.slice(0, 8)}: ${(err as Error).message}`);
+    }
   }
 
   // 3. Track + start the lifecycle watcher.

@@ -156,4 +156,124 @@ describe("provisionSession", () => {
     expect(cfg.CONTROL_PLANE_PR_MODE_NUMBER).toBeUndefined();
     expect(cfg.CONTROL_PLANE_PR_MODE_URL).toBeUndefined();
   });
+
+  // PR #A / A1
+  it("branchSuffix (valid): branch is hermes/<suffix>-<id4>", async () => {
+    await provisionSession({
+      sessionId: "session_abcdef12",
+      runnerToken: "tok",
+      controlWsUrl: "wss://x",
+      repoUrl: "https://github.com/test/repo",
+      e2bApiKey: "key",
+      e2bTemplate: "control-plane-runner",
+      githubUserToken: "ghp_x",
+      githubUserLogin: "alice",
+      branchSuffix: "add-rate-limit-middleware",
+    });
+    const setupCmd = (cmdRun.mock.calls[1] as [string, unknown])[0] as string;
+    expect(setupCmd).toContain("git checkout -B hermes/add-rate-limit-middleware-ef12");
+  });
+
+  // PR #A / A1
+  it("branchSuffix (invalid characters): silently falls back to <id8>", async () => {
+    await provisionSession({
+      sessionId: "session_abcdef12",
+      runnerToken: "tok",
+      controlWsUrl: "wss://x",
+      repoUrl: "https://github.com/test/repo",
+      e2bApiKey: "key",
+      e2bTemplate: "control-plane-runner",
+      githubUserToken: "ghp_x",
+      githubUserLogin: "alice",
+      branchSuffix: "Add Rate Limit!", // capitals + spaces + ! — invalid
+    });
+    const setupCmd = (cmdRun.mock.calls[1] as [string, unknown])[0] as string;
+    expect(setupCmd).toContain("git checkout -B hermes/abcdef12");
+    expect(setupCmd).not.toContain("add-rate-limit");
+  });
+
+  // PR #A / A1
+  it("branchSuffix (>40 chars): silently falls back to <id8>", async () => {
+    await provisionSession({
+      sessionId: "session_abcdef12",
+      runnerToken: "tok",
+      controlWsUrl: "wss://x",
+      repoUrl: "https://github.com/test/repo",
+      e2bApiKey: "key",
+      e2bTemplate: "control-plane-runner",
+      githubUserToken: "ghp_x",
+      githubUserLogin: "alice",
+      branchSuffix: "a".repeat(41),
+    });
+    const setupCmd = (cmdRun.mock.calls[1] as [string, unknown])[0] as string;
+    expect(setupCmd).toContain("git checkout -B hermes/abcdef12");
+  });
+
+  // PR #A / A5
+  it("amendTrigger=review_changes_requested: serialises into start.json", async () => {
+    await provisionSession({
+      sessionId: "session_review01",
+      runnerToken: "tok",
+      controlWsUrl: "wss://x",
+      repoUrl: "https://github.com/test/repo",
+      e2bApiKey: "key",
+      e2bTemplate: "control-plane-runner",
+      githubUserToken: "ghp_x",
+      githubUserLogin: "alice",
+      prMode: { branch: "hermes/x", prNumber: 7, prUrl: "https://github.com/test/repo/pull/7" },
+      amendTrigger: {
+        kind: "review_changes_requested",
+        reviewerLogin: "bob",
+        reviewBody: "please address X",
+      },
+    });
+    const cfg = JSON.parse(filesWrite.mock.calls[0][1] as string);
+    expect(cfg.CONTROL_PLANE_AMEND_TRIGGER_KIND).toBe("review_changes_requested");
+    const trig = JSON.parse(cfg.CONTROL_PLANE_AMEND_TRIGGER_JSON);
+    expect(trig.reviewerLogin).toBe("bob");
+    expect(trig.reviewBody).toBe("please address X");
+  });
+
+  // PR #A / A5
+  it("amendTrigger=ci_failure: serialises into start.json", async () => {
+    await provisionSession({
+      sessionId: "session_ci01",
+      runnerToken: "tok",
+      controlWsUrl: "wss://x",
+      repoUrl: "https://github.com/test/repo",
+      e2bApiKey: "key",
+      e2bTemplate: "control-plane-runner",
+      githubUserToken: "ghp_x",
+      githubUserLogin: "alice",
+      prMode: { branch: "hermes/x", prNumber: 9, prUrl: "https://github.com/test/repo/pull/9" },
+      amendTrigger: {
+        kind: "ci_failure",
+        checkName: "e2e (ubuntu)",
+        detailsUrl: "https://gh/.../runs/123",
+        conclusion: "failure",
+      },
+    });
+    const cfg = JSON.parse(filesWrite.mock.calls[0][1] as string);
+    expect(cfg.CONTROL_PLANE_AMEND_TRIGGER_KIND).toBe("ci_failure");
+    const trig = JSON.parse(cfg.CONTROL_PLANE_AMEND_TRIGGER_JSON);
+    expect(trig.checkName).toBe("e2e (ubuntu)");
+  });
+
+  // PR #A / A5: no amendTrigger means no env var (back-compat)
+  it("no amendTrigger: CONTROL_PLANE_AMEND_TRIGGER_* env vars are absent", async () => {
+    await provisionSession({
+      sessionId: "session_amend02",
+      runnerToken: "tok",
+      controlWsUrl: "wss://x",
+      repoUrl: "https://github.com/test/repo",
+      e2bApiKey: "key",
+      e2bTemplate: "control-plane-runner",
+      githubUserToken: "ghp_x",
+      githubUserLogin: "alice",
+      prMode: { branch: "hermes/x", prNumber: 1, prUrl: "https://github.com/test/repo/pull/1" },
+    });
+    const cfg = JSON.parse(filesWrite.mock.calls[0][1] as string);
+    expect(cfg.CONTROL_PLANE_AMEND_TRIGGER_KIND).toBeUndefined();
+    expect(cfg.CONTROL_PLANE_AMEND_TRIGGER_JSON).toBeUndefined();
+  });
 });

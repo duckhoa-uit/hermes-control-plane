@@ -114,6 +114,15 @@ function makeServer(w: McpServerWiring): McpServer {
             "Optional project profile id (selects allowed tools, model). " +
               "Defaults to 'default'.",
           ),
+        branchSuffix: z
+          .string()
+          .regex(/^[a-z0-9-]{1,40}$/, "lowercase alphanumeric + hyphens, 1-40 chars")
+          .optional()
+          .describe(
+            "Optional short slug derived from the task (e.g. 'add-rate-limit-middleware'). " +
+              "Used as the branch suffix so reviewers see a meaningful branch name. " +
+              "Validated server-side; invalid values are silently ignored.",
+          ),
       },
     },
     async (input) => {
