@@ -364,6 +364,11 @@ async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
   const branch = amendMode
     ? amendBranch
     : ((payload.branch as string) || `hermes/${Date.now()}`);
+  // Branch names containing characters valid in git but special in the
+  // shell (e.g. `$`, backticks) reach us through CONTROL_PLANE_PR_MODE_BRANCH
+  // (set from GitHub's pull_request.head.ref). Escape for single-quoted
+  // shell interpolation the same way provision.ts does.
+  const brSh = branch.replace(/'/g, "'\\''");
   const title = (payload.title as string) || `Hermes: ${payload.taskDescription ?? "automated change"}`;
   const body = (payload.body as string) || "Automated PR created by hermes-control-plane.";
 
@@ -382,14 +387,14 @@ async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
       // worth pushing.
       // In amend mode the comparison base is the PR branch's previous tip
       // (origin/<branch>); in fresh mode it is the project's base branch.
-      const cmpBase = amendMode ? `origin/${branch}` : `origin/${baseBranch}`;
+      const cmpBase = amendMode ? `'origin/${brSh}'` : `origin/${baseBranch}`;
       const aheadCount = (await execCmd(`git rev-list --count ${cmpBase}..HEAD`)).trim();
       if (aheadCount === "0" || aheadCount === "") {
         sendError(amendMode ? "No new commits to push" : "No changes staged for PR");
         return;
       }
     }
-    const pushOut = await execStrict(`git push --set-upstream origin ${branch} 2>&1`);
+    const pushOut = await execStrict(`git push --set-upstream origin '${brSh}' 2>&1`);
     sendEvent("git.branch.pushed", { branch, pushOutput: pushOut.slice(-500), authorIdentity: userLogin });
 
     if (amendMode) {
