@@ -85,7 +85,7 @@ The MCP server exposes four tools. The default flow uses
 polls `get_session_status`.
 
 ```text
-1. Call start_coding_task with { taskDescription, repoUrl }.
+1. Call start_coding_task with { taskDescription, repoUrl, branchSuffix? }. `branchSuffix` is optional but recommended — derive a short slug from the task (e.g. "add-rate-limit-middleware") so reviewers see a meaningful branch name. Must match `/^[a-z0-9-]{1,40}$/`; invalid values are silently dropped.
 2. Capture the sessionId and streamUrl from the response.
 3. Subscribe to streamUrl (WebSocket) OR poll get_session_status every 5s.
 4. On the pr.created event, post the PR URL back to the user.
@@ -114,7 +114,7 @@ user as a status tail. Override the Worker URL with the
 
 | Tool | Purpose | Required args |
 |---|---|---|
-| `start_coding_task` | Spawn sandbox + start agent | `taskDescription`, `repoUrl` |
+| `start_coding_task` | Spawn sandbox + start agent | `taskDescription`, `repoUrl` (optionally `branchSuffix`) |
 | `get_session_status` | Poll status + check for `prUrl` | `sessionId` |
 | `send_followup_prompt` | Append a follow-up prompt | `sessionId`, `text` |
 | `abort_session` | Cancel + tear down sandbox | `sessionId` |

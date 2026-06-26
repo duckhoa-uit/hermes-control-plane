@@ -58,6 +58,12 @@ export interface Session {
   // disconnected stores the prompt here + asks launcher to resume; on
   // runner.connected we flush it as an agent.prompt command.
   pendingPrompt?: string;
+  // A4: repo-level agent instructions loaded by the launcher at clone
+  // time (AGENTS.md, CLAUDE.md, or CONVENTIONS.md, capped at 8 KB).
+  // Surfaced into the prompt as `## Repo Instructions`. Absent for repos
+  // that ship none of those files.
+  repoInstructions?: string;
+  repoInstructionsSource?: "AGENTS.md" | "CLAUDE.md" | "CONVENTIONS.md";
 }
 
 // ---- Events (append-only log) ----
@@ -106,7 +112,10 @@ export type HermesEventType =
   | "pr.autofix.skipped"
   | "system.stalled"
   | "system.retrying"
-  | "agent.usage";
+  | "agent.usage"
+  // PR #A:
+  | "repo.instructions.loaded"  // A4 — AGENTS.md / CLAUDE.md / CONVENTIONS.md
+  | "agent.pr_metadata";        // A2 — agent-authored PR title/body parsed OK
 
 // ---- Runner Commands (control plane -> runner) ----
 

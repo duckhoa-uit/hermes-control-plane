@@ -74,6 +74,7 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     taskDescription: string,
     controlBaseUrl: string,
     amendPrUrl?: string,
+    branchSuffix?: string,
   ): Promise<Session> {
     // Skill: durable-objects/gotchas "Race Condition Despite Single-Threading".
     // The mutate-then-persist sequence has an await point, so block any
@@ -91,7 +92,16 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
         projectId: profile.id,
         taskDescription,
         status: "created",
-        branch: `hermes/${sessionId.slice(-8)}`,
+        // A1: optional suggested suffix (validated /^[a-z0-9-]{1,40}$/)
+        // makes branch readable in the GitHub branch picker. Invalid /
+        // missing → fall back to today's hermes/<id8>. Must stay in sync
+        // with src/launcher/provision.ts.
+        branch: (() => {
+          const s = branchSuffix && /^[a-z0-9-]{1,40}$/.test(branchSuffix)
+            ? branchSuffix
+            : "";
+          return s ? `hermes/${s}-${sessionId.slice(-4)}` : `hermes/${sessionId.slice(-8)}`;
+        })(),
         createdAt: now,
         updatedAt: now,
         runnerConnected: false,
@@ -395,7 +405,13 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     if (!this.session || this.session.status !== "review_ready") return;
 
     this.transition("creating_pr");
-    this.sendRunnerCommand("pr.create", { branch: this.session.branch });
+    // A2: pass the task description so the runner can ask the agent to
+    // author the PR title + body. Runner falls back to "Hermes: <task>"
+    // + the hardcoded body on parse failure.
+    this.sendRunnerCommand("pr.create", {
+      branch: this.session.branch,
+      taskDescription: this.session.taskDescription,
+    });
   }
 
   // ---- Runner message handling ----
@@ -518,6 +534,17 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
   private renderContextPackage(): string {
     if (!this.session || !this.profile) return "";
 
+    // A3: baseline rules block. Sourced from
+    // docs/RESEARCH-AGENT-PROMPTS.md §3 (P1+P3). Synthesises Cline's YOLO
+    // prompt + Aider's overeager_prompt + Codex's completion-audit clause
+    // — patterns established for unattended coding agents that produce
+    // PRs another human reviews.
+    //
+    // Intentionally short: rules the runner CANNOT enforce itself (e.g.
+    // scope discipline, completion audit). Git/push rules are deliberately
+    // omitted — those are enforced structurally by the runner (single
+    // push code path, single PR creation code path; PR #B will lock down
+    // sandbox-side push entirely).
     const lines: string[] = [
       `# Hermes Task Context`,
       ``,
@@ -528,10 +555,62 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
       `## Task`,
       `${this.session.taskDescription}`,
       ``,
+      `## Working Rules`,
+      ``,
+      `You are running unattended inside an ephemeral sandbox. No human will`,
+      `answer questions or grant permissions mid-run. The control plane`,
+      `opens a pull request from your final diff for human review.`,
+      `Optimise for a PR that is easy to review.`,
+      ``,
+      `- Stay in scope. Touch only what the task requires. Do not refactor,`,
+      `  reformat, or "improve" adjacent code, comments, imports, or`,
+      `  formatting. Every changed line should trace to the task.`,
+      `- Match the existing style. Before editing a file, read enough of it`,
+      `  (and its neighbours / imports) to copy its conventions — naming,`,
+      `  typing, error handling, test layout. Do not introduce a new`,
+      `  library, framework, or pattern unless the task explicitly asks.`,
+      `- Verify libraries exist. Before using a package, confirm it is`,
+      `  already in package.json / pyproject.toml / go.mod / Cargo.toml.`,
+      `  Do not invent imports.`,
+      `- Do not add speculative comments. Only add comments where the logic`,
+      `  is not self-evident. Never leave TODOs in committed code unless`,
+      `  the task asks for them.`,
+      `- Verify your work. After editing, run the project's test / lint /`,
+      `  build commands when they exist. If tests fail, fix the cause; do`,
+      `  not weaken or skip the test unless the task explicitly says so.`,
+      `- Never commit secrets. Refuse to write .env, credentials, tokens,`,
+      `  or private keys into the repo even if asked.`,
+      `- Stop cleanly. When the task is complete, end the turn. Do not open`,
+      `  a new PR or push (the control plane handles that).`,
+      ``,
+      `## Before You Finish`,
+      ``,
+      `Before you stop, re-read the task description and verify, against`,
+      `the current state of the worktree, that every requirement has been`,
+      `implemented. Treat completion as unproven until you have inspected`,
+      `the relevant files or run the relevant commands. Do not redefine`,
+      `success around what is easy to ship; if you cannot finish a`,
+      `requirement, say so explicitly in your final message so the reviewer`,
+      `is not surprised.`,
+      ``,
     ];
 
     if (this.profile.agentsContext) {
       lines.push(`## Project Instructions`, this.profile.agentsContext, ``);
+    }
+
+    if (this.session.repoInstructions) {
+      // A4: repo-level AGENTS.md / CLAUDE.md / CONVENTIONS.md content,
+      // loaded at provision time, capped at REPO_INSTRUCTIONS_MAX_BYTES.
+      // Loaded BELOW Working Rules and Project Instructions on purpose
+      // so a hostile / outdated repo file cannot override the baseline
+      // safety rules (Codex precedence convention; see
+      // docs/RESEARCH-AGENT-PROMPTS.md §1.3).
+      lines.push(
+        `## Repo Instructions (from ${this.session.repoInstructionsSource ?? "repo"})`,
+        this.session.repoInstructions,
+        ``,
+      );
     }
 
     return lines.join("\n");
@@ -712,9 +791,10 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     taskDescription: string,
     controlBaseUrl: string,
     amendPrUrl?: string,
+    branchSuffix?: string,
   ): Promise<Session & { runnerToken: string | null }> {
     await this.ensureRestored();
-    const session = await this.init(profile, taskDescription, controlBaseUrl, amendPrUrl);
+    const session = await this.init(profile, taskDescription, controlBaseUrl, amendPrUrl, branchSuffix);
     return { ...session, runnerToken: this.runnerToken };
   }
 
@@ -753,6 +833,27 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
   async createPR(): Promise<{ ok: true }> {
     await this.ensureRestored();
     this.handleCreatePR();
+    return { ok: true };
+  }
+
+  // A4 / PR #A: launcher calls this after cloning the repo and reading
+  // AGENTS.md / CLAUDE.md / CONVENTIONS.md (capped 8 KB). Must arrive
+  // before the runner WS connects so renderContextPackage picks it up
+  // on the first turn. If the runner has already connected and the
+  // first prompt fired, we still store it for follow-up prompts.
+  async setRepoInstructions(input: {
+    source: "AGENTS.md" | "CLAUDE.md" | "CONVENTIONS.md";
+    content: string;
+  }): Promise<{ ok: true }> {
+    await this.ensureRestored();
+    if (!this.session) return { ok: true };
+    this.session.repoInstructions = input.content;
+    this.session.repoInstructionsSource = input.source;
+    await this.persist();
+    this.appendEvent("repo.instructions.loaded", "system", {
+      source: input.source,
+      bytes: input.content.length,
+    });
     return { ok: true };
   }
 

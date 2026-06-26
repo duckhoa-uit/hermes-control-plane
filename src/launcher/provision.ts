@@ -45,17 +45,51 @@ export interface ProvisionInput {
     prNumber: number;   // existing PR number on origin
     prUrl: string;      // PR html_url, re-emitted on pr.updated
   };
+
+  // PR #A / A1. Optional, validated `/^[a-z0-9-]{1,40}$/`. When supplied,
+  // fresh-PR branch is `hermes/<suffix>-<id4>` instead of `hermes/<id8>`.
+  // Invalid → silently fall back to default. Ignored in amend mode.
+  branchSuffix?: string;
+
+  // A5: when set, the runner reads CONTROL_PLANE_AMEND_TRIGGER_* envs and
+  // chooses a per-trigger preamble instead of the generic amend text.
+  amendTrigger?:
+    | {
+        kind: "review_changes_requested";
+        reviewerLogin?: string;
+        reviewBody?: string;
+      }
+    | {
+        kind: "ci_failure";
+        checkName?: string;
+        detailsUrl?: string;
+        conclusion?: string;
+      };
 }
 
 export interface ProvisionResult {
   sandboxId: string;
   /** Force-kill the sandbox. Idempotent on already-killed. */
   kill(): Promise<void>;
+  // A4: repo-level agent instructions (AGENTS.md / CLAUDE.md /
+  // CONVENTIONS.md) read from the cloned repo, capped at 8 KB.
+  // Undefined when no such file exists. Launcher forwards this to
+  // the Worker so the DO can splice it into the context package.
+  repoInstructions?: {
+    source: "AGENTS.md" | "CLAUDE.md" | "CONVENTIONS.md";
+    content: string;
+  };
 }
 
 const START_CONFIG_PATH = "/opt/control-plane/start.json";
 const REPO_DIR = "/home/user/repo";
 const SANDBOX_TIMEOUT_MS = 15 * 60 * 1000;
+// A4: hard cap to keep the prompt context budget bounded even if a repo
+// ships a multi-megabyte AGENTS.md. 8 KB is enough for ~1500 tokens of
+// guidance — long enough to be useful, short enough not to crowd the
+// task description and Working Rules.
+const REPO_INSTRUCTIONS_MAX_BYTES = 8 * 1024;
+const REPO_INSTRUCTIONS_CANDIDATES = ["AGENTS.md", "CLAUDE.md", "CONVENTIONS.md"] as const;
 
 export async function provisionSession(input: ProvisionInput): Promise<ProvisionResult> {
   // 1. Spawn from snapshot. Tag with hermes session id so the orphan sweeper
@@ -137,7 +171,15 @@ export async function provisionSession(input: ProvisionInput): Promise<Provision
         setupCmds.push(`git checkout -B '${br}' 'origin/${br}'`);
       } else {
         // Fresh session: create a new hermes/<short-session-id> branch.
-        const branch = `hermes/${input.sessionId.slice(-8)}`;
+        // A1: when a valid suggested suffix is supplied, the branch
+        // becomes hermes/<suffix>-<id4> so reviewers see something
+        // meaningful in the GitHub branch picker.
+        const suffix = input.branchSuffix && /^[a-z0-9-]{1,40}$/.test(input.branchSuffix)
+          ? input.branchSuffix
+          : "";
+        const branch = suffix
+          ? `hermes/${suffix}-${input.sessionId.slice(-4)}`
+          : `hermes/${input.sessionId.slice(-8)}`;
         setupCmds.push(`git checkout -B ${branch}`);
       }
       const setup = await sbx.commands.run(
@@ -179,9 +221,59 @@ export async function provisionSession(input: ProvisionInput): Promise<Provision
       startConfig.CONTROL_PLANE_PR_MODE_NUMBER = String(input.prMode.prNumber);
       startConfig.CONTROL_PLANE_PR_MODE_URL = input.prMode.prUrl;
     }
+    if (input.amendTrigger) {
+      // A5: structured trigger metadata so the runner can pick a
+      // tailored preamble (review feedback vs CI failure). Optional;
+      // when absent the runner falls back to today's generic amend text.
+      startConfig.CONTROL_PLANE_AMEND_TRIGGER_KIND = input.amendTrigger.kind;
+      // Serialise the details payload as JSON; cheaper than spreading
+      // multiple ad-hoc env names and easier to evolve.
+      startConfig.CONTROL_PLANE_AMEND_TRIGGER_JSON = JSON.stringify(input.amendTrigger);
+    }
+
+    // A4: probe for repo-level agent instructions BEFORE writing start.json
+    // so the runner can include them in its initial WS handshake — that
+    // lands in the DO before sendInitialPrompt() fires, so the first
+    // turn's context package already carries them.
+    let repoInstructions: { source: "AGENTS.md" | "CLAUDE.md" | "CONVENTIONS.md"; content: string } | undefined;
+    for (const candidate of REPO_INSTRUCTIONS_CANDIDATES) {
+      try {
+        const check = await sbx.commands.run(
+          `test -f ${REPO_DIR}/${candidate} && wc -c < ${REPO_DIR}/${candidate} || echo MISSING`,
+          { timeoutMs: 5_000 },
+        );
+        const out = check.stdout.trim();
+        if (out === "MISSING" || out === "") continue;
+        const bytes = Number(out);
+        if (!Number.isFinite(bytes) || bytes <= 0) continue;
+        const read = await sbx.commands.run(
+          `head -c ${REPO_INSTRUCTIONS_MAX_BYTES} ${REPO_DIR}/${candidate}`,
+          { timeoutMs: 5_000 },
+        );
+        const content = read.stdout;
+        if (!content) continue;
+        const truncated = bytes > REPO_INSTRUCTIONS_MAX_BYTES;
+        repoInstructions = {
+          source: candidate,
+          content: truncated
+            ? content + `\n\n[... truncated, original was ${bytes} bytes, cap is ${REPO_INSTRUCTIONS_MAX_BYTES} ...]`
+            : content,
+        };
+        break;
+      } catch {
+        // best-effort
+      }
+    }
+
+    // A4: repoInstructions are NOT baked into start.json — the launcher
+    // delivers them out-of-band to the DO (POST /sessions/:id/repo-instructions)
+    // so they never appear in the sandbox process env where the agent's
+    // own tools (ps / env / cat /opt/control-plane/start.json) could read
+    // them. This keeps the prompt the runner sees clean and the storage
+    // of the instructions inside the trusted control plane.
     await sbx.files.write(START_CONFIG_PATH, JSON.stringify(startConfig));
 
-    return { sandboxId: sbx.sandboxId, kill: killOnce };
+    return { sandboxId: sbx.sandboxId, kill: killOnce, repoInstructions };
   } catch (err) {
     await killOnce();
     throw err;

@@ -21,6 +21,7 @@ import { WebSocket } from "ws";
 import { exec as execCb } from "child_process";
 import { createOpencodeClient } from "@opencode-ai/sdk";
 import { createEventMapper } from "./event-mapper";
+import { parsePrMetadata, renderPrBody, type PrMetadata } from "./pr-metadata";
 
 const SESSION_ID = process.env.CONTROL_PLANE_SESSION_ID;
 const RUNNER_TOKEN = process.env.CONTROL_PLANE_RUNNER_TOKEN;
@@ -292,16 +293,73 @@ async function runPromptTurn(taskDescription: string, context: string): Promise<
   const amendNum = process.env.CONTROL_PLANE_PR_MODE_NUMBER || "";
   const amendUrl = process.env.CONTROL_PLANE_PR_MODE_URL || "";
   if (amendBr && amendNum && amendUrl) {
-    text =
-      `# Hermes amend mode\n` +
-      `You are continuing work on an EXISTING open pull request:\n` +
-      `- Branch: ${amendBr}\n` +
-      `- PR #${amendNum}: ${amendUrl}\n\n` +
-      `Make the requested change on this branch. Do NOT open a new PR — ` +
-      `the runner will push your commits onto the existing branch and ` +
-      `the PR will update automatically.\n\n` +
-      `---\n\n` +
-      text;
+    // A5: choose a preamble tailored to the trigger class. Falls back
+    // to the generic manual-follow-up text when no structured trigger
+    // is supplied (which is the case for operator-driven follow-up
+    // prompts via send_followup_prompt).
+    const triggerKind = process.env.CONTROL_PLANE_AMEND_TRIGGER_KIND || "";
+    const triggerJson = process.env.CONTROL_PLANE_AMEND_TRIGGER_JSON || "";
+    let trigger: Record<string, unknown> = {};
+    try { trigger = triggerJson ? JSON.parse(triggerJson) : {}; } catch { trigger = {}; }
+
+    const sharedFooter =
+      `\n---\n\n` +
+      `Operating rules for this amend turn:\n` +
+      `- Keep the change as narrow as possible. Address only the trigger; ` +
+      `do not refactor, reformat, or "improve" adjacent code.\n` +
+      `- Treat the existing commits on this branch as someone else's work — ` +
+      `do not revert, squash, or rewrite them.\n` +
+      `- Run the relevant tests / lint after editing. If you cannot make the ` +
+      `check pass, say so explicitly in your final message.\n` +
+      `- Do NOT open a new PR. The runner will push your commit onto the ` +
+      `existing branch and the PR updates automatically.\n\n` +
+      `---\n\n`;
+
+    let preamble: string;
+    if (triggerKind === "review_changes_requested") {
+      const reviewer = (trigger.reviewerLogin as string) || "(unknown reviewer)";
+      const review = ((trigger.reviewBody as string) || "(reviewer left no body — check inline comments on the PR)").trim();
+      preamble =
+        `# Hermes amend — address review feedback\n\n` +
+        `You are continuing work on an EXISTING open pull request:\n` +
+        `- Branch: ${amendBr}\n` +
+        `- PR #${amendNum}: ${amendUrl}\n` +
+        `- Reviewer: @${reviewer}\n\n` +
+        `## Reviewer feedback\n\n${review}\n\n` +
+        `## How to handle this\n` +
+        `1. Read the PR diff and the reviewer feedback above.\n` +
+        `2. Apply the requested change. If multiple files are affected, group them in a single coherent commit.\n` +
+        `3. If the feedback is ambiguous, do the conservative interpretation — the reviewer can ping you again if needed.\n` +
+        sharedFooter;
+    } else if (triggerKind === "ci_failure") {
+      const checkName = (trigger.checkName as string) || "(unknown check)";
+      const detailsUrl = (trigger.detailsUrl as string) || "";
+      const conclusion = (trigger.conclusion as string) || "failure";
+      preamble =
+        `# Hermes amend — fix failing CI\n\n` +
+        `You are continuing work on an EXISTING open pull request:\n` +
+        `- Branch: ${amendBr}\n` +
+        `- PR #${amendNum}: ${amendUrl}\n` +
+        `- Failing check: ${checkName} (${conclusion})\n` +
+        (detailsUrl ? `- Details: ${detailsUrl}\n` : ``) +
+        `\n## How to handle this\n` +
+        `1. Diff against the base branch to understand the PR's intent.\n` +
+        `2. Reproduce the failing check LOCALLY first (run the same command). Do not push speculative fixes.\n` +
+        `3. Once you have a fix that turns the check green locally, commit and stop.\n` +
+        sharedFooter;
+    } else {
+      // Manual follow-up (operator-driven). Today's behaviour.
+      preamble =
+        `# Hermes amend mode\n` +
+        `You are continuing work on an EXISTING open pull request:\n` +
+        `- Branch: ${amendBr}\n` +
+        `- PR #${amendNum}: ${amendUrl}\n\n` +
+        `Make the requested change on this branch. Do NOT open a new PR — ` +
+        `the runner will push your commits onto the existing branch and ` +
+        `the PR will update automatically.\n\n` +
+        `---\n\n`;
+    }
+    text = preamble + text;
   }
   sendEvent("agent.started", { taskDescription });
 
@@ -343,6 +401,71 @@ async function runPromptTurn(taskDescription: string, context: string): Promise<
   }
 }
 
+// A2 — agent-authored PR title + body.
+//
+// After the main turn produces a diff, we ask opencode for a strict-JSON
+// summary of what changed. The PR body is rendered from a fixed template
+// so reviewers see consistent structure regardless of the model's mood.
+// Any parse failure (model went prose, hallucinated JSON, etc.) falls
+// back to today's hardcoded title + body so the publish path never
+// blocks on prompt unreliability.
+async function generatePrMetadata(
+  taskDescription: string,
+  changedFiles: string[],
+  diffPreview: string,
+): Promise<PrMetadata | null> {
+  if (!opencodeSessionId) return null;
+  const askText = [
+    `Write the pull-request title and body for the changes you just made.`,
+    ``,
+    `Task: ${taskDescription}`,
+    `Files changed (${changedFiles.length}): ${changedFiles.slice(0, 20).join(", ")}${changedFiles.length > 20 ? ", ..." : ""}`,
+    ``,
+    `Diff preview (first 4 KB):`,
+    "```",
+    diffPreview.slice(0, 4096),
+    "```",
+    ``,
+    `Respond as STRICT JSON only — no prose, no code fences, no commentary.`,
+    `Shape:`,
+    `{`,
+    `  "title": "<= 72 chars, imperative mood, no period",`,
+    `  "summary": ["1-3 short bullets, what changed and why"],`,
+    `  "verification": "what you ran + what passed (or 'none' if you ran nothing)",`,
+    `  "outOfScope": "anything intentionally not done (or 'none')"`,
+    `}`,
+  ].join("\n");
+  try {
+    const resp = await opencode.session.prompt({
+      path: { id: opencodeSessionId },
+      query: { directory: REPO_DIR },
+      body: {
+        model: { providerID: PROVIDER_ID, modelID: MODEL_ID },
+        parts: [{ type: "text", text: askText }],
+        tools: ALLOW_ALL_TOOLS,
+      },
+      throwOnError: true,
+    });
+    rollUsage(resp.data?.info as AssistantMessageInfo | undefined);
+    const parts = (resp.data?.parts ?? []) as Array<{ type?: string; text?: string }>;
+    const textPart = parts.find((p) => p && p.type === "text" && typeof p.text === "string");
+    const raw = textPart?.text ?? "";
+    const parsed = parsePrMetadata(raw);
+    if (parsed) {
+      sendEvent("agent.pr_metadata", {
+        title: parsed.title,
+        summaryCount: parsed.summary.length,
+        verificationLen: parsed.verification.length,
+        outOfScopeLen: parsed.outOfScope.length,
+      });
+    }
+    return parsed;
+  } catch (err) {
+    console.error("[runner] generatePrMetadata failed:", (err as Error).message);
+    return null;
+  }
+}
+
 async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
   // Token / git identity / origin / branch are already wired by the launcher
   // post-clone (src/launcher/provision.ts step 3). Runner uses GITHUB_USER_TOKEN
@@ -369,13 +492,36 @@ async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
   // (set from GitHub's pull_request.head.ref). Escape for single-quoted
   // shell interpolation the same way provision.ts does.
   const brSh = branch.replace(/'/g, "'\\''");
-  const title = (payload.title as string) || `Hermes: ${payload.taskDescription ?? "automated change"}`;
-  const body = (payload.body as string) || "Automated PR created by hermes-control-plane.";
+  const fallbackTitle = `Hermes: ${payload.taskDescription ?? "automated change"}`;
+  const fallbackBody = "Automated PR created by hermes-control-plane.";
+  const taskDescription = (payload.taskDescription as string) || "";
 
   if (!token || !owner || !repo) {
     sendError(`Missing GITHUB_USER_TOKEN / owner / repo (token=${!!token} owner=${owner} repo=${repo})`);
     return;
   }
+
+  // A2: ask the agent for title + body BEFORE staging. Diff at this point
+  // reflects what the agent intended to ship; if `git add -A` later picks
+  // up new untracked files, the metadata may be slightly off, but that's
+  // strictly better than today's hardcoded body and the cost is one
+  // extra short turn against the same opencode session.
+  let prMeta: PrMetadata | null = null;
+  try {
+    const diffForMeta = await execCmd("git diff");
+    const changedFilesForMeta = (await execCmd("git diff --name-only"))
+      .trim()
+      .split("\n")
+      .filter(Boolean);
+    if (diffForMeta.trim().length > 0 && taskDescription) {
+      prMeta = await generatePrMetadata(taskDescription, changedFilesForMeta, diffForMeta);
+    }
+  } catch (err) {
+    console.error("[runner] PR metadata pre-gen skipped:", (err as Error).message);
+  }
+  const title = (payload.title as string) || prMeta?.title || fallbackTitle;
+  const body = (payload.body as string)
+    || (prMeta ? renderPrBody(prMeta, taskDescription) : fallbackBody);
 
   try {
     await execStrict(`git add -A`);

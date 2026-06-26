@@ -25,6 +25,7 @@ interface SessionDORpc {
     taskDescription: string,
     controlBaseUrl: string,
     amendPrUrl?: string,
+    branchSuffix?: string,
   ): Promise<Session & { runnerToken: string | null }>;
   getState(): Promise<{
     session: Session | null;
@@ -36,6 +37,10 @@ interface SessionDORpc {
   approveRequest(requestId: string): Promise<{ ok: true }>;
   abortSession(): Promise<{ ok: true }>;
   createPR(): Promise<{ ok: true }>;
+  setRepoInstructions(input: {
+    source: "AGENTS.md" | "CLAUDE.md" | "CONVENTIONS.md";
+    content: string;
+  }): Promise<{ ok: true }>;
   sendPrompt(text: string): Promise<PromptResult>;
   ingestPrLifecycleEvent(input: {
     merged: boolean;
@@ -509,7 +514,26 @@ Logs / details: ${parsed.detailsUrl}
               "content-type": "application/json",
               "x-hermes-launcher-secret": env.HERMES_LAUNCHER_SECRET ?? "",
             },
-            body: JSON.stringify({ parentSessionId: row.sessionId, taskDescription }),
+            body: JSON.stringify({
+            parentSessionId: row.sessionId,
+            taskDescription,
+            // A5: structured trigger metadata so the runner can pick a
+            // preamble tailored to the failure class (review feedback vs
+            // CI fail). Backwards-compatible: launchers on the old shape
+            // simply ignore these fields.
+            amendTrigger: parsed.kind === "review_changes_requested"
+              ? {
+                  kind: "review_changes_requested",
+                  reviewerLogin: parsed.reviewerLogin,
+                  reviewBody: (parsed.reviewBody || "").slice(0, 4096),
+                }
+              : {
+                  kind: "ci_failure",
+                  checkName: parsed.checkName,
+                  detailsUrl: parsed.detailsUrl,
+                  conclusion: (parsed as { conclusion?: string }).conclusion ?? "failure",
+                },
+          }),
           });
           if (!r.ok) {
             const txt = await r.text().catch(() => "");
@@ -620,6 +644,8 @@ Logs / details: ${parsed.detailsUrl}
           // terminal transitions can find the PR_INDEX_DO key even if the
           // session is aborted before reaching pr.updated.
           amendPrUrl?: string;
+          // PR #A / A1: optional readable suffix, see provision.ts.
+          branchSuffix?: string;
         }>();
 
         // Build profile. LLM credentials (ZAI_API_KEY etc.) and any other
@@ -647,7 +673,7 @@ Logs / details: ${parsed.detailsUrl}
         // when the client hits the deployed Worker directly.
         const controlBaseUrl = env.PUBLIC_BASE_URL?.replace(/\/$/, "") ?? url.origin;
 
-        const session = await asRpc(stub).initSession(profile, body.taskDescription, controlBaseUrl, body.amendPrUrl);
+        const session = await asRpc(stub).initSession(profile, body.taskDescription, controlBaseUrl, body.amendPrUrl, body.branchSuffix);
 
         return new Response(JSON.stringify(session), {
           status: 201,
@@ -737,6 +763,21 @@ Logs / details: ${parsed.detailsUrl}
       }
 
       // ---- Create PR ----
+      // POST /sessions/:id/repo-instructions  body: { source, content }
+      // A4: launcher pre-populates the DO with repo-level AGENTS.md so
+      // renderContextPackage() can splice it into the first prompt.
+      if (path.endsWith("/repo-instructions") && request.method === "POST") {
+        const sessionId = path.split("/")[2];
+        const body = await request.json<{
+          source: "AGENTS.md" | "CLAUDE.md" | "CONVENTIONS.md";
+          content: string;
+        }>();
+        const id = env.SESSION_DO.idFromString(sessionId);
+        const stub = env.SESSION_DO.get(id);
+        const result = await asRpc(stub).setRepoInstructions(body);
+        return new Response(JSON.stringify(result), { headers: CORS_HEADERS });
+      }
+
       // POST /sessions/:id/create-pr
       if (path.endsWith("/create-pr") && request.method === "POST") {
         const sessionId = path.split("/")[2];

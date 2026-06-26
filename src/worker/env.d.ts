@@ -33,4 +33,11 @@ interface CloudflareEnv {
   // launcher's HERMES_LAUNCHER_SECRET env. When unset, the Worker fails
   // closed (503) on the guarded routes.
   HERMES_LAUNCHER_SECRET?: string;
+  // Phase 6 / publish-via-launcher rollout flag (see
+  // docs/PLAN-GIT-AUTHORITY-REFACTOR.md). When "true", the DO routes
+  // PR publication via the launcher's POST /sessions/:id/publish-pr
+  // endpoint instead of asking the runner to push + open the PR
+  // itself. PR #B (publish-via-launcher) reads this; PR #A only
+  // wires it so PR #B is a single-PR change later.
+  HERMES_PUBLISH_VIA_LAUNCHER?: string;
 }
