@@ -1,0 +1,10 @@
+# Pre-commit gate.
+#
+# Runs lint-staged: oxlint + biome format-check on changed files only,
+# typically finishing in <500ms. Mirrors the CI lint job (lint, format,
+# deadcode, dupes) so failures are caught locally before push.
+#
+# Skip with `git commit --no-verify` in an emergency; the CI job is the
+# authoritative gate.
+
+bunx lint-staged
