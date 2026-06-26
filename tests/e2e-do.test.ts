@@ -1538,6 +1538,64 @@ describe("E2E: Worker + SessionDurableObject", () => {
     expect(ev.payload.skipReason).toBe("self_review");
   });
 
+  it("self-check_run (sender User === ownerLogin) is skipped with skipReason=self_check_run", async () => {
+    const env = makeEnv() as any;
+    env.GITHUB_WEBHOOK_SECRET = "supersecret";
+    env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
+    const parentId = await seedPr(env, "o/r#53", "https://github.com/o/r/pull/53");
+
+    // Workflow ran under operator's User PAT instead of github-actions[bot].
+    const payload = {
+      action: "completed",
+      check_run: {
+        id: 1, name: "ci / unit", head_sha: "sha-self-cr",
+        status: "completed", conclusion: "failure",
+        html_url: "https://github.com/o/r/runs/1",
+        details_url: "https://github.com/o/r/actions/runs/1",
+        pull_requests: [{ number: 53, head: { ref: "hermes/x", sha: "sha-self-cr" } }],
+      },
+      repository: { full_name: "o/r" },
+      sender: { login: "alice", type: "User" }, // operator login, User type
+    };
+    let called = false;
+    mockLauncher(async () => { called = true; return new Response(JSON.stringify({}), { ...({ status: 500 }), headers: { "content-type": "application/json" } }); });
+    try {
+      const resp = await postWebhook(env, "check_run", "del-cr-self", payload);
+      expect(resp.status).toBe(200);
+      expect((await resp.json() as any).reason).toBe("self_check_run");
+    } finally { restoreFetch(); }
+    expect(called).toBe(false);
+    const state = await env.SESSION_DO.get(env.SESSION_DO.idFromString(parentId)).getState();
+    const ev = state.events.find((e: any) => e.type === "pr.autofix.skipped");
+    expect(ev.payload.skipReason).toBe("self_check_run");
+  });
+
+  it("check_run.failure with sender=github-actions[bot] (Bot) is NOT treated as self even if name collides", async () => {
+    const env = makeEnv() as any;
+    env.GITHUB_WEBHOOK_SECRET = "supersecret";
+    env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
+    await seedPr(env, "o/r#54", "https://github.com/o/r/pull/54");
+    // Sender is a Bot with login "alice" (same as ownerLogin); we still
+    // dispatch because the senderType guard requires "User".
+    const payload = {
+      action: "completed",
+      check_run: {
+        id: 1, name: "ci / unit", head_sha: "sha-bot",
+        status: "completed", conclusion: "failure",
+        html_url: "https://github.com/o/r/runs/1",
+        details_url: "https://github.com/o/r/actions/runs/1",
+        pull_requests: [{ number: 54, head: { ref: "hermes/x", sha: "sha-bot" } }],
+      },
+      repository: { full_name: "o/r" },
+      sender: { login: "alice", type: "Bot" },
+    };
+    mockLauncher(async () => new Response(JSON.stringify({ sessionId: "sess-bot", sandboxId: "sbx-b" }), { ...({ status: 201 }), headers: { "content-type": "application/json" } }));
+    try {
+      const resp = await postWebhook(env, "check_run", "del-bot", payload);
+      expect((await resp.json() as any).dispatched).toBe(true);
+    } finally { restoreFetch(); }
+  });
+
   it("check_run.failure: dispatches with built taskDescription including detailsUrl", async () => {
     const env = makeEnv() as any;
     env.GITHUB_WEBHOOK_SECRET = "supersecret";

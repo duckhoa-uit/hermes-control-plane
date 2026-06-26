@@ -378,15 +378,23 @@ export default {
           );
         }
 
-        // Self-trigger guard: refuse if the sender IS the operator that
-        // would be authoring the amend (this is the bot itself pushing,
-        // and the resulting check_run.failed would loop). The check_run
-        // event has sender=github-actions[bot]; we let those through.
-        // For review_changes_requested we reject when reviewerLogin OR
-        // senderLogin equals the operator (rare — operator self-review).
-        // The operator login is GITHUB_USER_LOGIN — fetched per-session
-        // by the launcher; we approximate by trusting row.ownerLogin
-        // (set when the parent session created the PR).
+        // Self-trigger guards: refuse triggers that would loop on the
+        // amend's own activity. The operator login is GITHUB_USER_LOGIN
+        // — fetched per-session by the launcher; we approximate by
+        // trusting row.ownerLogin (set when the parent session created
+        // the PR).
+        //
+        //   - review_changes_requested: reject when the reviewer is the
+        //     operator (rare — operator self-review).
+        //   - check_run_failed: a normal GitHub Actions check_run has
+        //     sender=github-actions[bot] (senderType="Bot"). If the
+        //     workflow ran under a User-typed token (e.g. PAT belonging
+        //     to the operator), the same login would re-fire check_run
+        //     on every amend push and burn through HERMES_AUTOFIX_CAP
+        //     within seconds. Reject when sender is a User AND matches
+        //     the operator. We do NOT gate purely on senderType because
+        //     some setups legitimately use bot accounts other than
+        //     github-actions[bot].
         if (parsed.kind === "review_changes_requested" && parsed.reviewerLogin === row.ownerLogin) {
           console.log(`[webhook] self-review on pr=${parsed.prKey}; skip`);
           try {
@@ -402,6 +410,29 @@ export default {
           } catch {}
           return new Response(
             JSON.stringify({ ok: true, kind: parsed.kind, dispatched: false, reason: "self_review" }),
+            { status: 200, headers: CORS_HEADERS },
+          );
+        }
+        if (
+          parsed.kind === "check_run_failed" &&
+          parsed.senderType === "User" &&
+          parsed.senderLogin === row.ownerLogin
+        ) {
+          console.log(`[webhook] self-check_run on pr=${parsed.prKey} sender=${parsed.senderLogin}; skip`);
+          try {
+            const stub = env.SESSION_DO.get(env.SESSION_DO.idFromString(row.sessionId));
+            await asRpc(stub).appendAutofixEvent({
+              triggered: false,
+              trigger: parsed.kind,
+              deliveryId: parsed.deliveryId,
+              headSha: parsed.headSha,
+              skipReason: "self_check_run",
+              checkName: parsed.checkName,
+              detailsUrl: parsed.detailsUrl,
+            });
+          } catch {}
+          return new Response(
+            JSON.stringify({ ok: true, kind: parsed.kind, dispatched: false, reason: "self_check_run" }),
             { status: 200, headers: CORS_HEADERS },
           );
         }
