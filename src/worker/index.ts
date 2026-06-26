@@ -408,29 +408,14 @@ export default {
 
         // Try-claim with the cap from env (default 3).
         const cap = Number(env.HERMES_AUTOFIX_CAP ?? "3") || 3;
-        // We synthesize the new session id LATER (from the launcher
-        // response). For the slot-claim we use a placeholder; release uses
-        // the same placeholder, then the spawned session releases itself
-        // via the inflightSessionId match. Actually that mismatch would
-        // block release. Better: pass the parent session id as the
-        // claimant; the spawned session releases via its OWN id which
-        // does not match → release no-op. Then the slot only frees when
-        // the spawned session reaches terminal — wait, that still does
-        // not match. Resolve by passing a known marker the spawned
-        // session can also use: parent's sessionId. The transition hook
-        // calls releaseAmendSlot(prKey, this.session.id) which would
-        // mismatch. Fix: claim with the spawned session id, but we don't
-        // have it yet. Two-step: claim with parent id, then re-claim
-        // with new id atomically? Too complex. Easier: don't gate
-        // release by id match (the transition hook is the only caller
-        // for amend sessions; spam-release from non-amend sessions is
-        // harmless because PR_INDEX_DO has no row for unknown PRs).
+        // Claim under the parent session id as a placeholder — we do not
+        // know the spawned session id until the launcher returns. After
+        // /sessions succeeds we call transferAmendSlot(newSessionId) to
+        // hand the slot to the spawned session; its own transition() hook
+        // releases the slot on terminal (matched by spawned id).
         const claim = await prIndex.tryClaimAmendSlot(
           parsed.prKey,
           parsed.headSha,
-          // Use parent sessionId as placeholder; the spawned session
-          // releases via its own id which is intentionally different
-          // (see comment in releaseAmendSlot below).
           row.sessionId,
           cap,
         );
