@@ -149,7 +149,10 @@ Two consumers of the index:
                   pr.created
 SessionDurableObject ──────────► PR_INDEX_DO ◄─────── POST /webhooks/github
                                   │  ▲                (lookup, markStatus,
-                                  │  │                 recordDelivery)
+                                  │  │                 recordDelivery,
+                                  │  │                 tryClaimAmendSlot,
+                                  │  │                 transferAmendSlot,
+                                  │  │                 releaseAmendSlot)
                                   │  │
                 MCP send_followup_prompt (terminal + PR open)
                                   │
@@ -162,6 +165,52 @@ SessionDurableObject ──────────► PR_INDEX_DO ◄───�
                               git checkout -B <branch> origin/<branch>
                   └─ runner: skip POST /pulls; emit pr.updated
 ```
+
+### Auto-amend on reviewer feedback + CI failure
+
+The webhook handler also subscribes to two additional GitHub events and
+spawns a fresh amend session when they fire on a PR Hermes opened:
+
+```
+GitHub  ┌── pull_request_review.submitted (state=changes_requested) ──┐
+        │                                                              │
+        └── check_run.completed (conclusion ∈ {failure, timed_out}) ───┤
+                                                                       ▼
+                                                    POST /webhooks/github
+                                                                       │
+                                            HMAC verify, dedup delivery
+                                                                       │
+                                          PR_INDEX_DO.lookup(prKey) ──┐│
+                                                                     ││
+                       PR_INDEX_DO.tryClaimAmendSlot(prKey,           ││
+                              headSha, parentSessionId, cap=3)        ││
+                                  ok? │   │ fail (cap_exceeded /      ││
+                                      │   │       duplicate_sha /     ││
+                                      │   │       inflight /          ││
+                                      │   │       self_review)        ││
+                                      ▼   │                           ││
+       POST /sessions on launcher with    │                           ││
+       { parentSessionId, taskDescription │                           ││
+         built from review body / CI logs}│                           ││
+                  │                       │                           ││
+                  ▼                       ▼                           ▼▼
+       newSessionId returned         pr.autofix.skipped         pr.autofix.skipped
+       PR_INDEX_DO.transferAmendSlot                            (kind=ignored,
+       pr.autofix.triggered                                      reason: stable)
+                  │
+                  ▼
+       spawned session amends the PR
+       on terminal → releaseAmendSlot
+```
+
+Constraints (locked PR #25):
+- Cap of 3 amend sessions per PR (env `HERMES_AUTOFIX_CAP`).
+- Strict single-flight per PR with a 10-minute TTL safety release for
+  crashed amends.
+- Self-trigger guard: `reviewerLogin === ownerLogin` is refused.
+- No inline `pull_request_review_comment` subscription.
+- No bot reply comment on the PR (follow-up status lives in the parent
+  session's event log).
 
 ## 4. Session state machine
 

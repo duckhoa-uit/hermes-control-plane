@@ -113,7 +113,8 @@ key, a fine-grained GitHub PAT. Step-by-step is in
 
 - **Control plane**: Cloudflare Workers + Durable Objects (DO Storage is the sole persistent store; D1/R2 were removed in §12.16 of ROADMAP)
   - SessionDurableObject — one DO instance per agent session.
-  - PrIndexDurableObject — singleton DO (`idFromName("global")`) mapping `owner/repo#N` -> session. Lets `POST /webhooks/github` and MCP `send_followup_prompt` find the parent session of an open PR. New event types: `pr.updated`, `pr.merged`, `pr.closed`.
+  - PrIndexDurableObject — singleton DO (`idFromName("global")`) mapping `owner/repo#N` -> session. Lets `POST /webhooks/github` and MCP `send_followup_prompt` find the parent session of an open PR. New event types: `pr.updated`, `pr.merged`, `pr.closed`, `pr.autofix.triggered`, `pr.autofix.skipped`.
+  - Auto-amend (PR #25): the webhook handler also spawns amend sessions on `pull_request_review.submitted` (state=changes_requested) and `check_run.completed` (failure / timed_out). Strict single-flight per PR + cap of 3 (`HERMES_AUTOFIX_CAP`).
 - **Sandbox lifecycle**: Bun sidecar, E2B Sandboxes (Hobby tier)
 - **Sandbox interior**: Node 22 + bun + `opencode serve` (HTTP/SSE) + custom supervisor/runner
 - **Agent runtime**: OpenCode driving Z.AI (`zai-coding-plan/glm-5.2` default)

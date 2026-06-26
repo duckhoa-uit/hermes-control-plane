@@ -688,7 +688,9 @@ wrangler login
 wrangler secret put E2B_API_KEY              # required; Worker refuses to provision otherwise
 wrangler secret put PUBLIC_BASE_URL          # https://hermes.<your-domain>.workers.dev
 wrangler secret put CONTROL_PLANE_LAUNCHER_URL      # https://<your-launcher-host>:8789 (Cloudflare Tunnel URL of the launcher VPS)
-wrangler secret put GITHUB_WEBHOOK_SECRET    # required for PR-lifecycle webhooks (see §13.3)
+wrangler secret put GITHUB_WEBHOOK_SECRET    # required for PR-lifecycle + auto-amend webhooks (see §13.3)
+# Optional — auto-amend cap per PR (default 3). Set as a plain var, not a secret.
+# wrangler.jsonc → vars.HERMES_AUTOFIX_CAP = "5"
 
 bun run deploy
 ```
@@ -746,14 +748,25 @@ the global PR index DO.
 > `pr.merged`/`pr.closed`, and the PR index grows monotonically. The
 > webhook is the only mechanism that closes the PR lifecycle loop.
 
-**Scope is intentionally narrow.** Hermes does NOT consume `@hermes`
-mentions, PR comments, or review events. Follow-up prompts go through
-the MCP gateway (Slack/Telegram → Hermes Agent → `send_followup_prompt`),
-not through GitHub. The only webhook subscription you need is:
+**Scope** (locked in PR #24 + #25):
 
 | Event | Why |
 |---|---|
-| `Pull requests` | merged/closed lifecycle |
+| `Pull requests` | merged/closed lifecycle (transition session to archived) |
+| `Pull request reviews` | reviewer "Request changes" auto-spawns an amend session |
+| `Check runs` | CI conclusion `failure` / `timed_out` auto-spawns an amend session |
+
+Auto-amend has hard limits:
+- Cap of **3** amend sessions per PR (override via `HERMES_AUTOFIX_CAP`)
+- Strict single-flight per PR — concurrent triggers wait for the
+  in-flight amend to finish (no queue; the rejected trigger ack 200)
+- Dedup by `head_sha` — webhook retries with the same sha are no-op
+- Self-review (reviewer == operator) is refused
+
+Hermes does NOT consume `@hermes` mentions, PR comments
+(`issue_comment`), or inline review comments
+(`pull_request_review_comment`). Manual follow-up still goes through
+the MCP gateway.
 
 **Setup (per repository or per organization):**
 
@@ -764,7 +777,8 @@ not through GitHub. The only webhook subscription you need is:
    Save it; you will also pass it to the Worker.
 5. **SSL verification:** Enable.
 6. **Which events?** Select *"Let me select individual events"* and
-   tick **Pull requests** only. (Untick the default "Pushes".)
+   tick **Pull requests**, **Pull request reviews**, **Check runs**.
+   (Untick the default "Pushes".)
 7. **Active:** Enable.
 8. On the Worker:
    ```bash
