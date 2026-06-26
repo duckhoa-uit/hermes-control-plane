@@ -25,6 +25,10 @@ export interface McpServerWiring {
   workerBaseUrl: string;
   /** Local launcher URL (used for POST /sessions, DELETE /sessions/:id). */
   launcherBaseUrl: string;
+  /** Shared secret sent on `x-hermes-launcher-secret` for launcher REST
+   *  calls (POST /sessions, DELETE /sessions/:id). Matches the launcher's
+   *  HERMES_LAUNCHER_SECRET env. */
+  launcherSecret: string;
   /** Logger — pass the launcher's existing log() to keep one log stream. */
   log: (msg: string) => void;
 }
@@ -115,7 +119,10 @@ function makeServer(w: McpServerWiring): McpServer {
     async (input) => {
       const r = await fetch(`${w.launcherBaseUrl}/sessions`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "x-hermes-launcher-secret": w.launcherSecret,
+        },
         body: JSON.stringify(input),
       });
       const body = await r.text();
@@ -292,7 +299,10 @@ function makeServer(w: McpServerWiring): McpServer {
       );
       const provResp = await fetch(`${w.launcherBaseUrl}/sessions`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "x-hermes-launcher-secret": w.launcherSecret,
+        },
         body: JSON.stringify({ parentSessionId: sessionId, taskDescription: text }),
       });
       const provBody = await provResp.text();
@@ -359,6 +369,7 @@ function makeServer(w: McpServerWiring): McpServer {
     async ({ sessionId }) => {
       const r = await fetch(`${w.launcherBaseUrl}/sessions/${sessionId}`, {
         method: "DELETE",
+        headers: { "x-hermes-launcher-secret": w.launcherSecret },
       });
       const body = await r.text().catch(() => "");
       if (!r.ok) {

@@ -35,7 +35,7 @@ async function callTool(
   toolName: string,
   args: Record<string, unknown>,
 ): Promise<Response> {
-  const handler = buildMcpHandler({ workerBaseUrl: WORKER, launcherBaseUrl: LAUNCHER, log: () => {} });
+  const handler = buildMcpHandler({ workerBaseUrl: WORKER, launcherBaseUrl: LAUNCHER, launcherSecret: "test-launcher-secret", log: () => {} });
   // JSON-RPC tools/call envelope (Streamable HTTP, stateless mode).
   const req = new Request("http://mcp.local/", {
     method: "POST",
@@ -94,7 +94,10 @@ describe("MCP send_followup_prompt", () => {
         });
       }
       if (req.method === "POST" && url.pathname === "/sessions") {
-        launcherCalled = await req.json();
+        launcherCalled = {
+          body: await req.json(),
+          launcherSecret: req.headers.get("x-hermes-launcher-secret"),
+        };
         return Response.json({
           sessionId: "sess-new",
           sandboxId: "sbx-new",
@@ -108,7 +111,8 @@ describe("MCP send_followup_prompt", () => {
       const resp = await callTool("send_followup_prompt", { sessionId: "sess-old", text: "tweak the title" });
       const body = (await resp.json()) as any;
       expect(body.result.isError).toBeFalsy();
-      expect(launcherCalled).toMatchObject({ parentSessionId: "sess-old", taskDescription: "tweak the title" });
+      expect(launcherCalled.body).toMatchObject({ parentSessionId: "sess-old", taskDescription: "tweak the title" });
+      expect(launcherCalled.launcherSecret).toBe("test-launcher-secret");
       const structured = body.result.structuredContent;
       expect(structured.newSessionId).toBe("sess-new");
       expect(structured.parentSessionId).toBe("sess-old");

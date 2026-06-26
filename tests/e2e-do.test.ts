@@ -1460,8 +1460,11 @@ describe("E2E: Worker + SessionDurableObject", () => {
     env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
     const parentId = await seedPr(env, "o/r#42", "https://github.com/o/r/pull/42");
 
+    env.HERMES_LAUNCHER_SECRET = "test-launcher-secret";
     let launcherCall: any = null;
+    let launcherSecretHeader: string | null = null;
     mockLauncher(async (req) => {
+      launcherSecretHeader = req.headers.get("x-hermes-launcher-secret");
       launcherCall = await req.json();
       return new Response(JSON.stringify({ sessionId: "sess-amend-1", sandboxId: "sbx-1" }), { ...({ status: 201 }), headers: { "content-type": "application/json" } });
     });
@@ -1477,6 +1480,8 @@ describe("E2E: Worker + SessionDurableObject", () => {
       });
     } finally { restoreFetch(); }
 
+    // Launcher got the shared secret header so its auth check accepts the call.
+    expect(launcherSecretHeader).toBe("test-launcher-secret");
     // Launcher got parentSessionId + a built taskDescription that quotes the review body.
     expect(launcherCall).toMatchObject({ parentSessionId: parentId });
     expect(launcherCall.taskDescription).toContain("rename foo -> bar");

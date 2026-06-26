@@ -166,6 +166,17 @@ interface PrIndexRowWire {
   autofixCount: number;
 }
 
+/** Constant-time string compare for shared-secret auth on launcher
+ *  REST routes. Avoids leaking match length via early-exit equality. */
+function timingSafeEqualStrings(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < a.length; i++) {
+    mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return mismatch === 0;
+}
+
 async function resolveParentAmend(
   parentSessionId: string,
 ): Promise<{
@@ -496,6 +507,7 @@ async function main(): Promise<void> {
   const mcpHandler = buildMcpHandler({
     workerBaseUrl: CONTROL_PLANE_BASE_URL!,
     launcherBaseUrl: `http://localhost:${PORT}`,
+    launcherSecret: HERMES_LAUNCHER_SECRET!,
     log,
   });
 
@@ -505,10 +517,28 @@ async function main(): Promise<void> {
     async fetch(req: Request): Promise<Response> {
       const url = new URL(req.url);
       try {
+        // /health: unauthenticated so operators can probe without provisioning
+        // a secret. Returns no sensitive state.
         if (url.pathname === "/health") return await handleHealth();
+
+        // /mcp: served on the same port for transport reasons, but its
+        // trust boundary is the gateway (Hermes Agent) which carries its
+        // own auth. We intentionally do NOT gate /mcp with
+        // HERMES_LAUNCHER_SECRET — the gateway and the worker reach the
+        // launcher over separate paths.
         if (url.pathname === "/mcp") {
           return await mcpHandler(req);
         }
+
+        // Everything else (POST /sessions, GET/DELETE /sessions/:id,
+        // POST /sessions/:id/resume) spawns or manipulates E2B sandboxes
+        // and is gated behind the shared launcher secret. Both the Worker
+        // and the local MCP server send the same header.
+        const provided = req.headers.get("x-hermes-launcher-secret") ?? "";
+        if (!timingSafeEqualStrings(provided, HERMES_LAUNCHER_SECRET!)) {
+          return Response.json({ error: "unauthorized" }, { status: 401 });
+        }
+
         if (url.pathname === "/sessions" && req.method === "POST") {
           return await handleCreate(req);
         }

@@ -900,7 +900,13 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
             try {
               const r = await fetch(
                 `${launcherUrl}/sessions/${sessionId}/resume`,
-                { method: "POST", headers: { "content-type": "application/json" } },
+                {
+                  method: "POST",
+                  headers: {
+                    "content-type": "application/json",
+                    "x-hermes-launcher-secret": this.env.HERMES_LAUNCHER_SECRET ?? "",
+                  },
+                },
               );
               if (!r.ok) {
                 const body = await r.text().catch(() => "<no body>");

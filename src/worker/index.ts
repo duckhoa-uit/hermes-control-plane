@@ -505,7 +505,10 @@ Logs / details: ${parsed.detailsUrl}
         try {
           const r = await fetch(`${launcherUrl}/sessions`, {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: {
+              "content-type": "application/json",
+              "x-hermes-launcher-secret": env.HERMES_LAUNCHER_SECRET ?? "",
+            },
             body: JSON.stringify({ parentSessionId: row.sessionId, taskDescription }),
           });
           if (!r.ok) {
