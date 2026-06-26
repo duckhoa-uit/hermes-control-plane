@@ -38,14 +38,19 @@ function simulateSessionLifecycle(): {
     runnerConnected: false,
   };
 
-  const events: { type: HermesEventType; source: EventSource; payload: Record<string, unknown> }[] = [];
+  const events: { type: HermesEventType; source: EventSource; payload: Record<string, unknown> }[] =
+    [];
   const log = new EventLog();
 
   function transition(to: Session["status"]) {
     expect(canTransition(session.status, to)).toBe(true);
     session.status = to;
     session.updatedAt = Date.now();
-    const ev = { type: "session.status_changed" as HermesEventType, source: "system" as EventSource, payload: { to } };
+    const ev = {
+      type: "session.status_changed" as HermesEventType,
+      source: "system" as EventSource,
+      payload: { to },
+    };
     log.append(session.id, ev.type, ev.source, ev.payload);
     events.push(ev);
   }
@@ -143,13 +148,18 @@ describe("integration: full session lifecycle", () => {
     let status: Session["status"] = "created";
 
     // created -> provisioning -> runner_connecting -> ready -> running
-    expect(canTransition(status, "provisioning")).toBe(true); status = "provisioning";
-    expect(canTransition(status, "runner_connecting")).toBe(true); status = "runner_connecting";
-    expect(canTransition(status, "ready")).toBe(true); status = "ready";
-    expect(canTransition(status, "running")).toBe(true); status = "running";
+    expect(canTransition(status, "provisioning")).toBe(true);
+    status = "provisioning";
+    expect(canTransition(status, "runner_connecting")).toBe(true);
+    status = "runner_connecting";
+    expect(canTransition(status, "ready")).toBe(true);
+    status = "ready";
+    expect(canTransition(status, "running")).toBe(true);
+    status = "running";
 
     // User aborts
-    expect(canTransition(status, "aborted")).toBe(true); status = "aborted";
+    expect(canTransition(status, "aborted")).toBe(true);
+    status = "aborted";
 
     expect(isTerminal(status)).toBe(true);
   });
@@ -158,10 +168,12 @@ describe("integration: full session lifecycle", () => {
     let status: Session["status"] = "running";
 
     // Agent requests approval
-    expect(canTransition(status, "needs_approval")).toBe(true); status = "needs_approval";
+    expect(canTransition(status, "needs_approval")).toBe(true);
+    status = "needs_approval";
 
     // User approves
-    expect(canTransition(status, "running")).toBe(true); status = "running";
+    expect(canTransition(status, "running")).toBe(true);
+    status = "running";
 
     // Agent continues
     expect(status).toBe("running");
@@ -171,10 +183,12 @@ describe("integration: full session lifecycle", () => {
     let status: Session["status"] = "running";
 
     // Runner stalls
-    expect(canTransition(status, "stalled")).toBe(true); status = "stalled";
+    expect(canTransition(status, "stalled")).toBe(true);
+    status = "stalled";
 
     // Auto-fail
-    expect(canTransition(status, "failed")).toBe(true); status = "failed";
+    expect(canTransition(status, "failed")).toBe(true);
+    status = "failed";
 
     expect(isTerminal(status)).toBe(true);
   });

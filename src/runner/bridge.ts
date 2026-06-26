@@ -14,7 +14,9 @@ const RUNNER_TOKEN = process.env.CONTROL_PLANE_RUNNER_TOKEN!;
 const CONTROL_WS_URL = process.env.HERMES_CONTROL_WS_URL!;
 
 if (!SESSION_ID || !RUNNER_TOKEN || !CONTROL_WS_URL) {
-  console.error("Missing required env vars: CONTROL_PLANE_SESSION_ID, CONTROL_PLANE_RUNNER_TOKEN, HERMES_CONTROL_WS_URL");
+  console.error(
+    "Missing required env vars: CONTROL_PLANE_SESSION_ID, CONTROL_PLANE_RUNNER_TOKEN, HERMES_CONTROL_WS_URL",
+  );
   process.exit(1);
 }
 
@@ -100,10 +102,7 @@ function sendToControl(msg: Record<string, unknown>): void {
   }
 }
 
-function sendEvent(
-  eventType: string,
-  eventPayload: Record<string, unknown>,
-): void {
+function sendEvent(eventType: string, eventPayload: Record<string, unknown>): void {
   sendToControl({
     type: "runner.event",
     sessionId: SESSION_ID,
@@ -212,14 +211,10 @@ async function runOpenCodeTask(prompt: string, model: string): Promise<string> {
   const { spawn } = await import("node:child_process");
 
   return new Promise((resolve, reject) => {
-    const proc = spawn(
-      "opencode",
-      ["run", "--model", model, prompt],
-      {
-        cwd: "/home/user/repo",
-        env: { ...process.env, OPENCODE_MODEL: model },
-      },
-    );
+    const proc = spawn("opencode", ["run", "--model", model, prompt], {
+      cwd: "/home/user/repo",
+      env: { ...process.env, OPENCODE_MODEL: model },
+    });
 
     let stdout = "";
     let stderr = "";
@@ -268,7 +263,9 @@ async function getChangedFiles(): Promise<string[]> {
   });
 }
 
-async function runTests(): Promise<{ passed: boolean; total: number; failed: number; output: string } | undefined> {
+async function runTests(): Promise<
+  { passed: boolean; total: number; failed: number; output: string } | undefined
+> {
   // Check if test script exists
   const fs = await import("node:fs");
   const testScriptPath = "/home/user/repo/.hermes/test.sh";

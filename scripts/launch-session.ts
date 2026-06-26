@@ -53,7 +53,9 @@ async function pollStatus(sessionId: string): Promise<void> {
     for (const ev of data.events) {
       if (ev.seq > lastSeq) {
         lastSeq = ev.seq;
-        log(`[seq ${ev.seq}] ${ev.type} (${ev.source})  ${JSON.stringify(ev.payload).slice(0, 200)}`);
+        log(
+          `[seq ${ev.seq}] ${ev.type} (${ev.source})  ${JSON.stringify(ev.payload).slice(0, 200)}`,
+        );
       }
     }
     if (data.session.status === "review_ready" && !prTriggered) {

@@ -47,7 +47,9 @@ const LAUNCHER = args.values.launcher!;
 const TIMEOUT_MS = Number(args.values.timeout) * 1000;
 
 if (!REPO) {
-  console.error("Usage: bun run scripts/e2e-full.ts --repo <github-https-url> [--task '...'] [--base-branch main]");
+  console.error(
+    "Usage: bun run scripts/e2e-full.ts --repo <github-https-url> [--task '...'] [--base-branch main]",
+  );
   process.exit(2);
 }
 if (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/?$/.test(REPO)) {
@@ -59,13 +61,26 @@ if (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/?$/.test(REPO)) {
 
 let stepCount = 0;
 let failures = 0;
-function section(t: string) { console.log(`\n\x1b[1m▸ ${t}\x1b[0m`); }
-function ok(msg: string) { stepCount++; console.log(`  \x1b[32m✓\x1b[0m ${msg}`); }
-function bad(msg: string) { failures++; console.log(`  \x1b[31m✗\x1b[0m ${msg}`); }
-function info(msg: string) { console.log(`    \x1b[2m${msg}\x1b[0m`); }
+function section(t: string) {
+  console.log(`\n\x1b[1m▸ ${t}\x1b[0m`);
+}
+function ok(msg: string) {
+  stepCount++;
+  console.log(`  \x1b[32m✓\x1b[0m ${msg}`);
+}
+function bad(msg: string) {
+  failures++;
+  console.log(`  \x1b[31m✗\x1b[0m ${msg}`);
+}
+function info(msg: string) {
+  console.log(`    \x1b[2m${msg}\x1b[0m`);
+}
 function assert(cond: unknown, msg: string): asserts cond {
   if (cond) ok(msg);
-  else { bad(msg); throw new Error(`step failed: ${msg}`); }
+  else {
+    bad(msg);
+    throw new Error(`step failed: ${msg}`);
+  }
 }
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -92,7 +107,9 @@ async function http<T = any>(
   const resp = await fetch(url, init);
   const raw = await resp.text();
   let parsed: any = raw;
-  try { parsed = raw ? JSON.parse(raw) : null; } catch {}
+  try {
+    parsed = raw ? JSON.parse(raw) : null;
+  } catch {}
   return { status: resp.status, body: parsed, raw };
 }
 
@@ -105,7 +122,10 @@ async function getState(launcherOrWorker: string, sessionId: string) {
 // ---- Event streamer (real client WS to Worker) ----
 // Used for live logging — does not feed the runner.
 
-function streamEvents(workerBaseUrl: string, sessionId: string): { close: () => void; saw: Set<string> } {
+function streamEvents(
+  workerBaseUrl: string,
+  sessionId: string,
+): { close: () => void; saw: Set<string> } {
   const wsUrl = workerBaseUrl.replace(/^http/, "ws") + `/sessions/${sessionId}/stream`;
   const ws = new WebSocket(wsUrl);
   const saw = new Set<string>();
@@ -203,7 +223,9 @@ async function main() {
   stream?.close();
 
   if (!finalState) {
-    bad(`timeout after ${TIMEOUT_MS / 1000}s — last status was ${last?.session?.status ?? "<unknown>"}`);
+    bad(
+      `timeout after ${TIMEOUT_MS / 1000}s — last status was ${last?.session?.status ?? "<unknown>"}`,
+    );
     info(`(sandbox left running — pass --keep-sandbox to skip the next cleanup)`);
     if (!args.values["keep-sandbox"]) {
       await http("DELETE", `${LAUNCHER}/sessions/${sessionId}`);
@@ -219,7 +241,10 @@ async function main() {
   const artifacts = last.artifacts;
   assert(artifacts != null, "artifacts payload present");
   const prUrl: string | undefined = artifacts.prUrl;
-  assert(typeof prUrl === "string" && /^https:\/\/github\.com\/.+\/pull\/\d+$/.test(prUrl), `prUrl is a real GitHub PR URL (got ${prUrl})`);
+  assert(
+    typeof prUrl === "string" && /^https:\/\/github\.com\/.+\/pull\/\d+$/.test(prUrl),
+    `prUrl is a real GitHub PR URL (got ${prUrl})`,
+  );
 
   // 5. HEAD the PR URL — confirm GitHub really has the PR
   section("Verify the PR actually exists on GitHub (HEAD request)");
@@ -238,7 +263,9 @@ async function main() {
   console.log(`\n\x1b[1mSummary:\x1b[0m ${stepCount} checks passed, ${failures} failed`);
   if (failures === 0) {
     console.log(`\x1b[32mPR created and verified:\x1b[0m ${prUrl}`);
-    console.log(`Open it to review the agent's work, then close + delete the branch if you don't want it.`);
+    console.log(
+      `Open it to review the agent's work, then close + delete the branch if you don't want it.`,
+    );
   }
   process.exit(failures === 0 ? 0 : 1);
 }

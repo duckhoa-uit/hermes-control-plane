@@ -73,10 +73,7 @@ describe("mock-provider", () => {
   });
 
   it("returns error for unknown sandbox", async () => {
-    const result = await provider.exec(
-      { sandboxId: "unknown", status: "running" },
-      "echo test",
-    );
+    const result = await provider.exec({ sandboxId: "unknown", status: "running" }, "echo test");
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("not found");
   });

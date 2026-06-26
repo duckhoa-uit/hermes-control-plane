@@ -6,17 +6,19 @@
 // ============================================================
 
 import { describe, it, expect, beforeEach } from "vitest";
-import {
-  PrIndexDurableObject,
-  prKeyFromUrl,
-  type PrIndexRow,
-} from "../src/worker/pr-index-do";
+import { PrIndexDurableObject, prKeyFromUrl, type PrIndexRow } from "../src/worker/pr-index-do";
 
 class FakeStorage {
   kv = new Map<string, unknown>();
-  async put(key: string, value: unknown): Promise<void> { this.kv.set(key, value); }
-  async get<T>(key: string): Promise<T | undefined> { return this.kv.get(key) as T | undefined; }
-  async delete(key: string): Promise<boolean> { return this.kv.delete(key); }
+  async put(key: string, value: unknown): Promise<void> {
+    this.kv.set(key, value);
+  }
+  async get<T>(key: string): Promise<T | undefined> {
+    return this.kv.get(key) as T | undefined;
+  }
+  async delete(key: string): Promise<boolean> {
+    return this.kv.delete(key);
+  }
 }
 
 class FakeCtx {
@@ -31,9 +33,7 @@ function newDo(): PrIndexDurableObject {
 
 describe("prKeyFromUrl", () => {
   it("parses canonical GitHub PR URLs", () => {
-    expect(prKeyFromUrl("https://github.com/duckhoa-uit/lawn/pull/42")).toBe(
-      "duckhoa-uit/lawn#42",
-    );
+    expect(prKeyFromUrl("https://github.com/duckhoa-uit/lawn/pull/42")).toBe("duckhoa-uit/lawn#42");
   });
 
   it("accepts trailing path (review/file links share the prefix)", () => {
@@ -48,7 +48,9 @@ describe("prKeyFromUrl", () => {
 
 describe("PrIndexDurableObject", () => {
   let pr: PrIndexDurableObject;
-  beforeEach(() => { pr = newDo(); });
+  beforeEach(() => {
+    pr = newDo();
+  });
 
   it("register inserts an open row", async () => {
     const row = await pr.register("o/r#1", "sess-A", "alice");
@@ -142,7 +144,9 @@ describe("PrIndexDurableObject", () => {
 });
 describe("PrIndexDurableObject — auto-amend single-flight + cap", () => {
   let pr: PrIndexDurableObject;
-  beforeEach(() => { pr = newDo(); });
+  beforeEach(() => {
+    pr = newDo();
+  });
 
   it("tryClaimAmendSlot unknown PR -> unknown_pr", async () => {
     const r = await pr.tryClaimAmendSlot("o/r#1", "sha1", "sess-A", 3);
@@ -259,7 +263,7 @@ describe("PrIndexDurableObject — auto-amend single-flight + cap", () => {
     await pr.register("o/r#1", "sess-parent", "alice");
     await pr.tryClaimAmendSlot("o/r#1", "sha-A", "sess-A", 3);
     await pr.transferAmendSlot("o/r#1", "sess-B");
-    await pr.rollbackAmendClaim("o/r#1", "sess-A");   // stale id; should NOT clobber
+    await pr.rollbackAmendClaim("o/r#1", "sess-A"); // stale id; should NOT clobber
     const row = (await pr.lookup("o/r#1"))!;
     expect(row.autofixCount).toBe(1);
     expect(row.lastAmendedSha).toBe("sha-A");

@@ -47,9 +47,9 @@ export interface ProvisionInput {
   // commit and emits pr.updated). Optional; when unset, behaviour is the
   // pre-existing "new PR" flow.
   prMode?: {
-    branch: string;     // existing branch on origin (PR head)
-    prNumber: number;   // existing PR number on origin
-    prUrl: string;      // PR html_url, re-emitted on pr.updated
+    branch: string; // existing branch on origin (PR head)
+    prNumber: number; // existing PR number on origin
+    prUrl: string; // PR html_url, re-emitted on pr.updated
   };
 
   // PR #A / A1. Optional, validated `/^[a-z0-9-]{1,40}$/`. When supplied,
@@ -71,7 +71,6 @@ export interface ProvisionInput {
         detailsUrl?: string;
         conclusion?: string;
       };
-
 }
 
 export interface ProvisionResult {
@@ -180,18 +179,17 @@ export async function provisionSession(input: ProvisionInput): Promise<Provision
         // explicit refspec also creates the origin/<branch> tracking
         // ref the subsequent checkout points at.
         const br = input.prMode.branch.replace(/'/g, "'\\''");
-        setupCmds.push(
-          `git fetch --depth 50 origin '+refs/heads/${br}:refs/remotes/origin/${br}'`,
-        );
+        setupCmds.push(`git fetch --depth 50 origin '+refs/heads/${br}:refs/remotes/origin/${br}'`);
         setupCmds.push(`git checkout -B '${br}' 'origin/${br}'`);
       } else {
         // Fresh session: create a new hermes/<short-session-id> branch.
         // A1: when a valid suggested suffix is supplied, the branch
         // becomes hermes/<suffix>-<id4> so reviewers see something
         // meaningful in the GitHub branch picker.
-        const suffix = input.branchSuffix && /^[a-z0-9-]{1,40}$/.test(input.branchSuffix)
-          ? input.branchSuffix
-          : "";
+        const suffix =
+          input.branchSuffix && /^[a-z0-9-]{1,40}$/.test(input.branchSuffix)
+            ? input.branchSuffix
+            : "";
         const branch = suffix
           ? `hermes/${suffix}-${input.sessionId.slice(-4)}`
           : `hermes/${input.sessionId.slice(-8)}`;
@@ -251,7 +249,9 @@ export async function provisionSession(input: ProvisionInput): Promise<Provision
     // so the runner can include them in its initial WS handshake — that
     // lands in the DO before sendInitialPrompt() fires, so the first
     // turn's context package already carries them.
-    let repoInstructions: { source: "AGENTS.md" | "CLAUDE.md" | "CONVENTIONS.md"; content: string } | undefined;
+    let repoInstructions:
+      | { source: "AGENTS.md" | "CLAUDE.md" | "CONVENTIONS.md"; content: string }
+      | undefined;
     for (const candidate of REPO_INSTRUCTIONS_CANDIDATES) {
       try {
         const check = await sbx.commands.run(
@@ -272,7 +272,8 @@ export async function provisionSession(input: ProvisionInput): Promise<Provision
         repoInstructions = {
           source: candidate,
           content: truncated
-            ? content + `\n\n[... truncated, original was ${bytes} bytes, cap is ${REPO_INSTRUCTIONS_MAX_BYTES} ...]`
+            ? content +
+              `\n\n[... truncated, original was ${bytes} bytes, cap is ${REPO_INSTRUCTIONS_MAX_BYTES} ...]`
             : content,
         };
         break;

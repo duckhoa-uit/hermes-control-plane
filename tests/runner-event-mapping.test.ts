@@ -4,7 +4,11 @@
 // don't need to fake WebSocket / SDK / env vars.
 
 import { describe, it, expect } from "vitest";
-import { createEventMapper, type RunnerEventEmit, type OpencodeEvent } from "../src/runner/event-mapper";
+import {
+  createEventMapper,
+  type RunnerEventEmit,
+  type OpencodeEvent,
+} from "../src/runner/event-mapper";
 
 function collect(): { emit: (e: RunnerEventEmit) => void; out: RunnerEventEmit[] } {
   const out: RunnerEventEmit[] = [];
@@ -15,8 +19,13 @@ describe("runner event mapping (OpenCode SSE -> Hermes events)", () => {
   it("maps message.part.delta (text) to agent.message.delta", () => {
     const { emit, out } = collect();
     const map = createEventMapper(emit);
-    map({ type: "message.part.delta", properties: { part: { type: "text" }, delta: "hello world" } });
-    expect(out).toEqual([{ eventType: "agent.message.delta", eventPayload: { text: "hello world" } }]);
+    map({
+      type: "message.part.delta",
+      properties: { part: { type: "text" }, delta: "hello world" },
+    });
+    expect(out).toEqual([
+      { eventType: "agent.message.delta", eventPayload: { text: "hello world" } },
+    ]);
   });
 
   it("ignores message.part.delta without text part or without delta", () => {
@@ -33,13 +42,25 @@ describe("runner event mapping (OpenCode SSE -> Hermes events)", () => {
     const map = createEventMapper(emit);
     map({
       type: "message.part.updated",
-      properties: { part: { type: "tool", callID: "c1", tool: "edit",
-        state: { status: "running", input: { file_path: "README.md" } } } },
+      properties: {
+        part: {
+          type: "tool",
+          callID: "c1",
+          tool: "edit",
+          state: { status: "running", input: { file_path: "README.md" } },
+        },
+      },
     });
     map({
       type: "message.part.updated",
-      properties: { part: { type: "tool", callID: "c1", tool: "edit",
-        state: { status: "completed", output: "ok", title: "edit README.md" } } },
+      properties: {
+        part: {
+          type: "tool",
+          callID: "c1",
+          tool: "edit",
+          state: { status: "completed", output: "ok", title: "edit README.md" },
+        },
+      },
     });
     expect(out.map((e) => e.eventType)).toEqual(["tool.started", "tool.completed"]);
     expect(out[0].eventPayload).toMatchObject({ callID: "c1", tool: "edit" });
@@ -51,10 +72,18 @@ describe("runner event mapping (OpenCode SSE -> Hermes events)", () => {
     const map = createEventMapper(emit);
     const evt: OpencodeEvent = {
       type: "message.part.updated",
-      properties: { part: { type: "tool", callID: "c_dup", tool: "read",
-        state: { status: "running", input: {} } } },
+      properties: {
+        part: {
+          type: "tool",
+          callID: "c_dup",
+          tool: "read",
+          state: { status: "running", input: {} },
+        },
+      },
     };
-    map(evt); map(evt); map(evt);
+    map(evt);
+    map(evt);
+    map(evt);
     expect(out.filter((e) => e.eventType === "tool.started")).toHaveLength(1);
   });
 
@@ -63,8 +92,14 @@ describe("runner event mapping (OpenCode SSE -> Hermes events)", () => {
     const map = createEventMapper(emit);
     map({
       type: "message.part.updated",
-      properties: { part: { type: "tool", callID: "c_err", tool: "edit",
-        state: { status: "error", error: "permission denied" } } },
+      properties: {
+        part: {
+          type: "tool",
+          callID: "c_err",
+          tool: "edit",
+          state: { status: "error", error: "permission denied" },
+        },
+      },
     });
     expect(out).toHaveLength(1);
     expect(out[0].eventType).toBe("tool.completed");
@@ -75,7 +110,9 @@ describe("runner event mapping (OpenCode SSE -> Hermes events)", () => {
     const { emit, out } = collect();
     const map = createEventMapper(emit);
     map({ type: "file.edited", properties: { file: "/home/user/repo/README.md" } });
-    expect(out).toEqual([{ eventType: "file.changed", eventPayload: { file: "/home/user/repo/README.md" } }]);
+    expect(out).toEqual([
+      { eventType: "file.changed", eventPayload: { file: "/home/user/repo/README.md" } },
+    ]);
   });
 
   it("maps permission.updated to approval.requested (M4: log only)", () => {
@@ -83,11 +120,20 @@ describe("runner event mapping (OpenCode SSE -> Hermes events)", () => {
     const map = createEventMapper(emit);
     map({
       type: "permission.updated",
-      properties: { id: "perm_1", type: "edit", title: "write README.md",
-        callID: "c4", metadata: { foo: "bar" } },
+      properties: {
+        id: "perm_1",
+        type: "edit",
+        title: "write README.md",
+        callID: "c4",
+        metadata: { foo: "bar" },
+      },
     });
     expect(out[0].eventType).toBe("approval.requested");
-    expect(out[0].eventPayload).toMatchObject({ id: "perm_1", title: "write README.md", callID: "c4" });
+    expect(out[0].eventPayload).toMatchObject({
+      id: "perm_1",
+      title: "write README.md",
+      callID: "c4",
+    });
   });
 
   it("maps session.error to agent.error", () => {
@@ -112,10 +158,20 @@ describe("runner event mapping (OpenCode SSE -> Hermes events)", () => {
     const { emit, out } = collect();
     const map = createEventMapper(emit);
     for (const t of [
-      "plugin.added", "catalog.updated", "server.heartbeat", "server.connected",
-      "session.status", "session.updated", "session.diff", "message.updated",
-      "file.watcher.updated", "session.next.agent.switched", "session.compacted",
-      "session.next.model.switched", "reference.updated", "integration.updated",
+      "plugin.added",
+      "catalog.updated",
+      "server.heartbeat",
+      "server.connected",
+      "session.status",
+      "session.updated",
+      "session.diff",
+      "message.updated",
+      "file.watcher.updated",
+      "session.next.agent.switched",
+      "session.compacted",
+      "session.next.model.switched",
+      "reference.updated",
+      "integration.updated",
     ]) {
       map({ type: t, properties: {} });
     }

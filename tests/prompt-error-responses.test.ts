@@ -66,7 +66,8 @@ describe("/prompt error responses (fail-fast UX)", () => {
 
   it("status is preserved verbatim from the DO state when present", () => {
     for (const st of ["running", "review_ready", "stalled", "failed", "aborted"] as const) {
-      const body = st === "failed" || st === "aborted" ? buildSessionEndedBody(st) : buildRunnerGoneBody(st);
+      const body =
+        st === "failed" || st === "aborted" ? buildSessionEndedBody(st) : buildRunnerGoneBody(st);
       expect(body.status).toBe(st);
     }
   });

@@ -58,9 +58,7 @@ describe("sweepOrphans", () => {
   });
 
   it("kills sandboxes whose session is archived (merge webhook race)", async () => {
-    const sandboxes = [
-      { sandboxID: "sbx_arch", metadata: { hermes_session_id: "sess_arch" } },
-    ];
+    const sandboxes = [{ sandboxID: "sbx_arch", metadata: { hermes_session_id: "sess_arch" } }];
     global.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
       if (url.endsWith("/v2/sandboxes")) {
@@ -80,9 +78,7 @@ describe("sweepOrphans", () => {
   });
 
   it("keeps sandboxes when Worker is unreachable (does not destructively act on uncertainty)", async () => {
-    const sandboxes = [
-      { sandboxID: "sbx_a", metadata: { hermes_session_id: "sess_a" } },
-    ];
+    const sandboxes = [{ sandboxID: "sbx_a", metadata: { hermes_session_id: "sess_a" } }];
 
     global.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();

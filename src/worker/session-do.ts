@@ -21,7 +21,12 @@ import { EventLog } from "../core/event-log";
 import { getPrIndexStub, prKeyFromUrl } from "./pr-index-do";
 import { canTransition, isTerminal } from "../core/state-machine";
 import { generateCommandId, generateRunnerToken, generateRequestId } from "../core/id";
-import { HEARTBEAT_INTERVAL_MS, HEARTBEAT_TIMEOUT_MS, PAUSED_HEARTBEAT_THRESHOLD_MS, WS_TAGS } from "../core/constants";
+import {
+  HEARTBEAT_INTERVAL_MS,
+  HEARTBEAT_TIMEOUT_MS,
+  PAUSED_HEARTBEAT_THRESHOLD_MS,
+  WS_TAGS,
+} from "../core/constants";
 
 // Zero-padded so storage.list({ prefix: "evt:" }) returns events in seq order.
 const eventKey = (seq: number) => `evt:${seq.toString().padStart(10, "0")}`;
@@ -56,10 +61,12 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
   }
 
   private readAttachment(ws: WebSocket): WSAttachment {
-    return (ws.deserializeAttachment() as WSAttachment | null) ?? {
-      tag: WS_TAGS.CLIENT,
-      lastSeq: -1,
-    };
+    return (
+      (ws.deserializeAttachment() as WSAttachment | null) ?? {
+        tag: WS_TAGS.CLIENT,
+        lastSeq: -1,
+      }
+    );
   }
 
   private writeAttachment(ws: WebSocket, patch: Partial<WSAttachment>): void {
@@ -97,9 +104,7 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
         // missing → fall back to today's hermes/<id8>. Must stay in sync
         // with src/launcher/provision.ts.
         branch: (() => {
-          const s = branchSuffix && /^[a-z0-9-]{1,40}$/.test(branchSuffix)
-            ? branchSuffix
-            : "";
+          const s = branchSuffix && /^[a-z0-9-]{1,40}$/.test(branchSuffix) ? branchSuffix : "";
           return s ? `hermes/${s}-${sessionId.slice(-4)}` : `hermes/${sessionId.slice(-8)}`;
         })(),
         createdAt: now,
@@ -116,7 +121,11 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
         this.artifacts = { sessionId, prUrl: amendPrUrl, changedFiles: [] };
       }
 
-      this.appendEvent("session.created", "system", { taskDescription, projectId: profile.id, amendPrUrl });
+      this.appendEvent("session.created", "system", {
+        taskDescription,
+        projectId: profile.id,
+        amendPrUrl,
+      });
       await this.persist();
 
       // Kick off sandbox provisioning in the background. The HTTP response
@@ -172,9 +181,7 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
   }
 
   getEvents(sinceSeq?: number): HermesEvent[] {
-    return sinceSeq !== undefined
-      ? this.eventLog.getSince(sinceSeq)
-      : this.eventLog.getAll();
+    return sinceSeq !== undefined ? this.eventLog.getSince(sinceSeq) : this.eventLog.getAll();
   }
 
   getArtifacts(): SessionArtifacts | null {
@@ -215,17 +222,21 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     ) {
       const sessionId = this.session.id;
       const prUrl = this.artifacts.prUrl;
-      this.ctx.waitUntil((async () => {
-        try {
-          const prKey = prKeyFromUrl(prUrl);
-          const stub = getPrIndexStub(this.env);
-          await (stub as unknown as {
-            releaseAmendSlot(k: string, s: string): Promise<void>;
-          }).releaseAmendSlot(prKey, sessionId);
-        } catch (err) {
-          console.error(`[DO] releaseAmendSlot failed: ${(err as Error).message}`);
-        }
-      })());
+      this.ctx.waitUntil(
+        (async () => {
+          try {
+            const prKey = prKeyFromUrl(prUrl);
+            const stub = getPrIndexStub(this.env);
+            await (
+              stub as unknown as {
+                releaseAmendSlot(k: string, s: string): Promise<void>;
+              }
+            ).releaseAmendSlot(prKey, sessionId);
+          } catch (err) {
+            console.error(`[DO] releaseAmendSlot failed: ${(err as Error).message}`);
+          }
+        })(),
+      );
     }
   }
 
@@ -242,9 +253,7 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     // Persist just this event (per-key) instead of rewriting the whole array.
     // Skill: durable-objects/patterns — append-only event log on SQLite-backed DOs.
     // Key is zero-padded so list({ prefix }) returns events in seq order.
-    this.ctx.waitUntil(
-      this.ctx.storage.put(eventKey(event.seq), event),
-    );
+    this.ctx.waitUntil(this.ctx.storage.put(eventKey(event.seq), event));
     return event;
   }
 
@@ -478,10 +487,7 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
       // amend); the discrete pr.created/pr.updated event has already been
       // emitted on the WS, so we don't re-emit it here — onPRCreated
       // dedups on artifacts.prUrl.
-      this.onPRCreated(
-        payload.prUrl as string,
-        (payload.ownerLogin as string) ?? "",
-      );
+      this.onPRCreated(payload.prUrl as string, (payload.ownerLogin as string) ?? "");
       return;
     }
 
@@ -754,11 +760,10 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
       amendMode,
     });
 
-    this.ctx.waitUntil((async () => {
-      try {
-        const resp = await fetch(
-          `${launcherUrl}/sessions/${sessionId}/publish-pr`,
-          {
+    this.ctx.waitUntil(
+      (async () => {
+        try {
+          const resp = await fetch(`${launcherUrl}/sessions/${sessionId}/publish-pr`, {
             method: "POST",
             headers: {
               "content-type": "application/json",
@@ -775,58 +780,58 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
               amendPrUrl,
               ownerLogin,
             }),
-          },
-        );
-        const rawBody = await resp.text();
-        let parsed: Record<string, unknown> = {};
-        try {
-          parsed = rawBody ? (JSON.parse(rawBody) as Record<string, unknown>) : {};
-        } catch {
-          // non-JSON response — surface raw body in the failure path
-        }
-        if (!resp.ok || parsed.ok === false) {
-          const stage = (parsed.stage as string) || "launcher";
-          const message =
-            (parsed.message as string) ||
-            (parsed.error as string) ||
-            `launcher HTTP ${resp.status}`;
-          const detail = (parsed.detail as string) || rawBody.slice(0, 300);
-          this.appendEvent("pr.publish.failed", "system", { stage, message, detail });
+          });
+          const rawBody = await resp.text();
+          let parsed: Record<string, unknown> = {};
+          try {
+            parsed = rawBody ? (JSON.parse(rawBody) as Record<string, unknown>) : {};
+          } catch {
+            // non-JSON response — surface raw body in the failure path
+          }
+          if (!resp.ok || parsed.ok === false) {
+            const stage = (parsed.stage as string) || "launcher";
+            const message =
+              (parsed.message as string) ||
+              (parsed.error as string) ||
+              `launcher HTTP ${resp.status}`;
+            const detail = (parsed.detail as string) || rawBody.slice(0, 300);
+            this.appendEvent("pr.publish.failed", "system", { stage, message, detail });
+            if (this.session && !isTerminal(this.session.status)) {
+              this.transition("failed", `publish-via-launcher: ${message}`);
+            }
+            return;
+          }
+          const prUrl = (parsed.prUrl as string) || "";
+          if (!prUrl) {
+            this.appendEvent("pr.publish.failed", "system", {
+              stage: "launcher",
+              message: "launcher returned ok=true without prUrl",
+            });
+            if (this.session && !isTerminal(this.session.status)) {
+              this.transition("failed", "publish-via-launcher: missing prUrl");
+            }
+            return;
+          }
+          // Normalise the success terminal: route through onPRCreated so
+          // the legacy and new paths produce indistinguishable downstream
+          // state (PrIndex register, status -> completed, etc.).
+          this.onPRCreated(
+            prUrl,
+            (parsed.ownerLogin as string) || ownerLogin,
+            amendMode ? "pr.updated" : "pr.created",
+          );
+        } catch (err) {
+          const message = (err as Error).message;
+          this.appendEvent("pr.publish.failed", "system", {
+            stage: "launcher",
+            message,
+          });
           if (this.session && !isTerminal(this.session.status)) {
             this.transition("failed", `publish-via-launcher: ${message}`);
           }
-          return;
         }
-        const prUrl = (parsed.prUrl as string) || "";
-        if (!prUrl) {
-          this.appendEvent("pr.publish.failed", "system", {
-            stage: "launcher",
-            message: "launcher returned ok=true without prUrl",
-          });
-          if (this.session && !isTerminal(this.session.status)) {
-            this.transition("failed", "publish-via-launcher: missing prUrl");
-          }
-          return;
-        }
-        // Normalise the success terminal: route through onPRCreated so
-        // the legacy and new paths produce indistinguishable downstream
-        // state (PrIndex register, status -> completed, etc.).
-        this.onPRCreated(
-          prUrl,
-          (parsed.ownerLogin as string) || ownerLogin,
-          amendMode ? "pr.updated" : "pr.created",
-        );
-      } catch (err) {
-        const message = (err as Error).message;
-        this.appendEvent("pr.publish.failed", "system", {
-          stage: "launcher",
-          message,
-        });
-        if (this.session && !isTerminal(this.session.status)) {
-          this.transition("failed", `publish-via-launcher: ${message}`);
-        }
-      }
-    })());
+      })(),
+    );
   }
 
   // ---- PR created callback ----
@@ -855,17 +860,21 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     // lifecycle update path, not the PR itself.
     if (!alreadyRegistered && this.session) {
       const sessionId = this.session.id;
-      this.ctx.waitUntil((async () => {
-        try {
-          const prKey = prKeyFromUrl(prUrl);
-          const stub = getPrIndexStub(this.env);
-          await (stub as unknown as {
-            register(k: string, s: string, o: string): Promise<unknown>;
-          }).register(prKey, sessionId, ownerLogin);
-        } catch (err) {
-          console.error(`[DO] PR_INDEX_DO.register failed: ${(err as Error).message}`);
-        }
-      })());
+      this.ctx.waitUntil(
+        (async () => {
+          try {
+            const prKey = prKeyFromUrl(prUrl);
+            const stub = getPrIndexStub(this.env);
+            await (
+              stub as unknown as {
+                register(k: string, s: string, o: string): Promise<unknown>;
+              }
+            ).register(prKey, sessionId, ownerLogin);
+          } catch (err) {
+            console.error(`[DO] PR_INDEX_DO.register failed: ${(err as Error).message}`);
+          }
+        })(),
+      );
     }
 
     if (this.session?.status === "creating_pr" && canTransition("creating_pr", "completed")) {
@@ -920,7 +929,13 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     branchSuffix?: string,
   ): Promise<Session & { runnerToken: string | null }> {
     await this.ensureRestored();
-    const session = await this.init(profile, taskDescription, controlBaseUrl, amendPrUrl, branchSuffix);
+    const session = await this.init(
+      profile,
+      taskDescription,
+      controlBaseUrl,
+      amendPrUrl,
+      branchSuffix,
+    );
     return { ...session, runnerToken: this.runnerToken };
   }
 
@@ -1004,28 +1019,24 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     trigger: "review_changes_requested" | "check_run_failed";
     deliveryId: string;
     headSha: string;
-    newSessionId?: string;          // present when triggered === true
-    skipReason?: string;            // present when triggered === false
-    reviewerLogin?: string;         // review trigger
-    checkName?: string;             // check_run trigger
-    detailsUrl?: string;            // check_run trigger
+    newSessionId?: string; // present when triggered === true
+    skipReason?: string; // present when triggered === false
+    reviewerLogin?: string; // review trigger
+    checkName?: string; // check_run trigger
+    detailsUrl?: string; // check_run trigger
   }): Promise<{ ok: true }> {
     await this.ensureRestored();
     if (!this.session) return { ok: true };
-    this.appendEvent(
-      input.triggered ? "pr.autofix.triggered" : "pr.autofix.skipped",
-      "system",
-      {
-        trigger: input.trigger,
-        deliveryId: input.deliveryId,
-        headSha: input.headSha,
-        newSessionId: input.newSessionId,
-        skipReason: input.skipReason,
-        reviewerLogin: input.reviewerLogin,
-        checkName: input.checkName,
-        detailsUrl: input.detailsUrl,
-      },
-    );
+    this.appendEvent(input.triggered ? "pr.autofix.triggered" : "pr.autofix.skipped", "system", {
+      trigger: input.trigger,
+      deliveryId: input.deliveryId,
+      headSha: input.headSha,
+      newSessionId: input.newSessionId,
+      skipReason: input.skipReason,
+      reviewerLogin: input.reviewerLogin,
+      checkName: input.checkName,
+      detailsUrl: input.detailsUrl,
+    });
     return { ok: true };
   }
 
@@ -1083,7 +1094,7 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     // through the queue+resume path.
     const now = Date.now();
     const lastBeat = this.session?.lastHeartbeat ?? 0;
-    const heartbeatStale = lastBeat > 0 && (now - lastBeat) > PAUSED_HEARTBEAT_THRESHOLD_MS;
+    const heartbeatStale = lastBeat > 0 && now - lastBeat > PAUSED_HEARTBEAT_THRESHOLD_MS;
     const runnerWS = this.getRunnerWS();
     if (!runnerWS || heartbeatStale) {
       const launcherUrl = this.env.LAUNCHER_URL;
@@ -1093,9 +1104,13 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
       // webSocketClose will fire when the sandbox eventually resumes — by then
       // session.runnerConnected is already false.
       if (runnerWS && heartbeatStale) {
-        try { runnerWS.close(4000, "paused"); } catch {}
+        try {
+          runnerWS.close(4000, "paused");
+        } catch {}
         if (this.session) this.session.runnerConnected = false;
-        this.appendEvent("runner.disconnected", "system", { reason: "heartbeat stale, sandbox likely paused" });
+        this.appendEvent("runner.disconnected", "system", {
+          reason: "heartbeat stale, sandbox likely paused",
+        });
       }
       if (!launcherUrl) {
         // Pre-M5 deployment: no launcher URL configured. Fall back to
@@ -1106,8 +1121,7 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
           body: {
             error: "Runner not connected",
             status,
-            reason:
-              "Resume is not configured (LAUNCHER_URL unset). Start a new session.",
+            reason: "Resume is not configured (LAUNCHER_URL unset). Start a new session.",
             recoverable: false,
           },
         };
@@ -1125,16 +1139,13 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
         this.ctx.waitUntil(
           (async () => {
             try {
-              const r = await fetch(
-                `${launcherUrl}/sessions/${sessionId}/resume`,
-                {
-                  method: "POST",
-                  headers: {
-                    "content-type": "application/json",
-                    "x-hermes-launcher-secret": this.env.LAUNCHER_SHARED_SECRET ?? "",
-                  },
+              const r = await fetch(`${launcherUrl}/sessions/${sessionId}/resume`, {
+                method: "POST",
+                headers: {
+                  "content-type": "application/json",
+                  "x-hermes-launcher-secret": this.env.LAUNCHER_SHARED_SECRET ?? "",
                 },
-              );
+              });
               if (!r.ok) {
                 const body = await r.text().catch(() => "<no body>");
                 console.error(`[DO] launcher /resume failed ${r.status}: ${body}`);

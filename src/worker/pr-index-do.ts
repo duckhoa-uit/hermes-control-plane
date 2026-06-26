@@ -154,7 +154,11 @@ export class PrIndexDurableObject extends DurableObject<CloudflareEnv> {
     cap: number,
   ): Promise<
     | { ok: true; autofixCount: number }
-    | { ok: false; reason: "unknown_pr" | "cap_exceeded" | "duplicate_sha" | "inflight"; row?: PrIndexRow }
+    | {
+        ok: false;
+        reason: "unknown_pr" | "cap_exceeded" | "duplicate_sha" | "inflight";
+        row?: PrIndexRow;
+      }
   > {
     const row = await this.ctx.storage.get<PrIndexRow>(rowKey(prKey));
     if (!row) return { ok: false, reason: "unknown_pr" };
@@ -165,10 +169,7 @@ export class PrIndexDurableObject extends DurableObject<CloudflareEnv> {
     // Inflight guard with TTL — a crashed amend would otherwise lock
     // the PR forever.
     const now = Date.now();
-    if (
-      row.inflightAmendStartedAt &&
-      now - row.inflightAmendStartedAt < INFLIGHT_TTL_MS
-    ) {
+    if (row.inflightAmendStartedAt && now - row.inflightAmendStartedAt < INFLIGHT_TTL_MS) {
       return { ok: false, reason: "inflight", row };
     }
 
@@ -239,9 +240,9 @@ export function prKeyFromUrl(prUrl: string): string {
 }
 
 /** Get the singleton PrIndexDurableObject stub. */
-export function getPrIndexStub(
-  env: { PR_INDEX_DO: DurableObjectNamespace<PrIndexDurableObject> },
-): DurableObjectStub<PrIndexDurableObject> {
+export function getPrIndexStub(env: {
+  PR_INDEX_DO: DurableObjectNamespace<PrIndexDurableObject>;
+}): DurableObjectStub<PrIndexDurableObject> {
   const id = env.PR_INDEX_DO.idFromName("global");
   return env.PR_INDEX_DO.get(id);
 }

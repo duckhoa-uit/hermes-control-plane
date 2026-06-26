@@ -107,17 +107,17 @@ export type ParsedWebhook =
       headSha: string;
       headBranch: string;
       reviewerLogin: string;
-      reviewerType?: string;       // "User" | "Bot"
+      reviewerType?: string; // "User" | "Bot"
       senderLogin: string;
       senderType?: string;
-      reviewBody: string;          // may be empty if reviewer only used inline comments
+      reviewBody: string; // may be empty if reviewer only used inline comments
       reviewId: number;
       repoFullName: string;
     }
   | {
       kind: "check_run_failed";
       deliveryId: string;
-      prKey: string;               // resolved from check_run.pull_requests[0]
+      prKey: string; // resolved from check_run.pull_requests[0]
       prUrl: string;
       headSha: string;
       checkName: string;
@@ -227,7 +227,11 @@ export function parseGithubWebhook(
     // `commented` reviews (no state change) and `approved` reviews are
     // common drive-by interactions — amending on them would spam the PR.
     if (p.action !== "submitted" || p.review.state !== "changes_requested") {
-      return { kind: "ignored", deliveryId, reason: `pull_request_review.${p.action}/${p.review.state}` };
+      return {
+        kind: "ignored",
+        deliveryId,
+        reason: `pull_request_review.${p.action}/${p.review.state}`,
+      };
     }
     return {
       kind: "review_changes_requested",

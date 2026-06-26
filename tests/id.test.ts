@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { generateId, generateSessionId, generateCommandId, generateRequestId, generateRunnerToken } from "../src/core/id";
+import {
+  generateId,
+  generateSessionId,
+  generateCommandId,
+  generateRequestId,
+  generateRunnerToken,
+} from "../src/core/id";
 
 describe("id generators", () => {
   it("generates unique sequential ids", () => {

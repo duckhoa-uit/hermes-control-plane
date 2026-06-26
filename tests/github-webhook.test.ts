@@ -34,9 +34,9 @@ describe("verifyGithubHmac", () => {
   it("accepts a body signed with the right secret", async () => {
     const body = '{"hello":"world"}';
     const sig = await sign(body);
-    expect(
-      await verifyGithubHmac({ rawBody: body, signatureHeader: sig, secret: SECRET }),
-    ).toBe(true);
+    expect(await verifyGithubHmac({ rawBody: body, signatureHeader: sig, secret: SECRET })).toBe(
+      true,
+    );
   });
 
   it("rejects when the body is altered", async () => {
@@ -53,28 +53,28 @@ describe("verifyGithubHmac", () => {
   it("rejects when the secret is wrong", async () => {
     const body = '{"x":1}';
     const sig = await sign(body, "other-secret");
-    expect(
-      await verifyGithubHmac({ rawBody: body, signatureHeader: sig, secret: SECRET }),
-    ).toBe(false);
+    expect(await verifyGithubHmac({ rawBody: body, signatureHeader: sig, secret: SECRET })).toBe(
+      false,
+    );
   });
 
   it("rejects missing signature header", async () => {
-    expect(
-      await verifyGithubHmac({ rawBody: "x", signatureHeader: null, secret: SECRET }),
-    ).toBe(false);
+    expect(await verifyGithubHmac({ rawBody: "x", signatureHeader: null, secret: SECRET })).toBe(
+      false,
+    );
   });
 
   it("rejects missing secret", async () => {
-    expect(
-      await verifyGithubHmac({ rawBody: "x", signatureHeader: "sha256=00", secret: "" }),
-    ).toBe(false);
+    expect(await verifyGithubHmac({ rawBody: "x", signatureHeader: "sha256=00", secret: "" })).toBe(
+      false,
+    );
   });
 
   it("rejects wrong-prefix signature", async () => {
     const sig = (await sign("x")).replace("sha256=", "sha1=");
-    expect(
-      await verifyGithubHmac({ rawBody: "x", signatureHeader: sig, secret: SECRET }),
-    ).toBe(false);
+    expect(await verifyGithubHmac({ rawBody: "x", signatureHeader: sig, secret: SECRET })).toBe(
+      false,
+    );
   });
 
   it("rejects wrong-length signature", async () => {
@@ -245,9 +245,11 @@ describe("parseGithubWebhook — pull_request_review", () => {
   });
 
   it("ignores approved reviews", () => {
-    const body = JSON.stringify(reviewPayload({
-      review: { ...reviewPayload().review, state: "approved" },
-    }));
+    const body = JSON.stringify(
+      reviewPayload({
+        review: { ...reviewPayload().review, state: "approved" },
+      }),
+    );
     const parsed = parseGithubWebhook("pull_request_review", "del-rev-2", body);
     expect(parsed).toMatchObject({
       kind: "ignored",
@@ -256,9 +258,11 @@ describe("parseGithubWebhook — pull_request_review", () => {
   });
 
   it("ignores commented reviews (no state change)", () => {
-    const body = JSON.stringify(reviewPayload({
-      review: { ...reviewPayload().review, state: "commented", body: "lgtm-ish" },
-    }));
+    const body = JSON.stringify(
+      reviewPayload({
+        review: { ...reviewPayload().review, state: "commented", body: "lgtm-ish" },
+      }),
+    );
     const parsed = parseGithubWebhook("pull_request_review", "del-rev-3", body);
     expect(parsed).toMatchObject({
       kind: "ignored",
@@ -273,14 +277,20 @@ describe("parseGithubWebhook — pull_request_review", () => {
   });
 
   it("returns null on malformed payload (missing review)", () => {
-    const bad = JSON.stringify({ action: "submitted", pull_request: reviewPayload().pull_request, repository: reviewPayload().repository });
+    const bad = JSON.stringify({
+      action: "submitted",
+      pull_request: reviewPayload().pull_request,
+      repository: reviewPayload().repository,
+    });
     expect(parseGithubWebhook("pull_request_review", "del-rev-5", bad)).toBeNull();
   });
 
   it("preserves empty review body (reviewer may only use inline comments)", () => {
-    const body = JSON.stringify(reviewPayload({
-      review: { ...reviewPayload().review, body: null },
-    }));
+    const body = JSON.stringify(
+      reviewPayload({
+        review: { ...reviewPayload().review, body: null },
+      }),
+    );
     const parsed = parseGithubWebhook("pull_request_review", "del-rev-6", body);
     expect((parsed as any).reviewBody).toBe("");
   });
@@ -288,9 +298,7 @@ describe("parseGithubWebhook — pull_request_review", () => {
 
 // ---- check_run fixtures + tests ----
 
-function checkRunPayload(
-  overrides: Partial<CheckRunEventPayload> = {},
-): CheckRunEventPayload {
+function checkRunPayload(overrides: Partial<CheckRunEventPayload> = {}): CheckRunEventPayload {
   return {
     action: "completed",
     check_run: {
@@ -324,20 +332,26 @@ describe("parseGithubWebhook — check_run", () => {
 
   it("dispatches conclusion=timed_out", () => {
     const parsed = parseGithubWebhook(
-      "check_run", "del-cr-2",
-      JSON.stringify(checkRunPayload({
-        check_run: { ...checkRunPayload().check_run, conclusion: "timed_out" },
-      })),
+      "check_run",
+      "del-cr-2",
+      JSON.stringify(
+        checkRunPayload({
+          check_run: { ...checkRunPayload().check_run, conclusion: "timed_out" },
+        }),
+      ),
     );
     expect(parsed).toMatchObject({ kind: "check_run_failed", conclusion: "timed_out" });
   });
 
   it("ignores conclusion=success", () => {
     const parsed = parseGithubWebhook(
-      "check_run", "del-cr-3",
-      JSON.stringify(checkRunPayload({
-        check_run: { ...checkRunPayload().check_run, conclusion: "success" },
-      })),
+      "check_run",
+      "del-cr-3",
+      JSON.stringify(
+        checkRunPayload({
+          check_run: { ...checkRunPayload().check_run, conclusion: "success" },
+        }),
+      ),
     );
     expect(parsed).toMatchObject({ kind: "ignored", reason: "check_run.success" });
   });
@@ -345,10 +359,13 @@ describe("parseGithubWebhook — check_run", () => {
   it("ignores conclusion=cancelled / neutral / skipped / action_required", () => {
     for (const c of ["cancelled", "neutral", "skipped", "action_required", null] as const) {
       const parsed = parseGithubWebhook(
-        "check_run", `del-cr-${c}`,
-        JSON.stringify(checkRunPayload({
-          check_run: { ...checkRunPayload().check_run, conclusion: c as any },
-        })),
+        "check_run",
+        `del-cr-${c}`,
+        JSON.stringify(
+          checkRunPayload({
+            check_run: { ...checkRunPayload().check_run, conclusion: c as any },
+          }),
+        ),
       );
       expect(parsed).toMatchObject({ kind: "ignored" });
     }
@@ -356,7 +373,8 @@ describe("parseGithubWebhook — check_run", () => {
 
   it("ignores check_run.created / requested_action / rerequested (only completed dispatches)", () => {
     const parsed = parseGithubWebhook(
-      "check_run", "del-cr-act",
+      "check_run",
+      "del-cr-act",
       JSON.stringify(checkRunPayload({ action: "created" })),
     );
     expect(parsed).toMatchObject({ kind: "ignored", reason: /check_run\.created/ });
@@ -364,10 +382,13 @@ describe("parseGithubWebhook — check_run", () => {
 
   it("ignores check_run with no associated PR (push to branch w/o open PR)", () => {
     const parsed = parseGithubWebhook(
-      "check_run", "del-cr-nopr",
-      JSON.stringify(checkRunPayload({
-        check_run: { ...checkRunPayload().check_run, pull_requests: [] },
-      })),
+      "check_run",
+      "del-cr-nopr",
+      JSON.stringify(
+        checkRunPayload({
+          check_run: { ...checkRunPayload().check_run, pull_requests: [] },
+        }),
+      ),
     );
     expect(parsed).toMatchObject({ kind: "ignored", reason: "check_run.no_pr" });
   });

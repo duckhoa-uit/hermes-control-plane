@@ -28,21 +28,25 @@ function withFetchMock(handler: FetchHandler, fn: () => Promise<void>): Promise<
     const req = input instanceof Request ? input : new Request(input, init);
     return handler(req);
   };
-  return fn().finally(() => { globalThis.fetch = orig; });
+  return fn().finally(() => {
+    globalThis.fetch = orig;
+  });
 }
 
-async function callTool(
-  toolName: string,
-  args: Record<string, unknown>,
-): Promise<Response> {
-  const handler = buildMcpHandler({ workerBaseUrl: WORKER, launcherBaseUrl: LAUNCHER, launcherSecret: "test-launcher-secret", log: () => {} });
+async function callTool(toolName: string, args: Record<string, unknown>): Promise<Response> {
+  const handler = buildMcpHandler({
+    workerBaseUrl: WORKER,
+    launcherBaseUrl: LAUNCHER,
+    launcherSecret: "test-launcher-secret",
+    log: () => {},
+  });
   // JSON-RPC tools/call envelope (Streamable HTTP, stateless mode).
   const req = new Request("http://mcp.local/", {
     method: "POST",
     headers: {
       "content-type": "application/json",
       // accept hint required by the transport in stateless mode
-      "accept": "application/json, text/event-stream",
+      accept: "application/json, text/event-stream",
     },
     body: JSON.stringify({
       jsonrpc: "2.0",
@@ -54,7 +58,9 @@ async function callTool(
   return await handler(req);
 }
 
-beforeEach(() => { /* noop */ });
+beforeEach(() => {
+  /* noop */
+});
 
 describe("MCP send_followup_prompt", () => {
   it("(a) non-terminal session -> forwards to Worker prompt and returns 200", async () => {
@@ -71,7 +77,10 @@ describe("MCP send_followup_prompt", () => {
       return Response.json({ error: `unexpected ${req.method} ${url.pathname}` }, { status: 500 });
     };
     await withFetchMock(handler, async () => {
-      const resp = await callTool("send_followup_prompt", { sessionId: "sess-1", text: "next step" });
+      const resp = await callTool("send_followup_prompt", {
+        sessionId: "sess-1",
+        text: "next step",
+      });
       const body = (await resp.json()) as any;
       expect(body.result.isError).toBeFalsy();
       expect(promptCalled).toBe(true);
@@ -98,20 +107,29 @@ describe("MCP send_followup_prompt", () => {
           body: await req.json(),
           launcherSecret: req.headers.get("x-hermes-launcher-secret"),
         };
-        return Response.json({
-          sessionId: "sess-new",
-          sandboxId: "sbx-new",
-          streamUrl: `${WORKER}/sessions/sess-new/stream`,
-          prMode: { branch: "hermes/abcd", prNumber: 5, prUrl: "https://github.com/o/r/pull/5" },
-        }, { status: 201 });
+        return Response.json(
+          {
+            sessionId: "sess-new",
+            sandboxId: "sbx-new",
+            streamUrl: `${WORKER}/sessions/sess-new/stream`,
+            prMode: { branch: "hermes/abcd", prNumber: 5, prUrl: "https://github.com/o/r/pull/5" },
+          },
+          { status: 201 },
+        );
       }
       return Response.json({ error: `unexpected ${req.method} ${url.pathname}` }, { status: 500 });
     };
     await withFetchMock(handler, async () => {
-      const resp = await callTool("send_followup_prompt", { sessionId: "sess-old", text: "tweak the title" });
+      const resp = await callTool("send_followup_prompt", {
+        sessionId: "sess-old",
+        text: "tweak the title",
+      });
       const body = (await resp.json()) as any;
       expect(body.result.isError).toBeFalsy();
-      expect(launcherCalled.body).toMatchObject({ parentSessionId: "sess-old", taskDescription: "tweak the title" });
+      expect(launcherCalled.body).toMatchObject({
+        parentSessionId: "sess-old",
+        taskDescription: "tweak the title",
+      });
       expect(launcherCalled.launcherSecret).toBe("test-launcher-secret");
       const structured = body.result.structuredContent;
       expect(structured.newSessionId).toBe("sess-new");
@@ -132,10 +150,7 @@ describe("MCP send_followup_prompt", () => {
         });
       }
       if (req.method === "POST" && url.pathname === "/sessions") {
-        return Response.json(
-          { error: "PR no longer indexed", reason: "merged" },
-          { status: 410 },
-        );
+        return Response.json({ error: "PR no longer indexed", reason: "merged" }, { status: 410 });
       }
       return Response.json({ error: `unexpected ${req.method} ${url.pathname}` }, { status: 500 });
     };
