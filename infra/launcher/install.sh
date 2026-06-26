@@ -69,7 +69,7 @@ fi
 
 # -------- 5. layout --------
 log "creating /opt/hermes-control-plane and /etc/hermes-control-plane"
-install -d -o "$HERMES_USER" -g "$HERMES_USER" -m 0750 /opt/hermes-control-plane
+install -d -o "$HERMES_USER" -g "$HERMES_USER" -m 0755 /opt/hermes-control-plane
 install -d -o "$HERMES_USER" -g "$HERMES_USER" -m 0750 /etc/hermes-control-plane
 
 # -------- 6. clone / pull --------
