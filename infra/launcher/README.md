@@ -41,13 +41,13 @@ curl -fsSL https://raw.githubusercontent.com/duckhoa-uit/hermes-control-plane/ma
   | sudo bash
 # install.sh asks for E2B_API_KEY, ZAI_API_KEY, GITHUB_WRITE_TOKEN,
 # GITHUB_READ_TOKEN, GITHUB_USER_LOGIN, GITHUB_USER_EMAIL (optional),
-# CONTROL_PLANE_BASE_URL (default: the deployed Worker URL).
+# WORKER_BASE_URL (default: the deployed Worker URL).
 
 # 2. Pre-exported env vars (good when piping into bash):
 curl -fsSL https://raw.githubusercontent.com/duckhoa-uit/hermes-control-plane/main/infra/launcher/install.sh \
   | sudo E2B_API_KEY=... ZAI_API_KEY=... GITHUB_WRITE_TOKEN=... \
          GITHUB_READ_TOKEN=... GITHUB_USER_LOGIN=duckhoa-uit \
-         CONTROL_PLANE_BASE_URL=https://hermes-control-plane.duckhoa-dev.workers.dev \
+         WORKER_BASE_URL=https://hermes-control-plane.duckhoa-dev.workers.dev \
          bash
 
 # 3. Skip prompts entirely — drop the env.example template and edit by hand later:
@@ -64,11 +64,11 @@ After it finishes, the script prints the 6 remaining manual steps:
 5. From your dev machine: mirror the launcher secrets onto the Worker:
    ```bash
    echo "<tunnel-url>" | bun x wrangler secret put CONTROL_PLANE_LAUNCHER_URL
-   ssh <vps> 'sudo grep ^HERMES_LAUNCHER_SECRET= /etc/hermes-control-plane/launcher.env | cut -d= -f2-' \
-     | bun x wrangler secret put HERMES_LAUNCHER_SECRET
+   ssh <vps> 'sudo grep ^LAUNCHER_SHARED_SECRET= /etc/hermes-control-plane/launcher.env | cut -d= -f2-' \
+     | bun x wrangler secret put LAUNCHER_SHARED_SECRET
    bun run deploy
    ```
-   `HERMES_LAUNCHER_SECRET` MUST be byte-identical on both sides; the Worker uses it to authenticate `POST /sessions` and `POST /sessions/:id/resume` calls to the launcher, and the launcher uses it on the inbound `x-hermes-launcher-secret` header check. A mismatch surfaces as `dispatched: false, reason: "launcher_401"` in webhook responses.
+   `LAUNCHER_SHARED_SECRET` MUST be byte-identical on both sides; the Worker uses it to authenticate `POST /sessions` and `POST /sessions/:id/resume` calls to the launcher, and the launcher uses it on the inbound `x-hermes-launcher-secret` header check. A mismatch surfaces as `dispatched: false, reason: "launcher_401"` in webhook responses.
 6. Wire Hermes Agent → MCP server + skill: edit `~/.hermes/config.yaml` with `mcp_servers.hermes-control-plane.url: http://localhost:8789/mcp` and `skills.external_dirs: [/opt/hermes-control-plane/src/skills]`. Full runbook: [`infra/mcp/README.md`](../mcp/README.md).
 
 You should see:
@@ -91,7 +91,7 @@ curl -fsSL https://raw.githubusercontent.com/duckhoa-uit/hermes-control-plane/ma
   | sudo CONTROL_PLANE_QUICK_TUNNEL=1 \
          E2B_API_KEY=... ZAI_API_KEY=... GITHUB_WRITE_TOKEN=... \
          GITHUB_READ_TOKEN=... \
-         GITHUB_USER_LOGIN=... CONTROL_PLANE_BASE_URL=https://...workers.dev \
+         GITHUB_USER_LOGIN=... WORKER_BASE_URL=https://...workers.dev \
          bash
 ```
 

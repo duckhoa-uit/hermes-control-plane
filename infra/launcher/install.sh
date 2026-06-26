@@ -145,7 +145,7 @@ ask() {
 env_complete() {
   [[ -f "$ENV_FILE" ]] || return 1
   grep -q "REPLACE_ME" "$ENV_FILE" && return 1
-  for k in E2B_API_KEY ZAI_API_KEY GITHUB_WRITE_TOKEN GITHUB_READ_TOKEN GITHUB_USER_LOGIN CONTROL_PLANE_BASE_URL; do
+  for k in E2B_API_KEY ZAI_API_KEY GITHUB_WRITE_TOKEN GITHUB_READ_TOKEN GITHUB_USER_LOGIN WORKER_BASE_URL; do
     grep -qE "^${k}=..*" "$ENV_FILE" || return 1
   done
   return 0
@@ -167,16 +167,16 @@ else
   ask GITHUB_READ_TOKEN   "GITHUB_READ_TOKEN (fine-grained PAT, Contents Read; baked into sandbox .git/config)"
   ask GITHUB_USER_LOGIN  "GITHUB_USER_LOGIN (your GitHub handle)"
   ask GITHUB_USER_EMAIL  "GITHUB_USER_EMAIL (blank → <login>@users.noreply.github.com)"
-  ask CONTROL_PLANE_BASE_URL    "CONTROL_PLANE_BASE_URL (deployed Worker URL)" \
+  ask WORKER_BASE_URL    "WORKER_BASE_URL (deployed Worker URL)" \
                          "https://hermes-control-plane.duckhoa-dev.workers.dev"
   # Pre-generate a 64-char hex default so the prompt offers a sane value
   # the operator can accept by pressing Enter, then mirror onto the Worker
   # secret (instructions at end of install).
   HERMES_LAUNCHER_SECRET_DEFAULT="$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p -c 64)"
-  ask HERMES_LAUNCHER_SECRET    "HERMES_LAUNCHER_SECRET (gates Worker<->launcher; mirror onto Worker)" \
+  ask LAUNCHER_SHARED_SECRET    "LAUNCHER_SHARED_SECRET (gates Worker<->launcher; mirror onto Worker)" \
                          "$HERMES_LAUNCHER_SECRET_DEFAULT"
 
-  for k in E2B_API_KEY ZAI_API_KEY GITHUB_WRITE_TOKEN GITHUB_READ_TOKEN GITHUB_USER_LOGIN CONTROL_PLANE_BASE_URL HERMES_LAUNCHER_SECRET; do
+  for k in E2B_API_KEY ZAI_API_KEY GITHUB_WRITE_TOKEN GITHUB_READ_TOKEN GITHUB_USER_LOGIN WORKER_BASE_URL LAUNCHER_SHARED_SECRET; do
     if [[ -z "${!k}" ]]; then
       die "$k is required; re-run install.sh or edit $ENV_FILE by hand"
     fi
@@ -203,17 +203,17 @@ GITHUB_USER_LOGIN=$GITHUB_USER_LOGIN
 ${GITHUB_USER_EMAIL:+GITHUB_USER_EMAIL=$GITHUB_USER_EMAIL}
 
 # ---- Worker ----
-CONTROL_PLANE_BASE_URL=$CONTROL_PLANE_BASE_URL
+WORKER_BASE_URL=$WORKER_BASE_URL
 
 # ---- Shared secret authenticating Worker<->launcher REST calls ----
 # Mirror this exact value onto the deployed Worker:
-#   echo "$HERMES_LAUNCHER_SECRET" | bunx wrangler secret put HERMES_LAUNCHER_SECRET
-HERMES_LAUNCHER_SECRET=$HERMES_LAUNCHER_SECRET
+#   echo "$LAUNCHER_SHARED_SECRET" | bunx wrangler secret put LAUNCHER_SHARED_SECRET
+LAUNCHER_SHARED_SECRET=$LAUNCHER_SHARED_SECRET
 
 # ---- Launcher tunables (defaults are fine) ----
-CONTROL_PLANE_LAUNCHER_PORT=8789
+LAUNCHER_PORT=8789
 MAX_CONCURRENT_SESSIONS=10
-CONTROL_PLANE_AUTO_PR=1
+AUTO_CREATE_PR=1
 ENVEOF
   chown "$HERMES_USER:$HERMES_USER" "$ENV_FILE"
   chmod 0600 "$ENV_FILE"
@@ -310,9 +310,9 @@ Next steps (Cloudflare cannot be automated):
 5.  Set the Worker secrets (from your dev machine):
       # Tunnel URL (Worker -> launcher dial-back):
       echo "<tunnel-url>" | bun x wrangler secret put CONTROL_PLANE_LAUNCHER_URL
-      # Shared secret — MUST match HERMES_LAUNCHER_SECRET in $ENV_FILE:
-      sudo grep ^HERMES_LAUNCHER_SECRET= $ENV_FILE | cut -d= -f2 \
-        | bun x wrangler secret put HERMES_LAUNCHER_SECRET
+      # Shared secret — MUST match LAUNCHER_SHARED_SECRET in $ENV_FILE:
+      sudo grep ^LAUNCHER_SHARED_SECRET= $ENV_FILE | cut -d= -f2 \
+        | bun x wrangler secret put LAUNCHER_SHARED_SECRET
       bun run deploy
 
 6.  Wire Hermes Agent to the MCP server + skill. Edit ~/.hermes/config.yaml:

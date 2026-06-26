@@ -6,7 +6,7 @@
 //   - Terminal 1: `bunx wrangler dev` (worker on :8787)
 //   - Terminal 2: ngrok tunnel to :8787 (e.g. `ngrok http 8787`)
 //   - Terminal 3: `bun run launcher` with these env vars:
-//       CONTROL_PLANE_BASE_URL=<https ngrok URL>
+//       WORKER_BASE_URL=<https ngrok URL>
 //       E2B_API_KEY, ZAI_API_KEY, GITHUB_WRITE_TOKEN, GITHUB_USER_LOGIN
 //   - Terminal 4: THIS script:
 //       bun run scripts/e2e-full.ts \
@@ -71,14 +71,14 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // ---- HTTP ----
 
-const LAUNCHER_SECRET = process.env.HERMES_LAUNCHER_SECRET || "";
+const LAUNCHER_SECRET = process.env.LAUNCHER_SHARED_SECRET || "";
 
 async function http<T = any>(
   method: "GET" | "POST" | "DELETE",
   url: string,
   body?: unknown,
 ): Promise<{ status: number; body: T; raw: string }> {
-  // Launcher REST routes are gated by HERMES_LAUNCHER_SECRET; always
+  // Launcher REST routes are gated by LAUNCHER_SHARED_SECRET; always
   // send the header so this script works against launchers that enforce
   // auth and noops against ones that don't.
   const isLauncher = url.startsWith(LAUNCHER);

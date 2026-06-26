@@ -70,7 +70,7 @@ describe("provisionSession", () => {
     const cfg = JSON.parse(content as string);
     expect(cfg.CONTROL_PLANE_SESSION_ID).toBe("sess_keys");
     expect(cfg.CONTROL_PLANE_RUNNER_TOKEN).toBe("tok2");
-    expect(cfg.CONTROL_PLANE_WS).toBe("wss://y");
+    expect(cfg.CONTROL_PLANE_WS_URL).toBe("wss://y");
   });
 
   it("returns an idempotent kill()", async () => {

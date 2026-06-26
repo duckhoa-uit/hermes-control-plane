@@ -27,7 +27,7 @@ export interface McpServerWiring {
   launcherBaseUrl: string;
   /** Shared secret sent on `x-hermes-launcher-secret` for launcher REST
    *  calls (POST /sessions, DELETE /sessions/:id). Matches the launcher's
-   *  HERMES_LAUNCHER_SECRET env. */
+   *  LAUNCHER_SHARED_SECRET env. */
   launcherSecret: string;
   /** Logger — pass the launcher's existing log() to keep one log stream. */
   log: (msg: string) => void;

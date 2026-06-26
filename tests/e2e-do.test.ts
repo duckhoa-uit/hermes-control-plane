@@ -1156,7 +1156,7 @@ describe("E2E: Worker + SessionDurableObject", () => {
 
   it("GET /pr-index?key=…: returns the row registered by onPRCreated", async () => {
     const env = makeEnv() as any;
-    env.HERMES_LAUNCHER_SECRET = "launcher-secret";
+    env.LAUNCHER_SHARED_SECRET = "launcher-secret";
     const createResp = await worker.fetch(new Request("https://x/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1188,7 +1188,7 @@ describe("E2E: Worker + SessionDurableObject", () => {
 
   it("GET /pr-index missing key -> 400", async () => {
     const env = makeEnv() as any;
-    env.HERMES_LAUNCHER_SECRET = "launcher-secret";
+    env.LAUNCHER_SHARED_SECRET = "launcher-secret";
     const resp = await worker.fetch(new Request("https://x/pr-index", {
       headers: { "x-hermes-launcher-secret": "launcher-secret" },
     }), env);
@@ -1197,23 +1197,23 @@ describe("E2E: Worker + SessionDurableObject", () => {
 
   it("GET /pr-index unknown PR -> 404", async () => {
     const env = makeEnv() as any;
-    env.HERMES_LAUNCHER_SECRET = "launcher-secret";
+    env.LAUNCHER_SHARED_SECRET = "launcher-secret";
     const resp = await worker.fetch(new Request("https://x/pr-index?key=o/r%23999", {
       headers: { "x-hermes-launcher-secret": "launcher-secret" },
     }), env);
     expect(resp.status).toBe(404);
   });
 
-  it("GET /pr-index without HERMES_LAUNCHER_SECRET set on Worker -> 503", async () => {
+  it("GET /pr-index without LAUNCHER_SHARED_SECRET set on Worker -> 503", async () => {
     const env = makeEnv() as any;
-    delete env.HERMES_LAUNCHER_SECRET;
+    delete env.LAUNCHER_SHARED_SECRET;
     const resp = await worker.fetch(new Request("https://x/pr-index?key=o/r%23999"), env);
     expect(resp.status).toBe(503);
   });
 
   it("GET /pr-index with missing or wrong secret header -> 401", async () => {
     const env = makeEnv() as any;
-    env.HERMES_LAUNCHER_SECRET = "launcher-secret";
+    env.LAUNCHER_SHARED_SECRET = "launcher-secret";
     const noHeader = await worker.fetch(new Request("https://x/pr-index?key=o/r%23999"), env);
     expect(noHeader.status).toBe(401);
     const wrong = await worker.fetch(new Request("https://x/pr-index?key=o/r%23999", {
@@ -1460,7 +1460,7 @@ describe("E2E: Worker + SessionDurableObject", () => {
     env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
     const parentId = await seedPr(env, "o/r#42", "https://github.com/o/r/pull/42");
 
-    env.HERMES_LAUNCHER_SECRET = "test-launcher-secret";
+    env.LAUNCHER_SHARED_SECRET = "test-launcher-secret";
     let launcherCall: any = null;
     let launcherSecretHeader: string | null = null;
     mockLauncher(async (req) => {
@@ -1776,11 +1776,11 @@ describe("E2E: Worker + SessionDurableObject", () => {
     expect(skipped.payload.skipReason).toBe("launcher_not_configured");
   });
 
-  it("HERMES_AUTOFIX_CAP env override is honored", async () => {
+  it("AUTOFIX_CAP_PER_PR env override is honored", async () => {
     const env = makeEnv() as any;
     env.GITHUB_WEBHOOK_SECRET = "supersecret";
     env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
-    env.HERMES_AUTOFIX_CAP = "1";
+    env.AUTOFIX_CAP_PER_PR = "1";
     await seedPr(env, "o/r#51", "https://github.com/o/r/pull/51");
     mockLauncher(async () => new Response(JSON.stringify({ sessionId: "sess-x", sandboxId: "sbx-x" }), { ...({ status: 201 }), headers: { "content-type": "application/json" } }));
     try {

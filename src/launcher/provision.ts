@@ -220,7 +220,7 @@ export async function provisionSession(input: ProvisionInput): Promise<Provision
     const startConfig: Record<string, string> = {
       CONTROL_PLANE_SESSION_ID: input.sessionId,
       CONTROL_PLANE_RUNNER_TOKEN: input.runnerToken,
-      CONTROL_PLANE_WS: input.controlWsUrl,
+      CONTROL_PLANE_WS_URL: input.controlWsUrl,
       ZAI_API_KEY: input.zaiApiKey ?? "",
       // PR #C: GITHUB_WRITE_TOKEN is never put in start.json.
       // The launcher /publish-pr endpoint is the only holder.

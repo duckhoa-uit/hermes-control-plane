@@ -723,13 +723,13 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     if (!this.session) return;
     const sessionId = this.session.id;
     const launcherUrl = this.env.CONTROL_PLANE_LAUNCHER_URL;
-    const launcherSecret = this.env.HERMES_LAUNCHER_SECRET;
+    const launcherSecret = this.env.LAUNCHER_SHARED_SECRET;
     const repoUrl = this.profile?.repoUrl ?? "";
     const baseBranch = this.profile?.defaultBranch ?? "main";
     if (!launcherUrl || !launcherSecret) {
       const reason =
         "publish-via-launcher requires CONTROL_PLANE_LAUNCHER_URL + " +
-        "HERMES_LAUNCHER_SECRET on the worker; one or both are unset.";
+        "LAUNCHER_SHARED_SECRET on the worker; one or both are unset.";
       this.appendEvent("pr.publish.failed", "system", { stage: "config", reason });
       this.transition("failed", reason);
       return;
@@ -1131,7 +1131,7 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
                   method: "POST",
                   headers: {
                     "content-type": "application/json",
-                    "x-hermes-launcher-secret": this.env.HERMES_LAUNCHER_SECRET ?? "",
+                    "x-hermes-launcher-secret": this.env.LAUNCHER_SHARED_SECRET ?? "",
                   },
                 },
               );

@@ -44,10 +44,10 @@ const PR_URL = args.values["pr-url"]!;
 const CASE = args.values.case!;
 const REVIEWER = args.values.reviewer!;
 const SECRET = process.env.GITHUB_WEBHOOK_SECRET || "";
-const LAUNCHER_SECRET = process.env.HERMES_LAUNCHER_SECRET || "";
+const LAUNCHER_SECRET = process.env.LAUNCHER_SHARED_SECRET || "";
 if (!PR_KEY || !PR_URL) throw new Error("--pr-key and --pr-url required");
 if (!SECRET) throw new Error("GITHUB_WEBHOOK_SECRET env required");
-if (!LAUNCHER_SECRET) throw new Error("HERMES_LAUNCHER_SECRET env required (for /pr-index)");
+if (!LAUNCHER_SECRET) throw new Error("LAUNCHER_SHARED_SECRET env required (for /pr-index)");
 
 function parsePrKey(s: string): { owner: string; repo: string; number: number } {
   const m = s.match(/^([^/]+)\/([^#]+)#(\d+)$/);

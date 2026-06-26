@@ -11,7 +11,7 @@
 
 import { provisionSession, killSandbox } from "../src/launcher/provision";
 
-const CONTROL_PLANE_BASE_URL = process.env.CONTROL_PLANE_BASE_URL ?? "http://localhost:8788";
+const WORKER_BASE_URL = process.env.WORKER_BASE_URL ?? "http://localhost:8788";
 const CONTROL_PLANE_LAUNCHER_URL = process.env.CONTROL_PLANE_LAUNCHER_URL;
 const E2B_API_KEY = process.env.E2B_API_KEY;
 const E2B_TEMPLATE = process.env.E2B_TEMPLATE ?? "control-plane-runner";
@@ -41,7 +41,7 @@ async function pollStatus(sessionId: string): Promise<void> {
   const t0 = Date.now();
   const deadline = t0 + 30 * 60 * 1000;
   while (Date.now() < deadline) {
-    const r = await fetch(`${CONTROL_PLANE_BASE_URL}/sessions/${sessionId}`);
+    const r = await fetch(`${WORKER_BASE_URL}/sessions/${sessionId}`);
     if (!r.ok) {
       await new Promise((res) => setTimeout(res, 2000));
       continue;
@@ -59,7 +59,7 @@ async function pollStatus(sessionId: string): Promise<void> {
     if (data.session.status === "review_ready" && !prTriggered) {
       prTriggered = true;
       log(`session review_ready -> triggering create-pr`);
-      const prResp = await fetch(`${CONTROL_PLANE_BASE_URL}/sessions/${sessionId}/create-pr`, {
+      const prResp = await fetch(`${WORKER_BASE_URL}/sessions/${sessionId}/create-pr`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
       });
@@ -121,7 +121,7 @@ async function runDirectMode(): Promise<void> {
   log(`mode=direct`);
   await checkConcurrencyCap();
 
-  const createResp = await fetch(`${CONTROL_PLANE_BASE_URL}/sessions`, {
+  const createResp = await fetch(`${WORKER_BASE_URL}/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ projectId, taskDescription: task, repoUrl }),
@@ -138,7 +138,7 @@ async function runDirectMode(): Promise<void> {
     provisioned = await provisionSession({
       sessionId: session.id,
       runnerToken: session.runnerToken,
-      controlWsUrl: CONTROL_PLANE_BASE_URL,
+      controlWsUrl: WORKER_BASE_URL,
       repoUrl,
       e2bApiKey: E2B_API_KEY,
       e2bTemplate: E2B_TEMPLATE,
@@ -150,7 +150,7 @@ async function runDirectMode(): Promise<void> {
     });
     log(`sandbox=${provisioned.sandboxId} created`);
   } catch (err) {
-    await fetch(`${CONTROL_PLANE_BASE_URL}/sessions/${session.id}/abort`, { method: "POST" });
+    await fetch(`${WORKER_BASE_URL}/sessions/${session.id}/abort`, { method: "POST" });
     log(`provision failed: ${(err as Error).message}; aborted`);
     process.exit(1);
   }

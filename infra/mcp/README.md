@@ -81,7 +81,7 @@ into the chat.
 ```bash
 # Start launcher locally (dummy E2B creds are fine — we only test MCP)
 E2B_API_KEY=dummy ZAI_API_KEY=dummy \
-CONTROL_PLANE_BASE_URL=http://localhost:8787 \
+WORKER_BASE_URL=http://localhost:8787 \
 E2B_TEMPLATE=control-plane-runner bun run launcher &
 
 # initialize

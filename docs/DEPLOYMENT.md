@@ -195,7 +195,7 @@ cadence:
 | `ZAI_API_KEY` | launcher VM env | infra | quarterly | Forwarded into the sandbox; supervisor applies it to opencode via `auth.set` |
 | `GITHUB_WRITE_TOKEN` (fine-grained PAT, Contents + Pull-requests RW) | launcher VM env **only — never enters the sandbox** | infra | every 90 days | P1.1 single-user OAuth. Used by the launcher's `POST /sessions/:id/publish-pr` for `git push` + `POST /pulls`; PR `author` is the real user. |
 | `GITHUB_READ_TOKEN` (fine-grained PAT, Contents Read) | launcher VM env; baked into sandbox `.git/config` | infra | every 90 days | Lets the sandbox `git clone` + `git fetch`. Cannot push (GitHub returns 403). |
-| `CONTROL_PLANE_BASE_URL` | launcher VM env | infra | n/a | the Worker URL; static per env. Used both for launcher→Worker calls and as the WS dial-back URL given to the runner inside the sandbox. |
+| `WORKER_BASE_URL` | launcher VM env | infra | n/a | the Worker URL; static per env. Used both for launcher→Worker calls and as the WS dial-back URL given to the runner inside the sandbox. |
 | Slack signing secret + bot token | Hermes agent infra | Hermes team | yearly | not in this repo |
 
 Secrets that *do* live in the Worker (post-P1.1): the GitHub OAuth
@@ -697,9 +697,9 @@ wrangler secret put E2B_API_KEY              # required; Worker refuses to provi
 wrangler secret put PUBLIC_BASE_URL          # https://hermes.<your-domain>.workers.dev
 wrangler secret put CONTROL_PLANE_LAUNCHER_URL      # https://<your-launcher-host>:8789 (Cloudflare Tunnel URL of the launcher VPS)
 wrangler secret put GITHUB_WEBHOOK_SECRET    # required for PR-lifecycle + auto-amend webhooks (see §13.3)
-wrangler secret put HERMES_LAUNCHER_SECRET   # required; shared secret. Used in BOTH directions: launcher → Worker /pr-index, AND Worker → launcher /sessions+/resume. Must match the launcher's HERMES_LAUNCHER_SECRET env.
+wrangler secret put LAUNCHER_SHARED_SECRET   # required; shared secret. Used in BOTH directions: launcher → Worker /pr-index, AND Worker → launcher /sessions+/resume. Must match the launcher's LAUNCHER_SHARED_SECRET env.
 # Optional — auto-amend cap per PR (default 3). Set as a plain var, not a secret.
-# wrangler.jsonc → vars.HERMES_AUTOFIX_CAP = "5"
+# wrangler.jsonc → vars.AUTOFIX_CAP_PER_PR = "5"
 
 bun run deploy
 ```
@@ -732,12 +732,12 @@ export GITHUB_USER_EMAIL=you@example.com
 
 # Wire to the deployed Worker (one URL serves both launcher→Worker calls
 # and the runner-inside-sandbox WS dial-back)
-export CONTROL_PLANE_BASE_URL=https://hermes.<your-domain>.workers.dev
+export WORKER_BASE_URL=https://hermes.<your-domain>.workers.dev
 
 # Optional
-export CONTROL_PLANE_LAUNCHER_PORT=8789
+export LAUNCHER_PORT=8789
 export MAX_CONCURRENT_SESSIONS=10
-export CONTROL_PLANE_AUTO_PR=1
+export AUTO_CREATE_PR=1
 
 bun run launcher
 ```
@@ -769,7 +769,7 @@ the global PR index DO.
 | `Check runs` | CI conclusion `failure` / `timed_out` auto-spawns an amend session |
 
 Auto-amend has hard limits:
-- Cap of **3** amend sessions per PR (override via `HERMES_AUTOFIX_CAP`)
+- Cap of **3** amend sessions per PR (override via `AUTOFIX_CAP_PER_PR`)
 - Strict single-flight per PR — concurrent triggers wait for the
   in-flight amend to finish (no queue; the rejected trigger ack 200)
 - Dedup by `head_sha` — webhook retries with the same sha are no-op

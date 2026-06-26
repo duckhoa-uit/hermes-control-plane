@@ -25,14 +25,14 @@ interface CloudflareEnv {
   // Maximum number of auto-amend sessions that can spawn against a single
   // open PR before tryClaimAmendSlot starts rejecting with cap_exceeded.
   // Defaults to 3 in the handler.
-  HERMES_AUTOFIX_CAP?: string;
+  AUTOFIX_CAP_PER_PR?: string;
   // Shared secret authenticating launcher → Worker calls on routes that
   // would otherwise leak session ids to anonymous callers (notably
   // GET /pr-index, which maps a public PR URL → sessionId). Set with
-  // `wrangler secret put HERMES_LAUNCHER_SECRET` and mirror it in the
-  // launcher's HERMES_LAUNCHER_SECRET env. When unset, the Worker fails
+  // `wrangler secret put LAUNCHER_SHARED_SECRET` and mirror it in the
+  // launcher's LAUNCHER_SHARED_SECRET env. When unset, the Worker fails
   // closed (503) on the guarded routes.
-  HERMES_LAUNCHER_SECRET?: string;
+  LAUNCHER_SHARED_SECRET?: string;
   // Phase 6 / publish-via-launcher rollout flag (see
   // docs/PLAN-GIT-AUTHORITY-REFACTOR.md). When "true", the DO routes
   // PR publication via the launcher's POST /sessions/:id/publish-pr

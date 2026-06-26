@@ -31,7 +31,7 @@ const SERVE_READY_LINE = "opencode server listening";
 interface StartConfig {
   CONTROL_PLANE_SESSION_ID: string;
   CONTROL_PLANE_RUNNER_TOKEN: string;
-  CONTROL_PLANE_WS: string;
+  CONTROL_PLANE_WS_URL: string;
   // M4: Z.AI key is applied via opencode REST auth.set, not env var.
   ZAI_API_KEY?: string;
   [k: string]: string | undefined;
@@ -117,7 +117,7 @@ async function waitForConfig(): Promise<StartConfig> {
       try {
         const raw = readFileSync(CONFIG_PATH, "utf-8");
         const cfg = JSON.parse(raw) as StartConfig;
-        if (cfg.CONTROL_PLANE_SESSION_ID && cfg.CONTROL_PLANE_RUNNER_TOKEN && cfg.CONTROL_PLANE_WS) {
+        if (cfg.CONTROL_PLANE_SESSION_ID && cfg.CONTROL_PLANE_RUNNER_TOKEN && cfg.CONTROL_PLANE_WS_URL) {
           return cfg;
         }
         log(`config file present but missing required keys; re-polling`);

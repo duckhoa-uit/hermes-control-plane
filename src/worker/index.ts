@@ -173,19 +173,19 @@ export default {
       // Used by the launcher to decide whether send_followup_prompt should
       // re-provision in amend mode against an open PR.
       //
-      // Gated behind HERMES_LAUNCHER_SECRET because the row contains the
+      // Gated behind LAUNCHER_SHARED_SECRET because the row contains the
       // sessionId for a guessable key (the public PR URL), and other
       // session routes trust possession of the session id. Fail closed
       // (503) if the secret is unset on the Worker.
       if (path === "/pr-index" && request.method === "GET") {
-        if (!env.HERMES_LAUNCHER_SECRET) {
+        if (!env.LAUNCHER_SHARED_SECRET) {
           return new Response(
             JSON.stringify({ error: "launcher secret not configured" }),
             { status: 503, headers: CORS_HEADERS },
           );
         }
         const provided = request.headers.get("x-hermes-launcher-secret") ?? "";
-        if (!timingSafeEqualStrings(provided, env.HERMES_LAUNCHER_SECRET)) {
+        if (!timingSafeEqualStrings(provided, env.LAUNCHER_SHARED_SECRET)) {
           return new Response(
             JSON.stringify({ error: "unauthorized" }),
             { status: 401, headers: CORS_HEADERS },
@@ -395,7 +395,7 @@ export default {
         //     sender=github-actions[bot] (senderType="Bot"). If the
         //     workflow ran under a User-typed token (e.g. PAT belonging
         //     to the operator), the same login would re-fire check_run
-        //     on every amend push and burn through HERMES_AUTOFIX_CAP
+        //     on every amend push and burn through AUTOFIX_CAP_PER_PR
         //     within seconds. Reject when sender is a User AND matches
         //     the operator. We do NOT gate purely on senderType because
         //     some setups legitimately use bot accounts other than
@@ -443,7 +443,7 @@ export default {
         }
 
         // Try-claim with the cap from env (default 3).
-        const cap = Number(env.HERMES_AUTOFIX_CAP ?? "3") || 3;
+        const cap = Number(env.AUTOFIX_CAP_PER_PR ?? "3") || 3;
         // Claim under the parent session id as a placeholder — we do not
         // know the spawned session id until the launcher returns. After
         // /sessions succeeds we call transferAmendSlot(newSessionId) to
@@ -512,7 +512,7 @@ Logs / details: ${parsed.detailsUrl}
             method: "POST",
             headers: {
               "content-type": "application/json",
-              "x-hermes-launcher-secret": env.HERMES_LAUNCHER_SECRET ?? "",
+              "x-hermes-launcher-secret": env.LAUNCHER_SHARED_SECRET ?? "",
             },
             body: JSON.stringify({
             parentSessionId: row.sessionId,

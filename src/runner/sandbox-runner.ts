@@ -26,7 +26,7 @@ import { parsePrMetadata, renderPrBody, type PrMetadata } from "./pr-metadata";
 
 const SESSION_ID = process.env.CONTROL_PLANE_SESSION_ID;
 const RUNNER_TOKEN = process.env.CONTROL_PLANE_RUNNER_TOKEN;
-const CONTROL_WS = process.env.CONTROL_PLANE_WS;
+const CONTROL_WS = process.env.CONTROL_PLANE_WS_URL;
 const OPENCODE_BASE_URL = process.env.OPENCODE_BASE_URL || "http://127.0.0.1:4096";
 const MODEL_ID = process.env.OPENCODE_MODEL_ID || "glm-5.2";
 const PROVIDER_ID = process.env.OPENCODE_PROVIDER_ID || "zai-coding-plan";
@@ -53,7 +53,7 @@ const ALLOW_ALL_TOOLS: Record<string, boolean> = {
 };
 
 if (!SESSION_ID || !RUNNER_TOKEN || !CONTROL_WS) {
-  console.error("Missing required env vars (CONTROL_PLANE_SESSION_ID, CONTROL_PLANE_RUNNER_TOKEN, CONTROL_PLANE_WS)");
+  console.error("Missing required env vars (CONTROL_PLANE_SESSION_ID, CONTROL_PLANE_RUNNER_TOKEN, CONTROL_PLANE_WS_URL)");
   process.exit(1);
 }
 
@@ -85,7 +85,7 @@ function refreshWsUrl(): string {
     if (fsExistsSync("/opt/control-plane/start.json")) {
       const cfg = JSON.parse(fsReadFileSync("/opt/control-plane/start.json", "utf-8")) as Record<string, string>;
       const tok = cfg.CONTROL_PLANE_RUNNER_TOKEN;
-      const cws = cfg.CONTROL_PLANE_WS;
+      const cws = cfg.CONTROL_PLANE_WS_URL;
       if (tok && cws) {
         const base = cws.replace(/^http:\/\//, "ws://").replace(/^https:\/\//, "wss://").replace(/\/$/, "");
         return `${base}/sessions/${SESSION_ID}/runner?token=${tok}`;

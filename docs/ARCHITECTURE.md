@@ -59,7 +59,7 @@ Three processes, three responsibilities:
    `tool.call` / `tool.result` events back through the DO; the DO
    broadcasts them to all subscribed clients on `/sessions/:id/stream`.
 8. On `review_ready`, the launcher auto-fires the DO's `/create-pr`
-   (configurable via `CONTROL_PLANE_AUTO_PR`).  The runner does local
+   (configurable via `AUTO_CREATE_PR`).  The runner does local
    prep only — `git add` / `git commit` / `git rev-parse HEAD` plus
    an agent-authored title+body — and emits
    `runner.ready_to_publish` over WS.  The DO calls the launcher's
@@ -213,7 +213,7 @@ GitHub  ┌── pull_request_review.submitted (state=changes_requested) ──
 ```
 
 Constraints (locked PR #25):
-- Cap of 3 amend sessions per PR (env `HERMES_AUTOFIX_CAP`).
+- Cap of 3 amend sessions per PR (env `AUTOFIX_CAP_PER_PR`).
 - Strict single-flight per PR with a 10-minute TTL safety release for
   crashed amends.
 - Self-trigger guard: `reviewerLogin === ownerLogin` is refused.
@@ -320,7 +320,7 @@ touched.
 | Trigger | Action |
 |---|---|
 | Session reaches `completed` / `failed` / `aborted` | sandbox killed by the per-session watcher (`watchSession()` in `server.ts`) |
-| Session reaches `review_ready` | watcher auto-fires `POST /sessions/:id/create-pr` (skip with `CONTROL_PLANE_AUTO_PR=0`) |
+| Session reaches `review_ready` | watcher auto-fires `POST /sessions/:id/create-pr` (skip with `AUTO_CREATE_PR=0`) |
 | `DELETE /sessions/:id` | tracked sandbox killed; E2B scanned for matching `hermes_session_id` (post-restart cleanup); DO `/abort`'d |
 | Launcher boots | startup sweep destroys any tagged sandbox whose session is terminal or unknown |
 | Watcher hits the 24-h hard deadline | force-kill (runaway-job backstop; paused sandboxes are free) |
