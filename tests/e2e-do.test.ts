@@ -1068,6 +1068,90 @@ describe("E2E: Worker + SessionDurableObject", () => {
     expect(prIndexRows.get("o/r#11")?.status).toBe("closed");
   });
 
+  it("POST /webhooks/github: pull_request.reopened on a closed-unmerged PR flips index status back to open", async () => {
+    const env = makeEnv() as any;
+    env.GITHUB_WEBHOOK_SECRET = "supersecret";
+
+    // Seed a session with a registered PR.
+    const createResp = await worker.fetch(new Request("https://x/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId: "p1", taskDescription: "t", profile: PROFILE }),
+    }), env);
+    const { id, runnerToken } = await createResp.json() as any;
+    const wsUrl = `https://x/sessions/${id}/runner?token=${runnerToken}`;
+    const wsResp = await worker.fetch(new Request(wsUrl, { headers: { Upgrade: "websocket" } }), env);
+    const ws = (wsResp as any).webSocket;
+    await new Promise(r => setTimeout(r, 5));
+    ws.send(JSON.stringify({ type: "runner.complete", sessionId: id, payload: { summary: "ok", changedFiles: [] } }));
+    await new Promise(r => setTimeout(r, 10));
+    await worker.fetch(new Request(`https://x/sessions/${id}/create-pr`, { method: "POST" }), env);
+    await new Promise(r => setTimeout(r, 10));
+    ws.send(JSON.stringify({
+      type: "runner.event",
+      sessionId: id,
+      payload: {
+        eventType: "pr.created",
+        eventPayload: { url: "https://github.com/o/r/pull/19", ownerLogin: "alice" },
+      },
+    }));
+    await new Promise(r => setTimeout(r, 10));
+
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey("raw", enc.encode("supersecret"),
+      { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const sign = async (body: string) => {
+      const buf = await crypto.subtle.sign("HMAC", key, enc.encode(body));
+      return "sha256=" + Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+    };
+
+    // 1. closed-unmerged -> status="closed", row retained.
+    const closedBody = JSON.stringify({
+      action: "closed", number: 19,
+      pull_request: {
+        number: 19, html_url: "https://github.com/o/r/pull/19",
+        state: "closed", merged: false, merged_at: null,
+        base: { ref: "main" }, head: { ref: "hermes/x" }, user: { login: "alice" },
+      },
+      repository: { full_name: "o/r" }, sender: { login: "alice" },
+    });
+    const r1 = await worker.fetch(new Request("https://x/webhooks/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "pull_request",
+        "x-github-delivery": "del-reopen-close",
+        "x-hub-signature-256": await sign(closedBody),
+      },
+      body: closedBody,
+    }), env);
+    expect(r1.status).toBe(200);
+    expect(prIndexRows.get("o/r#19")?.status).toBe("closed");
+
+    // 2. reopened -> status flips back to "open".
+    const reopenBody = JSON.stringify({
+      action: "reopened", number: 19,
+      pull_request: {
+        number: 19, html_url: "https://github.com/o/r/pull/19",
+        state: "open", merged: false, merged_at: null,
+        base: { ref: "main" }, head: { ref: "hermes/x" }, user: { login: "alice" },
+      },
+      repository: { full_name: "o/r" }, sender: { login: "alice" },
+    });
+    const r2 = await worker.fetch(new Request("https://x/webhooks/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "pull_request",
+        "x-github-delivery": "del-reopen-open",
+        "x-hub-signature-256": await sign(reopenBody),
+      },
+      body: reopenBody,
+    }), env);
+    expect(r2.status).toBe(200);
+    const j2 = await r2.json();
+    expect(j2).toMatchObject({ ok: true, kind: "pull_request", archived: false });
+    expect(prIndexRows.get("o/r#19")?.status).toBe("open");
+  });
+
   // ---- Worker GET /pr-index ----
 
   it("GET /pr-index?key=…: returns the row registered by onPRCreated", async () => {

@@ -286,15 +286,24 @@ export default {
 
         // Branch on the parsed kind.
         if (parsed.kind === "pull_request") {
-          // Lifecycle actions we care about. GitHub also fires `opened`,
-          // `reopened`, `edited`, `synchronize`, `ready_for_review`, etc.
-          // for the `pull_request` event — none of those map onto a Hermes
+          // Lifecycle actions we care about: `closed` (terminal — archive
+          // session or just mark the row closed) and `reopened` (revive the
+          // index row so amend re-provision works again). GitHub also fires
+          // `opened`, `edited`, `synchronize`, `ready_for_review`, etc. for
+          // the `pull_request` event — none of those map onto a Hermes
           // lifecycle transition, so we ack the delivery (the dedup ring
           // already recorded it) and skip the SESSION_DO dispatch. Without
           // this guard, every `synchronize` from the runner's own
           // `git push` would emit a spurious `pr.closed` (merged=false).
           let archived = false;
-          if (parsed.action === "closed") {
+          if (parsed.action === "reopened") {
+            // Closed-unmerged PRs keep their index row with status="closed"
+            // so a subsequent reopen lands back on the same parent session.
+            // Flip the status back to "open" so send_followup_prompt and
+            // the auto-amend webhook dispatcher stop rejecting on
+            // status!=="open".
+            await prIndex.markStatus(parsed.prKey, "open");
+          } else if (parsed.action === "closed") {
             await prIndex.markStatus(parsed.prKey, parsed.merged ? "merged" : "closed");
             try {
               const sessId = env.SESSION_DO.idFromString(row.sessionId);
