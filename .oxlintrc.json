@@ -1,0 +1,53 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "import", "promise"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn",
+    "perf": "warn"
+  },
+  "rules": {
+    "no-unused-vars": [
+      "warn",
+      {
+        "argsIgnorePattern": "^_",
+        "varsIgnorePattern": "^_",
+        "caughtErrorsIgnorePattern": "^_"
+      }
+    ],
+    "typescript/no-unused-vars": [
+      "warn",
+      {
+        "argsIgnorePattern": "^_",
+        "varsIgnorePattern": "^_",
+        "caughtErrorsIgnorePattern": "^_"
+      }
+    ],
+    "typescript/consistent-type-imports": "warn",
+    "typescript/no-explicit-any": "off",
+    "typescript/no-non-null-assertion": "off",
+    "eqeqeq": ["error", "smart"],
+    "no-empty": ["warn", { "allowEmptyCatch": true }],
+    "no-fallthrough": "error",
+    "no-constant-condition": ["error", { "checkLoops": false }],
+    "promise/no-return-wrap": "error",
+    "import/no-duplicates": "warn"
+  },
+  "ignorePatterns": [
+    "node_modules",
+    "dist",
+    ".wrangler",
+    "**/*.d.ts",
+    "tests/_shims/**",
+    "src/runner/sandbox-runner.ts.txt"
+  ],
+  "overrides": [
+    {
+      "files": ["tests/**/*.ts"],
+      "rules": {
+        "typescript/no-unused-vars": "off",
+        "no-unused-vars": "off"
+      }
+    }
+  ]
+}

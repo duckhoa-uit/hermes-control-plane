@@ -31,6 +31,8 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      - run: bun run lint
+
       - run: bun run typecheck
 
       - run: bunx wrangler deploy
