@@ -140,3 +140,113 @@ describe("PrIndexDurableObject", () => {
     expect(await pr.lookup("o/r#1")).toBeNull();
   });
 });
+describe("PrIndexDurableObject — auto-amend single-flight + cap", () => {
+  let pr: PrIndexDurableObject;
+  beforeEach(() => { pr = newDo(); });
+
+  it("tryClaimAmendSlot unknown PR -> unknown_pr", async () => {
+    const r = await pr.tryClaimAmendSlot("o/r#1", "sha1", "sess-A", 3);
+    expect(r).toEqual({ ok: false, reason: "unknown_pr" });
+  });
+
+  it("tryClaimAmendSlot first claim succeeds, increments autofixCount, records sha + inflight", async () => {
+    await pr.register("o/r#1", "sess-parent", "alice");
+    const r = await pr.tryClaimAmendSlot("o/r#1", "sha1", "sess-A", 3);
+    expect(r).toEqual({ ok: true, autofixCount: 1 });
+    const row = (await pr.lookup("o/r#1"))!;
+    expect(row.autofixCount).toBe(1);
+    expect(row.lastAmendedSha).toBe("sha1");
+    expect(row.inflightSessionId).toBe("sess-A");
+    expect(row.inflightAmendStartedAt).toBeGreaterThan(0);
+  });
+
+  it("tryClaimAmendSlot strict single-flight: second claim while first inflight -> inflight", async () => {
+    await pr.register("o/r#1", "sess-parent", "alice");
+    const r1 = await pr.tryClaimAmendSlot("o/r#1", "sha1", "sess-A", 3);
+    expect(r1.ok).toBe(true);
+    const r2 = await pr.tryClaimAmendSlot("o/r#1", "sha2", "sess-B", 3);
+    expect(r2.ok).toBe(false);
+    if (!r2.ok) expect(r2.reason).toBe("inflight");
+  });
+
+  it("releaseAmendSlot clears inflight; next tryClaim succeeds", async () => {
+    await pr.register("o/r#1", "sess-parent", "alice");
+    const r1 = await pr.tryClaimAmendSlot("o/r#1", "sha1", "sess-A", 3);
+    expect(r1.ok).toBe(true);
+    await pr.releaseAmendSlot("o/r#1", "sess-A");
+    const row = (await pr.lookup("o/r#1"))!;
+    expect(row.inflightSessionId).toBeUndefined();
+    expect(row.inflightAmendStartedAt).toBeUndefined();
+    const r2 = await pr.tryClaimAmendSlot("o/r#1", "sha2", "sess-B", 3);
+    expect(r2.ok).toBe(true);
+    if (r2.ok) expect(r2.autofixCount).toBe(2);
+  });
+
+  it("releaseAmendSlot is idempotent + only releases when sessionId matches", async () => {
+    await pr.register("o/r#1", "sess-parent", "alice");
+    await pr.tryClaimAmendSlot("o/r#1", "sha1", "sess-A", 3);
+    // Wrong session id: must NOT clear the slot.
+    await pr.releaseAmendSlot("o/r#1", "sess-X-stale");
+    const row = (await pr.lookup("o/r#1"))!;
+    expect(row.inflightSessionId).toBe("sess-A");
+    // Right session id: clears.
+    await pr.releaseAmendSlot("o/r#1", "sess-A");
+    expect((await pr.lookup("o/r#1"))!.inflightSessionId).toBeUndefined();
+    // Second release call is a no-op.
+    await pr.releaseAmendSlot("o/r#1", "sess-A");
+    expect((await pr.lookup("o/r#1"))!.inflightSessionId).toBeUndefined();
+  });
+
+  it("tryClaimAmendSlot duplicate_sha: same sha as last amend -> rejected", async () => {
+    await pr.register("o/r#1", "sess-parent", "alice");
+    const r1 = await pr.tryClaimAmendSlot("o/r#1", "sha-A", "sess-A", 3);
+    expect(r1.ok).toBe(true);
+    await pr.releaseAmendSlot("o/r#1", "sess-A");
+    const r2 = await pr.tryClaimAmendSlot("o/r#1", "sha-A", "sess-B", 3);
+    expect(r2.ok).toBe(false);
+    if (!r2.ok) expect(r2.reason).toBe("duplicate_sha");
+  });
+
+  it("tryClaimAmendSlot cap_exceeded: refuses past the cap", async () => {
+    await pr.register("o/r#1", "sess-parent", "alice");
+    for (let i = 0; i < 3; i++) {
+      const r = await pr.tryClaimAmendSlot("o/r#1", `sha-${i}`, `sess-${i}`, 3);
+      expect(r.ok).toBe(true);
+      await pr.releaseAmendSlot("o/r#1", `sess-${i}`);
+    }
+    const blocked = await pr.tryClaimAmendSlot("o/r#1", "sha-cap+1", "sess-X", 3);
+    expect(blocked.ok).toBe(false);
+    if (!blocked.ok) expect(blocked.reason).toBe("cap_exceeded");
+  });
+
+  it("tryClaimAmendSlot refuses when PR is no longer open (closed/merged)", async () => {
+    await pr.register("o/r#1", "sess-parent", "alice");
+    await pr.markStatus("o/r#1", "closed");
+    const r = await pr.tryClaimAmendSlot("o/r#1", "sha-X", "sess-X", 3);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("cap_exceeded");
+  });
+
+  it("tryClaimAmendSlot auto-recovers from a stale inflight claim (TTL elapsed)", async () => {
+    await pr.register("o/r#1", "sess-parent", "alice");
+    await pr.tryClaimAmendSlot("o/r#1", "sha-A", "sess-A", 3);
+    // Manually rewrite the row to simulate a stale claim (older than TTL).
+    const row = (await pr.lookup("o/r#1"))!;
+    row.inflightAmendStartedAt = Date.now() - (10 * 60 * 1000 + 1000);
+    // Reach into the fake storage to patch.
+    (pr as any).ctx.storage.kv.set("pr:o/r#1", row);
+    const r = await pr.tryClaimAmendSlot("o/r#1", "sha-B", "sess-B", 3);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.autofixCount).toBe(2);
+  });
+
+  it("register preserves new auto-amend fields across a re-register", async () => {
+    await pr.register("o/r#1", "sess-parent", "alice");
+    await pr.tryClaimAmendSlot("o/r#1", "sha-A", "sess-A", 3);
+    // Re-register (e.g. an amend session emits pr.updated -> onPRCreated).
+    await pr.register("o/r#1", "sess-A", "alice");
+    const row = (await pr.lookup("o/r#1"))!;
+    expect(row.autofixCount).toBe(1);
+    expect(row.lastAmendedSha).toBe("sha-A");
+  });
+});

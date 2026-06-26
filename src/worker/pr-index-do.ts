@@ -30,10 +30,29 @@ export interface PrIndexRow {
    *  this PR. Bounded ring (max ~16) so duplicate webhook deliveries
    *  (GitHub retries) become no-ops. Populated by the webhook handler. */
   recentDeliveries?: string[];
+  /** Last commit sha for which the webhook handler successfully spawned
+   *  an auto-amend session. Used to dedup: if a `pull_request_review.
+   *  submitted` arrives twice for the same head sha (e.g. webhook retry
+   *  or the user re-submitting the same review) we skip. */
+  lastAmendedSha?: string;
+  /** Wall-clock ms set when tryClaimAmendSlot succeeds; cleared by
+   *  releaseAmendSlot on session terminal. Strict single-flight per
+   *  PR: while this is set, further tryClaim calls return `inflight`.
+   *  A stale claim older than INFLIGHT_TTL_MS (10 min) is auto-released
+   *  by the next tryClaim so a crashed worker can't deadlock the PR. */
+  inflightAmendStartedAt?: number;
+  /** Session id of the in-flight amend; used by webhook handler to log
+   *  what is blocking. */
+  inflightSessionId?: string;
 }
 
 const KEY_PREFIX = "pr:";
 const DELIVERY_RING_MAX = 16;
+/** Single-flight amend slot TTL. A crashed/forgotten claim auto-expires
+ *  so a single bad run cannot lock the PR forever. 10 min is comfortably
+ *  larger than a typical Hermes amend turn (~30 s) and smaller than the
+ *  launcher's 15-min sandbox idle timeout. */
+const INFLIGHT_TTL_MS = 10 * 60 * 1000;
 
 function rowKey(prKey: string): string {
   return `${KEY_PREFIX}${prKey}`;
@@ -55,6 +74,9 @@ export class PrIndexDurableObject extends DurableObject<CloudflareEnv> {
       autofixCount: existing?.autofixCount ?? 0,
       lastUpdated: Date.now(),
       recentDeliveries: existing?.recentDeliveries,
+      lastAmendedSha: existing?.lastAmendedSha,
+      inflightAmendStartedAt: existing?.inflightAmendStartedAt,
+      inflightSessionId: existing?.inflightSessionId,
     };
     await this.ctx.storage.put(rowKey(prKey), row);
     return row;
@@ -107,6 +129,69 @@ export class PrIndexDurableObject extends DurableObject<CloudflareEnv> {
 
   async unregister(prKey: string): Promise<boolean> {
     return await this.ctx.storage.delete(rowKey(prKey));
+  }
+
+  /** Strict single-flight auto-amend claim. Returns `ok: true` when the
+   *  caller may spawn a fresh amend session for this PR, otherwise a
+   *  reason explaining why the claim was refused. On success, callers
+   *  MUST call releaseAmendSlot when the spawned session reaches a
+   *  terminal state; otherwise the slot times out after INFLIGHT_TTL_MS.
+   *
+   *  Reasons:
+   *    - "unknown_pr" — no row for this prKey.
+   *    - "cap_exceeded" — autofixCount has reached the configured cap.
+   *    - "duplicate_sha" — we already amended this head sha (typically
+   *       a webhook retry or a no-op re-submitted review).
+   *    - "inflight" — another amend is currently running for this PR.
+   *
+   *  The check + mutation is single-trip: SQLite-backed DOs serialize
+   *  writes per object, and this is the singleton PR_INDEX_DO, so two
+   *  concurrent webhook handlers cannot both succeed. */
+  async tryClaimAmendSlot(
+    prKey: string,
+    headSha: string,
+    sessionId: string,
+    cap: number,
+  ): Promise<
+    | { ok: true; autofixCount: number }
+    | { ok: false; reason: "unknown_pr" | "cap_exceeded" | "duplicate_sha" | "inflight"; row?: PrIndexRow }
+  > {
+    const row = await this.ctx.storage.get<PrIndexRow>(rowKey(prKey));
+    if (!row) return { ok: false, reason: "unknown_pr" };
+    if (row.status !== "open") return { ok: false, reason: "cap_exceeded", row };
+    if (row.autofixCount >= cap) return { ok: false, reason: "cap_exceeded", row };
+    if (row.lastAmendedSha === headSha) return { ok: false, reason: "duplicate_sha", row };
+
+    // Inflight guard with TTL — a crashed amend would otherwise lock
+    // the PR forever.
+    const now = Date.now();
+    if (
+      row.inflightAmendStartedAt &&
+      now - row.inflightAmendStartedAt < INFLIGHT_TTL_MS
+    ) {
+      return { ok: false, reason: "inflight", row };
+    }
+
+    row.autofixCount += 1;
+    row.lastAmendedSha = headSha;
+    row.inflightAmendStartedAt = now;
+    row.inflightSessionId = sessionId;
+    row.lastUpdated = now;
+    await this.ctx.storage.put(rowKey(prKey), row);
+    return { ok: true, autofixCount: row.autofixCount };
+  }
+
+  /** Release the single-flight slot. Called when the auto-amend session
+   *  reaches a terminal state (success or failure). Idempotent — calling
+   *  twice or against a row that no longer holds the slot is a no-op. */
+  async releaseAmendSlot(prKey: string, sessionId: string): Promise<void> {
+    const row = await this.ctx.storage.get<PrIndexRow>(rowKey(prKey));
+    if (!row) return;
+    if (row.inflightSessionId && row.inflightSessionId !== sessionId) return;
+    row.inflightAmendStartedAt = undefined;
+    row.inflightSessionId = undefined;
+    row.lastUpdated = Date.now();
+    await this.ctx.storage.put(rowKey(prKey), row);
   }
 }
 
