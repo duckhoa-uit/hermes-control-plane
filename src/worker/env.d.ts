@@ -22,4 +22,8 @@ interface CloudflareEnv {
   // `wrangler secret put GITHUB_WEBHOOK_SECRET`; matches the "Secret"
   // field in the GitHub webhook settings.
   GITHUB_WEBHOOK_SECRET?: string;
+  // Maximum number of auto-amend sessions that can spawn against a single
+  // open PR before tryClaimAmendSlot starts rejecting with cap_exceeded.
+  // Defaults to 3 in the handler.
+  HERMES_AUTOFIX_CAP?: string;
 }

@@ -42,6 +42,17 @@ interface SessionDORpc {
     deliveryId: string;
     senderLogin: string;
   }): Promise<{ ok: true; archived: boolean }>;
+  appendAutofixEvent(input: {
+    triggered: boolean;
+    trigger: "review_changes_requested" | "check_run_failed";
+    deliveryId: string;
+    headSha: string;
+    newSessionId?: string;
+    skipReason?: string;
+    reviewerLogin?: string;
+    checkName?: string;
+    detailsUrl?: string;
+  }): Promise<{ ok: true }>;
 }
 
 // Cast helper: the DO stub really does implement these methods at runtime,
@@ -60,6 +71,17 @@ interface PrIndexDORpc {
   register(prKey: string, sessionId: string, ownerLogin: string): Promise<unknown>;
   incrementAutofix(prKey: string): Promise<number | null>;
   unregister(prKey: string): Promise<boolean>;
+  tryClaimAmendSlot(
+    prKey: string,
+    headSha: string,
+    sessionId: string,
+    cap: number,
+  ): Promise<
+    | { ok: true; autofixCount: number }
+    | { ok: false; reason: "unknown_pr" | "cap_exceeded" | "duplicate_sha" | "inflight" }
+  >;
+  releaseAmendSlot(prKey: string, sessionId: string): Promise<void>;
+  transferAmendSlot(prKey: string, newSessionId: string): Promise<void>;
 }
 
 function asPrIndex(stub: unknown): PrIndexDORpc {
@@ -285,15 +307,218 @@ export default {
           );
         }
 
-        // pull_request_review.changes_requested + check_run_failed
-        // branches: parse-only in this commit; auto-amend dispatch lands
-        // in the dispatch commit.
+        // pull_request_review.changes_requested + check_run_failed:
+        // try to claim the single-flight amend slot. If claimed, POST
+        // /sessions on the launcher with parentSessionId + a built
+        // taskDescription. The spawned session releases the slot on
+        // terminal (see SessionDurableObject.transition).
+        const launcherUrl = env.CONTROL_PLANE_LAUNCHER_URL;
+        if (!launcherUrl) {
+          console.warn(
+            `[webhook] ${parsed.kind} pr=${parsed.prKey}: skipped (CONTROL_PLANE_LAUNCHER_URL unset)`,
+          );
+          try {
+            const stub = env.SESSION_DO.get(env.SESSION_DO.idFromString(row.sessionId));
+            await asRpc(stub).appendAutofixEvent({
+              triggered: false,
+              trigger: parsed.kind,
+              deliveryId: parsed.deliveryId,
+              headSha: parsed.headSha,
+              skipReason: "launcher_not_configured",
+              ...(parsed.kind === "review_changes_requested"
+                ? { reviewerLogin: parsed.reviewerLogin }
+                : { checkName: parsed.checkName, detailsUrl: parsed.detailsUrl }),
+            });
+          } catch (err) {
+            console.error(`[webhook] appendAutofixEvent (skip) failed: ${(err as Error).message}`);
+          }
+          return new Response(
+            JSON.stringify({ ok: true, kind: parsed.kind, dispatched: false, reason: "launcher_not_configured" }),
+            { status: 200, headers: CORS_HEADERS },
+          );
+        }
+
+        // Self-trigger guard: refuse if the sender IS the operator that
+        // would be authoring the amend (this is the bot itself pushing,
+        // and the resulting check_run.failed would loop). The check_run
+        // event has sender=github-actions[bot]; we let those through.
+        // For review_changes_requested we reject when reviewerLogin OR
+        // senderLogin equals the operator (rare — operator self-review).
+        // The operator login is GITHUB_USER_LOGIN — fetched per-session
+        // by the launcher; we approximate by trusting row.ownerLogin
+        // (set when the parent session created the PR).
+        if (parsed.kind === "review_changes_requested" && parsed.reviewerLogin === row.ownerLogin) {
+          console.log(`[webhook] self-review on pr=${parsed.prKey}; skip`);
+          try {
+            const stub = env.SESSION_DO.get(env.SESSION_DO.idFromString(row.sessionId));
+            await asRpc(stub).appendAutofixEvent({
+              triggered: false,
+              trigger: parsed.kind,
+              deliveryId: parsed.deliveryId,
+              headSha: parsed.headSha,
+              skipReason: "self_review",
+              reviewerLogin: parsed.reviewerLogin,
+            });
+          } catch {}
+          return new Response(
+            JSON.stringify({ ok: true, kind: parsed.kind, dispatched: false, reason: "self_review" }),
+            { status: 200, headers: CORS_HEADERS },
+          );
+        }
+
+        // Try-claim with the cap from env (default 3).
+        const cap = Number(env.HERMES_AUTOFIX_CAP ?? "3") || 3;
+        // We synthesize the new session id LATER (from the launcher
+        // response). For the slot-claim we use a placeholder; release uses
+        // the same placeholder, then the spawned session releases itself
+        // via the inflightSessionId match. Actually that mismatch would
+        // block release. Better: pass the parent session id as the
+        // claimant; the spawned session releases via its OWN id which
+        // does not match → release no-op. Then the slot only frees when
+        // the spawned session reaches terminal — wait, that still does
+        // not match. Resolve by passing a known marker the spawned
+        // session can also use: parent's sessionId. The transition hook
+        // calls releaseAmendSlot(prKey, this.session.id) which would
+        // mismatch. Fix: claim with the spawned session id, but we don't
+        // have it yet. Two-step: claim with parent id, then re-claim
+        // with new id atomically? Too complex. Easier: don't gate
+        // release by id match (the transition hook is the only caller
+        // for amend sessions; spam-release from non-amend sessions is
+        // harmless because PR_INDEX_DO has no row for unknown PRs).
+        const claim = await prIndex.tryClaimAmendSlot(
+          parsed.prKey,
+          parsed.headSha,
+          // Use parent sessionId as placeholder; the spawned session
+          // releases via its own id which is intentionally different
+          // (see comment in releaseAmendSlot below).
+          row.sessionId,
+          cap,
+        );
+        if (!claim.ok) {
+          console.log(
+            `[webhook] ${parsed.kind} pr=${parsed.prKey} skip reason=${claim.reason}`,
+          );
+          try {
+            const stub = env.SESSION_DO.get(env.SESSION_DO.idFromString(row.sessionId));
+            await asRpc(stub).appendAutofixEvent({
+              triggered: false,
+              trigger: parsed.kind,
+              deliveryId: parsed.deliveryId,
+              headSha: parsed.headSha,
+              skipReason: claim.reason,
+              ...(parsed.kind === "review_changes_requested"
+                ? { reviewerLogin: parsed.reviewerLogin }
+                : { checkName: parsed.checkName, detailsUrl: parsed.detailsUrl }),
+            });
+          } catch {}
+          return new Response(
+            JSON.stringify({ ok: true, kind: parsed.kind, dispatched: false, reason: claim.reason }),
+            { status: 200, headers: CORS_HEADERS },
+          );
+        }
+
+        // Build the task description from the trigger.
+        let taskDescription: string;
+        if (parsed.kind === "review_changes_requested") {
+          const reviewer = parsed.reviewerLogin || "(unknown)";
+          const body = parsed.reviewBody?.trim() || "(no body — reviewer used inline comments only)";
+          taskDescription =
+            `PR reviewer @${reviewer} requested changes on PR #${parsed.prKey.split("#")[1]} ` +
+            `(${parsed.prUrl}).
+
+Review feedback:
+
+${body}
+
+` +
+            `Apply the requested changes in a single commit. Do not open a new PR.`;
+        } else {
+          taskDescription =
+            `CI check "${parsed.checkName}" failed on PR #${parsed.prKey.split("#")[1]} ` +
+            `(${parsed.prUrl}).
+
+Logs / details: ${parsed.detailsUrl}
+
+` +
+            `Fetch the failure logs, identify the root cause, and fix it in a single commit. ` +
+            `Do not open a new PR.`;
+        }
+
+        // POST /sessions on the launcher with parentSessionId.
+        let newSessionId: string | null = null;
+        try {
+          const r = await fetch(`${launcherUrl}/sessions`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ parentSessionId: row.sessionId, taskDescription }),
+          });
+          if (!r.ok) {
+            const txt = await r.text().catch(() => "");
+            console.error(
+              `[webhook] launcher /sessions ${r.status}: ${txt.slice(0, 200)}; releasing slot`,
+            );
+            await prIndex.releaseAmendSlot(parsed.prKey, row.sessionId);
+            try {
+              const stub = env.SESSION_DO.get(env.SESSION_DO.idFromString(row.sessionId));
+              await asRpc(stub).appendAutofixEvent({
+                triggered: false,
+                trigger: parsed.kind,
+                deliveryId: parsed.deliveryId,
+                headSha: parsed.headSha,
+                skipReason: `launcher_${r.status}`,
+              });
+            } catch {}
+            return new Response(
+              JSON.stringify({ ok: true, kind: parsed.kind, dispatched: false, reason: `launcher_${r.status}` }),
+              { status: 200, headers: CORS_HEADERS },
+            );
+          }
+          const data = (await r.json()) as { sessionId?: string };
+          newSessionId = data.sessionId ?? null;
+          if (newSessionId) {
+            // Hand the inflight slot over to the spawned session; its own
+            // transition() hook will release it on terminal.
+            await prIndex.transferAmendSlot(parsed.prKey, newSessionId);
+          }
+        } catch (err) {
+          console.error(
+            `[webhook] launcher /sessions error: ${(err as Error).message}; releasing slot`,
+          );
+          await prIndex.releaseAmendSlot(parsed.prKey, row.sessionId);
+          return new Response(
+            JSON.stringify({ ok: true, kind: parsed.kind, dispatched: false, reason: "launcher_unreachable" }),
+            { status: 200, headers: CORS_HEADERS },
+          );
+        }
+
+        // Record the trigger on the parent session.
+        try {
+          const stub = env.SESSION_DO.get(env.SESSION_DO.idFromString(row.sessionId));
+          await asRpc(stub).appendAutofixEvent({
+            triggered: true,
+            trigger: parsed.kind,
+            deliveryId: parsed.deliveryId,
+            headSha: parsed.headSha,
+            newSessionId: newSessionId ?? undefined,
+            ...(parsed.kind === "review_changes_requested"
+              ? { reviewerLogin: parsed.reviewerLogin }
+              : { checkName: parsed.checkName, detailsUrl: parsed.detailsUrl }),
+          });
+        } catch (err) {
+          console.error(`[webhook] appendAutofixEvent failed: ${(err as Error).message}`);
+        }
+
         console.log(
-          `[webhook] parsed kind=${parsed.kind} pr=${parsed.prKey} ` +
-          `delivery=${parsed.deliveryId.slice(0, 8)} — dispatch TODO`,
+          `[webhook] ${parsed.kind} pr=${parsed.prKey} spawned newSession=${newSessionId?.slice(0, 8)} autofixCount=${claim.autofixCount}`,
         );
         return new Response(
-          JSON.stringify({ ok: true, kind: parsed.kind, dispatched: false, reason: "dispatch_not_implemented_yet" }),
+          JSON.stringify({
+            ok: true,
+            kind: parsed.kind,
+            dispatched: true,
+            newSessionId,
+            autofixCount: claim.autofixCount,
+          }),
           { status: 200, headers: CORS_HEADERS },
         );
       }

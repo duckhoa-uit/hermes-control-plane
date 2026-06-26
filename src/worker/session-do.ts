@@ -186,6 +186,30 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     // forget via waitUntil so transition() stays sync for the existing
     // callers.
     this.ctx.waitUntil(this.persist());
+
+    // Release the PR_INDEX_DO single-flight slot if this is an auto-amend
+    // session reaching a terminal state. Idempotent + only releases when
+    // the inflight sessionId matches, so non-amend sessions are a no-op
+    // (cheap RPC call; could be skipped, but skipping requires knowing
+    // whether we are an amend session which we do not track on Session).
+    if (
+      (to === "completed" || to === "failed" || to === "aborted" || to === "archived") &&
+      this.artifacts?.prUrl
+    ) {
+      const sessionId = this.session.id;
+      const prUrl = this.artifacts.prUrl;
+      this.ctx.waitUntil((async () => {
+        try {
+          const prKey = prKeyFromUrl(prUrl);
+          const stub = getPrIndexStub(this.env);
+          await (stub as unknown as {
+            releaseAmendSlot(k: string, s: string): Promise<void>;
+          }).releaseAmendSlot(prKey, sessionId);
+        } catch (err) {
+          console.error(`[DO] releaseAmendSlot failed: ${(err as Error).message}`);
+        }
+      })());
+    }
   }
 
   // ---- Event log ----
@@ -735,6 +759,41 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
   //   completed + pr.closed   -> emit pr.closed, stay completed
   //   other     + pr.merged   -> emit only (no transition)
   //   other     + pr.closed   -> emit only
+  /** Append a pr.autofix.triggered (or pr.autofix.skipped) event to the
+   *  parent session's event log so the user sees the cause-and-effect in
+   *  one place. Called by the webhook handler after a successful (or
+   *  rejected) tryClaimAmendSlot. Idempotent on (deliveryId, trigger):
+   *  the index DO dedup ring already covers webhook-level retries. */
+  async appendAutofixEvent(input: {
+    triggered: boolean;
+    trigger: "review_changes_requested" | "check_run_failed";
+    deliveryId: string;
+    headSha: string;
+    newSessionId?: string;          // present when triggered === true
+    skipReason?: string;            // present when triggered === false
+    reviewerLogin?: string;         // review trigger
+    checkName?: string;             // check_run trigger
+    detailsUrl?: string;            // check_run trigger
+  }): Promise<{ ok: true }> {
+    await this.ensureRestored();
+    if (!this.session) return { ok: true };
+    this.appendEvent(
+      input.triggered ? "pr.autofix.triggered" : "pr.autofix.skipped",
+      "system",
+      {
+        trigger: input.trigger,
+        deliveryId: input.deliveryId,
+        headSha: input.headSha,
+        newSessionId: input.newSessionId,
+        skipReason: input.skipReason,
+        reviewerLogin: input.reviewerLogin,
+        checkName: input.checkName,
+        detailsUrl: input.detailsUrl,
+      },
+    );
+    return { ok: true };
+  }
+
   async ingestPrLifecycleEvent(input: {
     merged: boolean;
     prUrl: string;

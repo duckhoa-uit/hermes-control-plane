@@ -181,9 +181,25 @@ export class PrIndexDurableObject extends DurableObject<CloudflareEnv> {
     return { ok: true, autofixCount: row.autofixCount };
   }
 
+  /** Re-stamp the inflightSessionId on an existing slot. Called by the
+   *  webhook handler after the launcher returns the spawned session id —
+   *  the original claim was made with the parent session id (we did not
+   *  have the new id yet), so we hand over ownership to the spawned
+   *  session, whose own transition() hook will then call releaseAmendSlot
+   *  with the matching id. No-op when no slot is held. */
+  async transferAmendSlot(prKey: string, newSessionId: string): Promise<void> {
+    const row = await this.ctx.storage.get<PrIndexRow>(rowKey(prKey));
+    if (!row || !row.inflightAmendStartedAt) return;
+    row.inflightSessionId = newSessionId;
+    row.lastUpdated = Date.now();
+    await this.ctx.storage.put(rowKey(prKey), row);
+  }
+
   /** Release the single-flight slot. Called when the auto-amend session
    *  reaches a terminal state (success or failure). Idempotent — calling
-   *  twice or against a row that no longer holds the slot is a no-op. */
+   *  twice or against a row that no longer holds the slot is a no-op.
+   *  Only releases when sessionId matches inflightSessionId; pass through
+   *  transferAmendSlot first if the claimant changed mid-flight. */
   async releaseAmendSlot(prKey: string, sessionId: string): Promise<void> {
     const row = await this.ctx.storage.get<PrIndexRow>(rowKey(prKey));
     if (!row) return;

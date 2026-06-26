@@ -102,6 +102,8 @@ export type HermesEventType =
   | "pr.updated"
   | "pr.merged"
   | "pr.closed"
+  | "pr.autofix.triggered"
+  | "pr.autofix.skipped"
   | "system.stalled"
   | "system.retrying"
   | "agent.usage";
