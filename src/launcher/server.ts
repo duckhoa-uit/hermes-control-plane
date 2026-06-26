@@ -16,8 +16,8 @@
 //   POST /sessions/:id/resume  M5: Sandbox.connect() on a paused sandbox
 //
 // Run:
-//   E2B_API_KEY=... ZAI_API_KEY=... HERMES_GITHUB_WRITE_TOKEN=... GITHUB_USER_LOGIN=... \
-//   CONTROL_PLANE_BASE_URL=https://<deployed-worker>.workers.dev \
+//   E2B_API_KEY=... ZAI_API_KEY=... GITHUB_WRITE_TOKEN=... GITHUB_USER_LOGIN=... \
+//   WORKER_URL=https://<deployed-worker>.workers.dev \
 //   bun run src/launcher/server.ts
 
 import { Sandbox } from "e2b";
@@ -26,37 +26,32 @@ import { publishPr } from "./publish";
 import { sweepOrphans } from "./sweeper";
 import { buildMcpHandler } from "../mcp/server";
 
-const PORT = Number(process.env.CONTROL_PLANE_LAUNCHER_PORT ?? 8789);
-const CONTROL_PLANE_BASE_URL = process.env.CONTROL_PLANE_BASE_URL;
+const PORT = Number(process.env.LAUNCHER_PORT ?? 8789);
+const WORKER_URL = process.env.WORKER_URL;
 const E2B_API_KEY = process.env.E2B_API_KEY;
 const E2B_TEMPLATE = process.env.E2B_TEMPLATE ?? "control-plane-runner";
 const ZAI_API_KEY = process.env.ZAI_API_KEY;
-const HERMES_GITHUB_WRITE_TOKEN = process.env.HERMES_GITHUB_WRITE_TOKEN;
-// B3: read-only PAT (Contents: Read) baked into the sandbox origin remote
-// under publishViaLauncher=true.  Optional today so legacy deployments
-// without the second token keep working (provision falls back to the
-// write token when this is unset).
-const HERMES_GITHUB_READ_TOKEN = process.env.HERMES_GITHUB_READ_TOKEN;
+const GITHUB_WRITE_TOKEN = process.env.GITHUB_WRITE_TOKEN;
+// B3 / PR #C: read-only PAT (Contents: Read) baked into the sandbox
+// origin remote.  Optional only because launcher unit tests + the
+// offline CLI can run without a real PAT; production launchers should
+// always supply both tokens.
+const GITHUB_READ_TOKEN = process.env.GITHUB_READ_TOKEN;
 const GITHUB_USER_LOGIN = process.env.GITHUB_USER_LOGIN;
-const HERMES_LAUNCHER_SECRET = process.env.HERMES_LAUNCHER_SECRET;
+const LAUNCHER_SHARED_SECRET = process.env.LAUNCHER_SHARED_SECRET;
 const MAX_CONCURRENT_SESSIONS = Number(process.env.MAX_CONCURRENT_SESSIONS ?? 10);
 // When false, the sidecar will NOT auto-trigger /create-pr on review_ready.
 // Useful for e2e tests that need to send follow-up prompts before the
 // runner exits. Default true (production behaviour).
-const AUTO_PR = (process.env.CONTROL_PLANE_AUTO_PR ?? "1") !== "0";
-// B2 — when true, the launcher tells the runner to skip its in-sandbox
-// push + REST and emit runner.ready_to_publish instead. The DO then
-// drives publish via /sessions/:id/publish-pr.
-const PUBLISH_VIA_LAUNCHER =
-  (process.env.HERMES_PUBLISH_VIA_LAUNCHER ?? "false").toLowerCase() === "true";
+const AUTO_PR = (process.env.AUTO_CREATE_PR ?? "1") !== "0";
 
 const requiredEnv: Array<[string, string | undefined]> = [
   ["E2B_API_KEY", E2B_API_KEY],
   ["ZAI_API_KEY", ZAI_API_KEY],
-  ["HERMES_GITHUB_WRITE_TOKEN", HERMES_GITHUB_WRITE_TOKEN],
+  ["GITHUB_WRITE_TOKEN", GITHUB_WRITE_TOKEN],
   ["GITHUB_USER_LOGIN", GITHUB_USER_LOGIN],
-  ["CONTROL_PLANE_BASE_URL", CONTROL_PLANE_BASE_URL],
-  ["HERMES_LAUNCHER_SECRET", HERMES_LAUNCHER_SECRET],
+  ["WORKER_URL", WORKER_URL],
+  ["LAUNCHER_SHARED_SECRET", LAUNCHER_SHARED_SECRET],
 ];
 const missing = requiredEnv.filter(([, v]) => !v).map(([k]) => k);
 if (missing.length > 0) {
@@ -113,7 +108,7 @@ function watchSession(sessionId: string): void {
 
     let done = false;
     try {
-      const r = await fetch(`${CONTROL_PLANE_BASE_URL}/sessions/${sessionId}`);
+      const r = await fetch(`${WORKER_URL}/sessions/${sessionId}`);
       if (r.ok) {
         const data = (await r.json()) as { session?: { status: string } };
         const status = data.session?.status ?? "";
@@ -121,7 +116,7 @@ if (status === "review_ready" && !prTriggered && AUTO_PR) {
           prTriggered = true;
           log(`session ${sessionId.slice(0, 8)} review_ready -> trigger create-pr`);
           try {
-            await fetch(`${CONTROL_PLANE_BASE_URL}/sessions/${sessionId}/create-pr`, {
+            await fetch(`${WORKER_URL}/sessions/${sessionId}/create-pr`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
             });
@@ -220,7 +215,7 @@ async function resolveParentAmend(
   prMode: { branch: string; prNumber: number; prUrl: string };
 } | { ok: false; status: number; error: string; reason: string }> {
   // 1. Parent session state — needs repoUrl, baseBranch, branch, prUrl.
-  const sResp = await fetch(`${CONTROL_PLANE_BASE_URL}/sessions/${parentSessionId}`);
+  const sResp = await fetch(`${WORKER_URL}/sessions/${parentSessionId}`);
   if (sResp.status === 404) {
     return { ok: false, status: 404, error: "parent session not found", reason: "parentSessionId does not exist" };
   }
@@ -247,8 +242,8 @@ async function resolveParentAmend(
   }
   const owner = m[1], repo = m[2], number = Number(m[3]);
   const prKey = `${owner}/${repo}#${number}`;
-  const idxResp = await fetch(`${CONTROL_PLANE_BASE_URL}/pr-index?key=${encodeURIComponent(prKey)}`, {
-    headers: { "x-hermes-launcher-secret": HERMES_LAUNCHER_SECRET! },
+  const idxResp = await fetch(`${WORKER_URL}/pr-index?key=${encodeURIComponent(prKey)}`, {
+    headers: { "x-hermes-launcher-secret": LAUNCHER_SHARED_SECRET! },
   });
   if (idxResp.status === 404) {
     return { ok: false, status: 410, error: "PR no longer indexed", reason: "the PR was unregistered (merged or unknown) — start a fresh session instead of amending" };
@@ -265,11 +260,11 @@ async function resolveParentAmend(
   // from the spawned session id (hermes/<short of spawn id>), not the
   // original PR branch. Source-of-truth is GitHub itself.
   let headBranch = data.session.branch;
-  if (HERMES_GITHUB_WRITE_TOKEN) {
+  if (GITHUB_WRITE_TOKEN) {
     try {
       const ghResp = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${number}`, {
         headers: {
-          Authorization: `Bearer ${HERMES_GITHUB_WRITE_TOKEN}`,
+          Authorization: `Bearer ${GITHUB_WRITE_TOKEN}`,
           Accept: "application/vnd.github+json",
         },
       });
@@ -327,7 +322,7 @@ async function handleCreate(req: Request): Promise<Response> {
   }
 
   // 1. Create the session DO via the Worker.
-  const wResp = await fetch(`${CONTROL_PLANE_BASE_URL}/sessions`, {
+  const wResp = await fetch(`${WORKER_URL}/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -356,23 +351,22 @@ async function handleCreate(req: Request): Promise<Response> {
     provisioned = await provisionSession({
       sessionId: session.id,
       runnerToken: session.runnerToken,
-      controlWsUrl: CONTROL_PLANE_BASE_URL!,
+      controlWsUrl: WORKER_URL!,
       repoUrl,
       baseBranch,
       e2bApiKey: E2B_API_KEY!,
       e2bTemplate: E2B_TEMPLATE,
       zaiApiKey: ZAI_API_KEY,
-      githubUserToken: process.env.HERMES_GITHUB_WRITE_TOKEN,
-      githubReadToken: process.env.HERMES_GITHUB_READ_TOKEN,
+      githubUserToken: process.env.GITHUB_WRITE_TOKEN,
+      githubReadToken: process.env.GITHUB_READ_TOKEN,
       githubUserLogin: process.env.GITHUB_USER_LOGIN,
       githubUserEmail: process.env.GITHUB_USER_EMAIL,
       prMode,
       branchSuffix: body.branchSuffix,
       amendTrigger: body.amendTrigger,
-      publishViaLauncher: PUBLISH_VIA_LAUNCHER,
     });
   } catch (err) {
-    await fetch(`${CONTROL_PLANE_BASE_URL}/sessions/${session.id}/abort`, { method: "POST" });
+    await fetch(`${WORKER_URL}/sessions/${session.id}/abort`, { method: "POST" });
     return Response.json(
       { error: "provision failed", sessionId: session.id, detail: (err as Error).message },
       { status: 500 },
@@ -388,7 +382,7 @@ async function handleCreate(req: Request): Promise<Response> {
   if (provisioned.repoInstructions) {
     try {
       const r = await fetch(
-        `${CONTROL_PLANE_BASE_URL}/sessions/${session.id}/repo-instructions`,
+        `${WORKER_URL}/sessions/${session.id}/repo-instructions`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -422,8 +416,8 @@ async function handleCreate(req: Request): Promise<Response> {
     {
       sessionId: session.id,
       sandboxId: provisioned.sandboxId,
-      streamUrl: `${CONTROL_PLANE_BASE_URL}/sessions/${session.id}/stream`,
-      stateUrl: `${CONTROL_PLANE_BASE_URL}/sessions/${session.id}`,
+      streamUrl: `${WORKER_URL}/sessions/${session.id}/stream`,
+      stateUrl: `${WORKER_URL}/sessions/${session.id}`,
       // Reflect amend wiring back to the caller (MCP tool surfaces this in
       // structuredContent so the agent can mention the branch in chat).
       parentSessionId: body.parentSessionId,
@@ -457,7 +451,7 @@ async function handleDelete(sessionId: string): Promise<Response> {
       // ignore
     }
   }
-  await fetch(`${CONTROL_PLANE_BASE_URL}/sessions/${sessionId}/abort`, { method: "POST" });
+  await fetch(`${WORKER_URL}/sessions/${sessionId}/abort`, { method: "POST" });
   return Response.json({ ok: true });
 }
 
@@ -533,7 +527,7 @@ async function handleResume(sessionId: string): Promise<Response> {
 
 
 async function handleGet(sessionId: string): Promise<Response> {
-  const r = await fetch(`${CONTROL_PLANE_BASE_URL}/sessions/${sessionId}`);
+  const r = await fetch(`${WORKER_URL}/sessions/${sessionId}`);
   return new Response(await r.text(), {
     status: r.status,
     headers: { "Content-Type": "application/json" },
@@ -545,9 +539,10 @@ async function handlePublishPr(
   sessionId: string,
   req: Request,
 ): Promise<Response> {
-  // B1 — server-server publish chokepoint. Caller is the Worker DO
-  // (handleCreatePR under HERMES_PUBLISH_VIA_LAUNCHER=true), already
-  // authenticated by the launcher-secret middleware in main().
+  // B1 / PR #C — server-server publish chokepoint. Caller is the Worker
+  // DO's handleReadyToPublish(), authenticated by the launcher-secret
+  // middleware in main().  The legacy in-sandbox publish path was
+  // removed in PR #C; this endpoint is the sole publish chokepoint.
   //
   // Body: { branch, baseBranch, title, body, amendMode?, amendPrNumber?,
   //         amendPrUrl?, repoUrl?, ownerLogin? }. Sandbox id is resolved
@@ -603,7 +598,7 @@ async function handlePublishPr(
   const result = await publishPr({
     sandboxId,
     e2bApiKey: E2B_API_KEY!,
-    writeToken: HERMES_GITHUB_WRITE_TOKEN!,
+    writeToken: GITHUB_WRITE_TOKEN!,
     repoUrl: parsed.repoUrl,
     branch: parsed.branch,
     baseBranch: parsed.baseBranch,
@@ -655,7 +650,7 @@ async function handleHealth(): Promise<Response> {
       sandboxId: s.sandboxId,
       startedAt: s.startedAt,
     })),
-    worker: CONTROL_PLANE_BASE_URL,
+    worker: WORKER_URL,
     cap: MAX_CONCURRENT_SESSIONS,
   });
 }
@@ -665,7 +660,7 @@ async function main(): Promise<void> {
   try {
     const sweep = await sweepOrphans({
       e2bApiKey: E2B_API_KEY!,
-      hermesBaseUrl: CONTROL_PLANE_BASE_URL!,
+      hermesBaseUrl: WORKER_URL!,
     });
     log(
       `startup sweep: scanned=${sweep.scanned} killed=${sweep.killed.length} kept=${sweep.kept.length}`,
@@ -678,9 +673,9 @@ async function main(): Promise<void> {
   // MCP server bundled into the launcher (the Hermes Agent — see
   // docs/DEPLOYMENT.md §12 and infra/mcp/README.md.
   const mcpHandler = buildMcpHandler({
-    workerBaseUrl: CONTROL_PLANE_BASE_URL!,
+    workerBaseUrl: WORKER_URL!,
     launcherBaseUrl: `http://localhost:${PORT}`,
-    launcherSecret: HERMES_LAUNCHER_SECRET!,
+    launcherSecret: LAUNCHER_SHARED_SECRET!,
     log,
   });
 
@@ -697,7 +692,7 @@ async function main(): Promise<void> {
         // /mcp: served on the same port for transport reasons, but its
         // trust boundary is the gateway (Hermes Agent) which carries its
         // own auth. We intentionally do NOT gate /mcp with
-        // HERMES_LAUNCHER_SECRET — the gateway and the worker reach the
+        // LAUNCHER_SHARED_SECRET — the gateway and the worker reach the
         // launcher over separate paths.
         if (url.pathname === "/mcp") {
           return await mcpHandler(req);
@@ -708,7 +703,7 @@ async function main(): Promise<void> {
         // and is gated behind the shared launcher secret. Both the Worker
         // and the local MCP server send the same header.
         const provided = req.headers.get("x-hermes-launcher-secret") ?? "";
-        if (!timingSafeEqualStrings(provided, HERMES_LAUNCHER_SECRET!)) {
+        if (!timingSafeEqualStrings(provided, LAUNCHER_SHARED_SECRET!)) {
           return Response.json({ error: "unauthorized" }, { status: 401 });
         }
 
@@ -734,10 +729,9 @@ async function main(): Promise<void> {
   });
 
   log(`control-plane-launcher listening on http://localhost:${server.port}`);
-  log(`  worker = ${CONTROL_PLANE_BASE_URL}`);
+  log(`  worker = ${WORKER_URL}`);
   log(`  cap    = ${MAX_CONCURRENT_SESSIONS}`);
   log(`  autoPR = ${AUTO_PR}`);
-  log(`  publishViaLauncher = ${PUBLISH_VIA_LAUNCHER}`);
   log(`  mcp    = http://localhost:${server.port}/mcp`);
 }
 

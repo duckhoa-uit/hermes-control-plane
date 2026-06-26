@@ -444,7 +444,7 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
             );
           } else if (eventType === "runner.ready_to_publish") {
             // B2 — runner finished local prep under
-            // HERMES_PUBLISH_VIA_LAUNCHER=true. Log the prep event for
+            // the runner finished local prep. Log it for
             // observability, then drive the launcher publish.
             this.appendEvent(eventType, "opencode", eventPayload);
             this.handleReadyToPublish(eventPayload);
@@ -722,14 +722,14 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
   private handleReadyToPublish(payload: Record<string, unknown>): void {
     if (!this.session) return;
     const sessionId = this.session.id;
-    const launcherUrl = this.env.CONTROL_PLANE_LAUNCHER_URL;
-    const launcherSecret = this.env.HERMES_LAUNCHER_SECRET;
+    const launcherUrl = this.env.LAUNCHER_URL;
+    const launcherSecret = this.env.LAUNCHER_SHARED_SECRET;
     const repoUrl = this.profile?.repoUrl ?? "";
     const baseBranch = this.profile?.defaultBranch ?? "main";
     if (!launcherUrl || !launcherSecret) {
       const reason =
-        "publish-via-launcher requires CONTROL_PLANE_LAUNCHER_URL + " +
-        "HERMES_LAUNCHER_SECRET on the worker; one or both are unset.";
+        "publish-via-launcher requires LAUNCHER_URL + " +
+        "LAUNCHER_SHARED_SECRET on the worker; one or both are unset.";
       this.appendEvent("pr.publish.failed", "system", { stage: "config", reason });
       this.transition("failed", reason);
       return;
@@ -1086,7 +1086,7 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
     const heartbeatStale = lastBeat > 0 && (now - lastBeat) > PAUSED_HEARTBEAT_THRESHOLD_MS;
     const runnerWS = this.getRunnerWS();
     if (!runnerWS || heartbeatStale) {
-      const launcherUrl = this.env.CONTROL_PLANE_LAUNCHER_URL;
+      const launcherUrl = this.env.LAUNCHER_URL;
       // Force-close the dead WS so getRunnerWS() reports null on the next call.
       // E2B pause freezes the TCP socket without sending a FIN; without this
       // explicit close, ctx.getWebSockets("runner") would still return it.
@@ -1107,7 +1107,7 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
             error: "Runner not connected",
             status,
             reason:
-              "Resume is not configured (CONTROL_PLANE_LAUNCHER_URL unset). Start a new session.",
+              "Resume is not configured (LAUNCHER_URL unset). Start a new session.",
             recoverable: false,
           },
         };
@@ -1131,7 +1131,7 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
                   method: "POST",
                   headers: {
                     "content-type": "application/json",
-                    "x-hermes-launcher-secret": this.env.HERMES_LAUNCHER_SECRET ?? "",
+                    "x-hermes-launcher-secret": this.env.LAUNCHER_SHARED_SECRET ?? "",
                   },
                 },
               );

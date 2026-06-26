@@ -70,7 +70,7 @@ describe("provisionSession", () => {
     const cfg = JSON.parse(content as string);
     expect(cfg.CONTROL_PLANE_SESSION_ID).toBe("sess_keys");
     expect(cfg.CONTROL_PLANE_RUNNER_TOKEN).toBe("tok2");
-    expect(cfg.CONTROL_PLANE_WS).toBe("wss://y");
+    expect(cfg.CONTROL_PLANE_WS_URL).toBe("wss://y");
   });
 
   it("returns an idempotent kill()", async () => {
@@ -261,7 +261,7 @@ describe("provisionSession", () => {
 
   // ---- PR #B / B2-B3: publish-via-launcher token discipline ----
 
-  it("publishViaLauncher=true: HERMES_GITHUB_WRITE_TOKEN is absent from start.json", async () => {
+  it("publishViaLauncher=true: GITHUB_WRITE_TOKEN is absent from start.json", async () => {
     await provisionSession({
       sessionId: "session_b3_a",
       runnerToken: "tok",
@@ -272,29 +272,10 @@ describe("provisionSession", () => {
       githubUserToken: "ghp_write",
       githubReadToken: "ghp_read",
       githubUserLogin: "alice",
-      publishViaLauncher: true,
     });
     const cfg = JSON.parse(filesWrite.mock.calls[0][1] as string);
-    expect(cfg.HERMES_GITHUB_WRITE_TOKEN).toBeUndefined();
-    expect(cfg.HERMES_PUBLISH_VIA_LAUNCHER).toBe("true");
-  });
-
-  it("publishViaLauncher=false (legacy): HERMES_GITHUB_WRITE_TOKEN is present in start.json", async () => {
-    await provisionSession({
-      sessionId: "session_b3_b",
-      runnerToken: "tok",
-      controlWsUrl: "wss://x",
-      repoUrl: "https://github.com/test/repo",
-      e2bApiKey: "key",
-      e2bTemplate: "control-plane-runner",
-      githubUserToken: "ghp_write",
-      githubReadToken: "ghp_read",
-      githubUserLogin: "alice",
-      publishViaLauncher: false,
-    });
-    const cfg = JSON.parse(filesWrite.mock.calls[0][1] as string);
-    expect(cfg.HERMES_GITHUB_WRITE_TOKEN).toBe("ghp_write");
-    expect(cfg.HERMES_PUBLISH_VIA_LAUNCHER).toBe("false");
+    expect(cfg.GITHUB_WRITE_TOKEN).toBeUndefined();
+    expect(cfg.HERMES_PUBLISH_VIA_LAUNCHER).toBeUndefined();
   });
 
   it("publishViaLauncher=true: sandbox origin URL uses the READ token, not the write token", async () => {
@@ -308,7 +289,6 @@ describe("provisionSession", () => {
       githubUserToken: "ghp_writexxx",
       githubReadToken: "ghp_readyyy",
       githubUserLogin: "alice",
-      publishViaLauncher: true,
     });
     // First call is the clone, second is the setup chain that includes
     // `git remote set-url origin '<url>'`.  Match against the joined cmd.
@@ -330,7 +310,6 @@ describe("provisionSession", () => {
       githubUserToken: "ghp_write_only",
       // No githubReadToken supplied (legacy setup).
       githubUserLogin: "alice",
-      publishViaLauncher: true,
     });
     const calls = cmdRun.mock.calls.map((c) => (c[0] as string));
     const setupCmd = calls.find((c) => c.includes("git remote set-url origin"));
@@ -339,7 +318,7 @@ describe("provisionSession", () => {
     // Even under fallback, the write token is still stripped from start.json
     // since the runner will not use it for publish anyway.
     const cfg = JSON.parse(filesWrite.mock.calls[0][1] as string);
-    expect(cfg.HERMES_GITHUB_WRITE_TOKEN).toBeUndefined();
+    expect(cfg.GITHUB_WRITE_TOKEN).toBeUndefined();
   });
 
   // ---- PR #A / A5: no amendTrigger means no env var (back-compat)

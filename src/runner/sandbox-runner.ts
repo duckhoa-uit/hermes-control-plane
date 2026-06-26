@@ -15,7 +15,8 @@
 //       3. Calls `session.prompt` (blocking HTTP) — when it returns, the
 //          turn is done; emits `runner.complete` with the AssistantMessage
 //          tokens/cost as agent.usage.
-//   - On pr.create command: unchanged (git push + REST).
+//   - On pr.create command: local-prep + git.branch.pushed / runner.ready_to_publish;
+//     the DO drives the actual push via the launcher /publish-pr endpoint.
 
 import { WebSocket } from "ws";
 import { exec as execCb } from "child_process";
@@ -25,7 +26,7 @@ import { parsePrMetadata, renderPrBody, type PrMetadata } from "./pr-metadata";
 
 const SESSION_ID = process.env.CONTROL_PLANE_SESSION_ID;
 const RUNNER_TOKEN = process.env.CONTROL_PLANE_RUNNER_TOKEN;
-const CONTROL_WS = process.env.CONTROL_PLANE_WS;
+const CONTROL_WS = process.env.CONTROL_PLANE_WS_URL;
 const OPENCODE_BASE_URL = process.env.OPENCODE_BASE_URL || "http://127.0.0.1:4096";
 const MODEL_ID = process.env.OPENCODE_MODEL_ID || "glm-5.2";
 const PROVIDER_ID = process.env.OPENCODE_PROVIDER_ID || "zai-coding-plan";
@@ -52,7 +53,7 @@ const ALLOW_ALL_TOOLS: Record<string, boolean> = {
 };
 
 if (!SESSION_ID || !RUNNER_TOKEN || !CONTROL_WS) {
-  console.error("Missing required env vars (CONTROL_PLANE_SESSION_ID, CONTROL_PLANE_RUNNER_TOKEN, CONTROL_PLANE_WS)");
+  console.error("Missing required env vars (CONTROL_PLANE_SESSION_ID, CONTROL_PLANE_RUNNER_TOKEN, CONTROL_PLANE_WS_URL)");
   process.exit(1);
 }
 
@@ -84,7 +85,7 @@ function refreshWsUrl(): string {
     if (fsExistsSync("/opt/control-plane/start.json")) {
       const cfg = JSON.parse(fsReadFileSync("/opt/control-plane/start.json", "utf-8")) as Record<string, string>;
       const tok = cfg.CONTROL_PLANE_RUNNER_TOKEN;
-      const cws = cfg.CONTROL_PLANE_WS;
+      const cws = cfg.CONTROL_PLANE_WS_URL;
       if (tok && cws) {
         const base = cws.replace(/^http:\/\//, "ws://").replace(/^https:\/\//, "wss://").replace(/\/$/, "");
         return `${base}/sessions/${SESSION_ID}/runner?token=${tok}`;
@@ -467,35 +468,29 @@ async function generatePrMetadata(
 }
 
 async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
-  // B2 — split into local-prep + publish phases.
+  // Local-prep + ready-to-publish handoff.
   //
-  //   Phase 1 (always): generate PR metadata, stage + commit any
-  //   uncommitted changes, verify ahead-count. Runs locally in the
-  //   sandbox; no network.
+  // The runner does ONLY local git operations (add / commit / verify
+  // ahead-count + agent-authored title+body) and emits
+  // `runner.ready_to_publish` over WS.  The DO drives the actual push
+  // and `POST /pulls` via the launcher's /publish-pr endpoint — the
+  // write-scoped GitHub token never enters the sandbox.
   //
-  //   Phase 2 (publish): two paths gated by HERMES_PUBLISH_VIA_LAUNCHER
-  //   env. Default `false` = legacy in-sandbox path (git push + REST,
-  //   unchanged). `true` = emit `runner.ready_to_publish` over WS and
-  //   stop; the DO drives publish via the launcher's
-  //   POST /sessions/:id/publish-pr endpoint and replies on the same WS.
-  //
-  // The flag is read at the runner side from process.env to keep the
-  // command-payload shape stable across the rollout.
+  // The legacy in-sandbox publish path was removed in PR #C after
+  // PR #B's flag soaked.  HERMES_PUBLISH_VIA_LAUNCHER is no longer
+  // read here.
   const userLogin = process.env.GITHUB_USER_LOGIN || "";
   const owner = process.env.GITHUB_OWNER || "";
   const repo = process.env.GITHUB_REPO || "";
   const baseBranch = process.env.GITHUB_BASE_BRANCH || "main";
 
   // Amend mode: launcher passes the existing PR's branch / number / URL via
-  // CONTROL_PLANE_PR_MODE_*. When set, we skip `POST /pulls` (the PR already
-  // exists) and emit pr.updated instead of pr.created.
+  // CONTROL_PLANE_PR_MODE_*. When set, the publish phase tells the launcher
+  // to skip POST /pulls and reuse the existing URL.
   const amendBranch = process.env.CONTROL_PLANE_PR_MODE_BRANCH || "";
   const amendNumber = process.env.CONTROL_PLANE_PR_MODE_NUMBER || "";
   const amendUrl = process.env.CONTROL_PLANE_PR_MODE_URL || "";
   const amendMode = Boolean(amendBranch && amendNumber && amendUrl);
-
-  const publishViaLauncher =
-    (process.env.HERMES_PUBLISH_VIA_LAUNCHER || "").toLowerCase() === "true";
 
   const branch = amendMode
     ? amendBranch
@@ -505,21 +500,9 @@ async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
   const fallbackBody = "Automated PR created by hermes-control-plane.";
   const taskDescription = (payload.taskDescription as string) || "";
 
-  // Token is required only on the legacy path. The new path keeps the
-  // write token launcher-side only (B3 will rip it from sandbox env
-  // entirely; for now we only consult it when needed).
-  const token = process.env.HERMES_GITHUB_WRITE_TOKEN || "";
-  if (!publishViaLauncher && (!token || !owner || !repo)) {
+  if (!owner || !repo) {
     sendError(
-      `Missing HERMES_GITHUB_WRITE_TOKEN / owner / repo ` +
-        `(token=${!!token} owner=${owner} repo=${repo})`,
-    );
-    return;
-  }
-  if (publishViaLauncher && (!owner || !repo)) {
-    sendError(
-      `Missing GITHUB_OWNER / GITHUB_REPO env required for publish-via-launcher ` +
-        `(owner=${owner} repo=${repo})`,
+      `Missing GITHUB_OWNER / GITHUB_REPO env (owner=${owner} repo=${repo})`,
     );
     return;
   }
@@ -527,8 +510,8 @@ async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
   // A2: ask the agent for title + body BEFORE staging. Diff at this point
   // reflects what the agent intended to ship; if `git add -A` later picks
   // up new untracked files, the metadata may be slightly off, but that's
-  // strictly better than today's hardcoded body and the cost is one
-  // extra short turn against the same opencode session.
+  // strictly better than a hardcoded body and the cost is one extra
+  // short turn against the same opencode session.
   let prMeta: PrMetadata | null = null;
   try {
     const diffForMeta = await execCmd("git diff");
@@ -546,6 +529,10 @@ async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
   const body = (payload.body as string)
     || (prMeta ? renderPrBody(prMeta, taskDescription) : fallbackBody);
 
+  // Suppress unused-variable warning when baseBranch is only referenced
+  // by the ahead-count path; we keep it scoped here for readability.
+  void baseBranch;
+
   try {
     await execStrict(`git add -A`);
     const stagedDiff = await execCmd(`git diff --cached --name-only`);
@@ -554,8 +541,6 @@ async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
     } else {
       // Agent already committed during the run. Verify HEAD has something
       // worth pushing.
-      // In amend mode the comparison base is the PR branch's previous tip
-      // (origin/<branch>); in fresh mode it is the project's base branch.
       const cmpBase = amendMode ? `'origin/${brSh}'` : `origin/${baseBranch}`;
       const aheadCount = (await execCmd(`git rev-list --count ${cmpBase}..HEAD`)).trim();
       if (aheadCount === "0" || aheadCount === "") {
@@ -564,66 +549,24 @@ async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
       }
     }
 
-    // ---- Publish phase ----------------------------------------------
-    if (publishViaLauncher) {
-      // New path. Resolve headSha so the DO + launcher can correlate
-      // the publish call with the runner's exact tip; no push happens
-      // here.  The DO replies asynchronously via `pr.publish.result` /
-      // `pr.publish.failed` once the launcher returns.
-      const headSha = (await execCmd("git rev-parse HEAD")).trim();
-      sendEvent("pr.publishing", { branch, headSha, amendMode });
-      // The WS event `runner.ready_to_publish` is the canonical signal
-      // for the DO. We send it as a plain runner event (eventType in
-      // hermes events stream) AND mark the runner-complete with a
-      // pending flag so the DO knows not to fire sendError on terminal
-      // until the publish round-trip resolves.
-      sendEvent("runner.ready_to_publish", {
-        branch,
-        headSha,
-        title,
-        body,
-        amendMode,
-        amendPrNumber: amendMode ? Number(amendNumber) : undefined,
-        amendPrUrl: amendMode ? amendUrl : undefined,
-        ownerLogin: userLogin,
-      });
-      // Stop here. We do NOT call sendComplete — the DO is the one
-      // emitting pr.created / pr.updated + sendComplete equivalents
-      // after the launcher publish round-trip.
-      return;
-    }
-
-    // ---- Legacy path (publishViaLauncher=false) ---------------------
-    const pushOut = await execStrict(`git push --set-upstream origin '${brSh}' 2>&1`);
-    sendEvent("git.branch.pushed", { branch, pushOutput: pushOut.slice(-500), authorIdentity: userLogin });
-
-    if (amendMode) {
-      // PR already exists; do NOT call POST /pulls. Re-emit the existing
-      // URL via pr.updated so the DO can flip into completed without
-      // re-registering a different PR.
-      const number = Number(amendNumber);
-      sendEvent("pr.updated", { url: amendUrl, number, branch, ownerLogin: userLogin });
-      sendComplete({ prUrl: amendUrl, ownerLogin: userLogin });
-      return;
-    }
-
-    const prResp = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/vnd.github+json",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ title, head: branch, base: baseBranch, body }),
+    // Resolve the headSha so the DO + launcher correlate the publish
+    // call with the runner's exact tip.  The DO replies asynchronously
+    // via pr.created / pr.updated / pr.publish.failed once the
+    // launcher returns.
+    const headSha = (await execCmd("git rev-parse HEAD")).trim();
+    sendEvent("pr.publishing", { branch, headSha, amendMode });
+    sendEvent("runner.ready_to_publish", {
+      branch,
+      headSha,
+      title,
+      body,
+      amendMode,
+      amendPrNumber: amendMode ? Number(amendNumber) : undefined,
+      amendPrUrl: amendMode ? amendUrl : undefined,
+      ownerLogin: userLogin,
     });
-    if (!prResp.ok) {
-      const errBody = await prResp.text();
-      sendError(`GitHub PR API ${prResp.status}: ${errBody.slice(0, 300)}`);
-      return;
-    }
-    const prJson = (await prResp.json()) as { html_url: string; number: number };
-    sendEvent("pr.created", { url: prJson.html_url, number: prJson.number, branch, ownerLogin: userLogin });
-    sendComplete({ prUrl: prJson.html_url, ownerLogin: userLogin });
+    // We do NOT call sendComplete — the DO synthesises pr.created /
+    // pr.updated + the terminal transition after the launcher round-trip.
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     sendError(`PR creation failed: ${msg}`);

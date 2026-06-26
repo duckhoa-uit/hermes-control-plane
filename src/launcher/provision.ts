@@ -31,11 +31,12 @@ export interface ProvisionInput {
   // is the real user. Required for the launcher entry-point (server.ts
   // fails fast if unset); kept optional here for unit tests and the
   // offline CLI (scripts/launch-session.ts).
+  // B3: write-scoped PAT.  Kept off the sandbox entirely; only the
+  // launcher process holds it and uses it for /publish-pr.  Optional
+  // here so unit tests + the offline CLI can omit it.
   githubUserToken?: string;
-  // B3: separate read-only PAT (Contents: Read) baked into the sandbox's
-  // origin remote when publishViaLauncher=true.  The sandbox-side agent
-  // can clone and fetch but `git push origin` will 403; pushes go through
-  // the launcher /publish-pr endpoint with the write token.
+  // B3: read-only PAT (Contents: Read) baked into the sandbox's origin
+  // remote so clone / fetch work but `git push origin` returns 403.
   githubReadToken?: string;
   githubUserLogin?: string;
   githubUserEmail?: string;
@@ -71,11 +72,6 @@ export interface ProvisionInput {
         conclusion?: string;
       };
 
-  // B2: gate the runner's publish phase. When true, the runner emits
-  // runner.ready_to_publish over WS and the DO drives the publish via
-  // the launcher's /publish-pr endpoint instead of pushing from inside
-  // the sandbox.
-  publishViaLauncher?: boolean;
 }
 
 export interface ProvisionResult {
@@ -160,14 +156,13 @@ export async function provisionSession(input: ProvisionInput): Promise<Provision
     const userToken = input.githubUserToken ?? "";
     const readToken = input.githubReadToken ?? "";
     const userLogin = input.githubUserLogin ?? "";
-    // B3: when publishViaLauncher is true, bake the read-only token into
-    // origin so the in-sandbox agent can fetch but cannot push. Falls back
-    // to the write token only when the read token is unset (e.g. local
-    // dev that hasn't provisioned the second PAT yet) so existing setups
-    // keep working until the operator adds HERMES_GITHUB_READ_TOKEN.
-    const sandboxOriginToken = input.publishViaLauncher
-      ? (readToken || userToken)
-      : userToken;
+    // B3 / PR #C: sandbox origin uses the read-only token.  Falls back to
+    // the write token only when the read token is unset so legacy dev
+    // setups without GITHUB_READ_TOKEN keep cloning; the runner
+    // still cannot push because the write token is never put in
+    // start.json (the launcher /publish-pr endpoint holds the only
+    // copy used for push).
+    const sandboxOriginToken = readToken || userToken;
     if (owner && repo && sandboxOriginToken && userLogin) {
       const gitEmail = input.githubUserEmail || `${userLogin}@users.noreply.github.com`;
       const remoteUrl = `https://x-access-token:${sandboxOriginToken}@github.com/${owner}/${repo}.git`;
@@ -225,23 +220,15 @@ export async function provisionSession(input: ProvisionInput): Promise<Provision
     const startConfig: Record<string, string> = {
       CONTROL_PLANE_SESSION_ID: input.sessionId,
       CONTROL_PLANE_RUNNER_TOKEN: input.runnerToken,
-      CONTROL_PLANE_WS: input.controlWsUrl,
+      CONTROL_PLANE_WS_URL: input.controlWsUrl,
       ZAI_API_KEY: input.zaiApiKey ?? "",
-      // B3: HERMES_GITHUB_WRITE_TOKEN ONLY ships into the sandbox when
-      // the legacy in-sandbox publish path is active. Under
-      // publishViaLauncher=true the runner never needs the write token —
-      // the launcher /publish-pr endpoint holds it.
-      ...(input.publishViaLauncher ? {} : { HERMES_GITHUB_WRITE_TOKEN: userToken }),
+      // PR #C: GITHUB_WRITE_TOKEN is never put in start.json.
+      // The launcher /publish-pr endpoint is the only holder.
       GITHUB_USER_LOGIN: userLogin,
       GITHUB_USER_EMAIL: input.githubUserEmail ?? "",
       GITHUB_OWNER: owner,
       GITHUB_REPO: repo,
       GITHUB_BASE_BRANCH: input.baseBranch ?? "main",
-      // B2: forwarded so the runner can branch its publish phase.
-      // B3 will additionally rip HERMES_GITHUB_WRITE_TOKEN from this
-      // map; for now both tokens still ship so the legacy path keeps
-      // working when the flag is false.
-      HERMES_PUBLISH_VIA_LAUNCHER: input.publishViaLauncher ? "true" : "false",
     };
     if (input.prMode) {
       // Runner reads these to switch into amend mode: skips POST /pulls

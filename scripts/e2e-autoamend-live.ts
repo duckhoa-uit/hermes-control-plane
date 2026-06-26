@@ -44,10 +44,10 @@ const PR_URL = args.values["pr-url"]!;
 const CASE = args.values.case!;
 const REVIEWER = args.values.reviewer!;
 const SECRET = process.env.GITHUB_WEBHOOK_SECRET || "";
-const LAUNCHER_SECRET = process.env.HERMES_LAUNCHER_SECRET || "";
+const LAUNCHER_SECRET = process.env.LAUNCHER_SHARED_SECRET || "";
 if (!PR_KEY || !PR_URL) throw new Error("--pr-key and --pr-url required");
 if (!SECRET) throw new Error("GITHUB_WEBHOOK_SECRET env required");
-if (!LAUNCHER_SECRET) throw new Error("HERMES_LAUNCHER_SECRET env required (for /pr-index)");
+if (!LAUNCHER_SECRET) throw new Error("LAUNCHER_SHARED_SECRET env required (for /pr-index)");
 
 function parsePrKey(s: string): { owner: string; repo: string; number: number } {
   const m = s.match(/^([^/]+)\/([^#]+)#(\d+)$/);
@@ -58,8 +58,8 @@ const { owner, repo, number } = parsePrKey(PR_KEY);
 
 async function getHeadSha(): Promise<string> {
   if (args.values["head-sha"]) return args.values["head-sha"]!;
-  const token = process.env.HERMES_GITHUB_WRITE_TOKEN || "";
-  if (!token) throw new Error("--head-sha not given and HERMES_GITHUB_WRITE_TOKEN not set");
+  const token = process.env.GITHUB_WRITE_TOKEN || "";
+  if (!token) throw new Error("--head-sha not given and GITHUB_WRITE_TOKEN not set");
   const r = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${number}`, {
     headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" },
   });

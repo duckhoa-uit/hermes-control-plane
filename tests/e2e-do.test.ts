@@ -250,8 +250,8 @@ interface FakeEnv {
   };
   E2B_TEMPLATE: string;
   E2B_API_KEY?: string;
-  CONTROL_PLANE_LAUNCHER_URL?: string;
-  PUBLIC_BASE_URL?: string;
+  LAUNCHER_URL?: string;
+  WORKER_URL?: string;
 }
 
 let counter = 0;
@@ -394,7 +394,7 @@ function makeEnv(): FakeEnv {
     },
     E2B_TEMPLATE: "control-plane-runner",
     E2B_API_KEY: "test-key", // present so provisionSandbox doesn't fail
-    CONTROL_PLANE_LAUNCHER_URL: "http://launcher.invalid",
+    LAUNCHER_URL: "http://launcher.invalid",
   };
 }
 
@@ -1156,7 +1156,7 @@ describe("E2E: Worker + SessionDurableObject", () => {
 
   it("GET /pr-index?key=…: returns the row registered by onPRCreated", async () => {
     const env = makeEnv() as any;
-    env.HERMES_LAUNCHER_SECRET = "launcher-secret";
+    env.LAUNCHER_SHARED_SECRET = "launcher-secret";
     const createResp = await worker.fetch(new Request("https://x/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1188,7 +1188,7 @@ describe("E2E: Worker + SessionDurableObject", () => {
 
   it("GET /pr-index missing key -> 400", async () => {
     const env = makeEnv() as any;
-    env.HERMES_LAUNCHER_SECRET = "launcher-secret";
+    env.LAUNCHER_SHARED_SECRET = "launcher-secret";
     const resp = await worker.fetch(new Request("https://x/pr-index", {
       headers: { "x-hermes-launcher-secret": "launcher-secret" },
     }), env);
@@ -1197,23 +1197,23 @@ describe("E2E: Worker + SessionDurableObject", () => {
 
   it("GET /pr-index unknown PR -> 404", async () => {
     const env = makeEnv() as any;
-    env.HERMES_LAUNCHER_SECRET = "launcher-secret";
+    env.LAUNCHER_SHARED_SECRET = "launcher-secret";
     const resp = await worker.fetch(new Request("https://x/pr-index?key=o/r%23999", {
       headers: { "x-hermes-launcher-secret": "launcher-secret" },
     }), env);
     expect(resp.status).toBe(404);
   });
 
-  it("GET /pr-index without HERMES_LAUNCHER_SECRET set on Worker -> 503", async () => {
+  it("GET /pr-index without LAUNCHER_SHARED_SECRET set on Worker -> 503", async () => {
     const env = makeEnv() as any;
-    delete env.HERMES_LAUNCHER_SECRET;
+    delete env.LAUNCHER_SHARED_SECRET;
     const resp = await worker.fetch(new Request("https://x/pr-index?key=o/r%23999"), env);
     expect(resp.status).toBe(503);
   });
 
   it("GET /pr-index with missing or wrong secret header -> 401", async () => {
     const env = makeEnv() as any;
-    env.HERMES_LAUNCHER_SECRET = "launcher-secret";
+    env.LAUNCHER_SHARED_SECRET = "launcher-secret";
     const noHeader = await worker.fetch(new Request("https://x/pr-index?key=o/r%23999"), env);
     expect(noHeader.status).toBe(401);
     const wrong = await worker.fetch(new Request("https://x/pr-index?key=o/r%23999", {
@@ -1457,10 +1457,10 @@ describe("E2E: Worker + SessionDurableObject", () => {
   it("review_changes_requested: claims slot, calls launcher, emits pr.autofix.triggered on parent", async () => {
     const env = makeEnv() as any;
     env.GITHUB_WEBHOOK_SECRET = "supersecret";
-    env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
+    env.LAUNCHER_URL = "http://launcher.test";
     const parentId = await seedPr(env, "o/r#42", "https://github.com/o/r/pull/42");
 
-    env.HERMES_LAUNCHER_SECRET = "test-launcher-secret";
+    env.LAUNCHER_SHARED_SECRET = "test-launcher-secret";
     let launcherCall: any = null;
     let launcherSecretHeader: string | null = null;
     mockLauncher(async (req) => {
@@ -1506,7 +1506,7 @@ describe("E2E: Worker + SessionDurableObject", () => {
   it("review.approved / review.commented are ignored (no dispatch, no event)", async () => {
     const env = makeEnv() as any;
     env.GITHUB_WEBHOOK_SECRET = "supersecret";
-    env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
+    env.LAUNCHER_URL = "http://launcher.test";
     await seedPr(env, "o/r#43", "https://github.com/o/r/pull/43");
 
     let called = false;
@@ -1526,7 +1526,7 @@ describe("E2E: Worker + SessionDurableObject", () => {
   it("self-review (reviewer === ownerLogin) is skipped with skipReason=self_review", async () => {
     const env = makeEnv() as any;
     env.GITHUB_WEBHOOK_SECRET = "supersecret";
-    env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
+    env.LAUNCHER_URL = "http://launcher.test";
     const parentId = await seedPr(env, "o/r#44", "https://github.com/o/r/pull/44");
 
     let called = false;
@@ -1546,7 +1546,7 @@ describe("E2E: Worker + SessionDurableObject", () => {
   it("self-check_run (sender User === ownerLogin) is skipped with skipReason=self_check_run", async () => {
     const env = makeEnv() as any;
     env.GITHUB_WEBHOOK_SECRET = "supersecret";
-    env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
+    env.LAUNCHER_URL = "http://launcher.test";
     const parentId = await seedPr(env, "o/r#53", "https://github.com/o/r/pull/53");
 
     // Workflow ran under operator's User PAT instead of github-actions[bot].
@@ -1578,7 +1578,7 @@ describe("E2E: Worker + SessionDurableObject", () => {
   it("check_run.failure with sender=github-actions[bot] (Bot) is NOT treated as self even if name collides", async () => {
     const env = makeEnv() as any;
     env.GITHUB_WEBHOOK_SECRET = "supersecret";
-    env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
+    env.LAUNCHER_URL = "http://launcher.test";
     await seedPr(env, "o/r#54", "https://github.com/o/r/pull/54");
     // Sender is a Bot with login "alice" (same as ownerLogin); we still
     // dispatch because the senderType guard requires "User".
@@ -1604,7 +1604,7 @@ describe("E2E: Worker + SessionDurableObject", () => {
   it("check_run.failure: dispatches with built taskDescription including detailsUrl", async () => {
     const env = makeEnv() as any;
     env.GITHUB_WEBHOOK_SECRET = "supersecret";
-    env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
+    env.LAUNCHER_URL = "http://launcher.test";
     const parentId = await seedPr(env, "o/r#45", "https://github.com/o/r/pull/45");
 
     let launcherCall: any = null;
@@ -1629,7 +1629,7 @@ describe("E2E: Worker + SessionDurableObject", () => {
   it("cap_exceeded: 4th trigger after 3 successful amends is rejected", async () => {
     const env = makeEnv() as any;
     env.GITHUB_WEBHOOK_SECRET = "supersecret";
-    env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
+    env.LAUNCHER_URL = "http://launcher.test";
     const parentId = await seedPr(env, "o/r#46", "https://github.com/o/r/pull/46");
 
     let n = 0;
@@ -1664,7 +1664,7 @@ describe("E2E: Worker + SessionDurableObject", () => {
   it("duplicate_sha: second review on the same head sha is skipped", async () => {
     const env = makeEnv() as any;
     env.GITHUB_WEBHOOK_SECRET = "supersecret";
-    env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
+    env.LAUNCHER_URL = "http://launcher.test";
     await seedPr(env, "o/r#47", "https://github.com/o/r/pull/47");
 
     mockLauncher(async () => new Response(JSON.stringify({ sessionId: "sess-dup-1", sandboxId: "sbx-d" }), { ...({ status: 201 }), headers: { "content-type": "application/json" } }));
@@ -1685,7 +1685,7 @@ describe("E2E: Worker + SessionDurableObject", () => {
   it("inflight: concurrent triggers — second is refused while first is running", async () => {
     const env = makeEnv() as any;
     env.GITHUB_WEBHOOK_SECRET = "supersecret";
-    env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
+    env.LAUNCHER_URL = "http://launcher.test";
     await seedPr(env, "o/r#48", "https://github.com/o/r/pull/48");
 
     mockLauncher(async () => new Response(JSON.stringify({ sessionId: "sess-inf-1", sandboxId: "sbx-i" }), { ...({ status: 201 }), headers: { "content-type": "application/json" } }));
@@ -1703,7 +1703,7 @@ describe("E2E: Worker + SessionDurableObject", () => {
   it("launcher unreachable: slot is released so next trigger can retry", async () => {
     const env = makeEnv() as any;
     env.GITHUB_WEBHOOK_SECRET = "supersecret";
-    env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
+    env.LAUNCHER_URL = "http://launcher.test";
     await seedPr(env, "o/r#49", "https://github.com/o/r/pull/49");
 
     let callCount = 0;
@@ -1730,7 +1730,7 @@ describe("E2E: Worker + SessionDurableObject", () => {
   it("launcher 2xx without sessionId: rollback claim + dispatched=false (slot not stuck)", async () => {
     const env = makeEnv() as any;
     env.GITHUB_WEBHOOK_SECRET = "supersecret";
-    env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
+    env.LAUNCHER_URL = "http://launcher.test";
     await seedPr(env, "o/r#52", "https://github.com/o/r/pull/52");
 
     // Launcher returns 200 OK but the body has no sessionId — could be a
@@ -1763,10 +1763,10 @@ describe("E2E: Worker + SessionDurableObject", () => {
     } finally { restoreFetch(); }
   });
 
-  it("CONTROL_PLANE_LAUNCHER_URL unset: skip with reason=launcher_not_configured", async () => {
+  it("LAUNCHER_URL unset: skip with reason=launcher_not_configured", async () => {
     const env = makeEnv() as any;
     env.GITHUB_WEBHOOK_SECRET = "supersecret";
-    delete env.CONTROL_PLANE_LAUNCHER_URL;
+    delete env.LAUNCHER_URL;
     const parentId = await seedPr(env, "o/r#50", "https://github.com/o/r/pull/50");
     const resp = await postWebhook(env, "pull_request_review", "del-no-launch",
       reviewChangesPayload(50, "sha-N", "rev"));
@@ -1776,11 +1776,11 @@ describe("E2E: Worker + SessionDurableObject", () => {
     expect(skipped.payload.skipReason).toBe("launcher_not_configured");
   });
 
-  it("HERMES_AUTOFIX_CAP env override is honored", async () => {
+  it("AUTOFIX_CAP_PER_PR env override is honored", async () => {
     const env = makeEnv() as any;
     env.GITHUB_WEBHOOK_SECRET = "supersecret";
-    env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
-    env.HERMES_AUTOFIX_CAP = "1";
+    env.LAUNCHER_URL = "http://launcher.test";
+    env.AUTOFIX_CAP_PER_PR = "1";
     await seedPr(env, "o/r#51", "https://github.com/o/r/pull/51");
     mockLauncher(async () => new Response(JSON.stringify({ sessionId: "sess-x", sandboxId: "sbx-x" }), { ...({ status: 201 }), headers: { "content-type": "application/json" } }));
     try {

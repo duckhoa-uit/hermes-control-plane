@@ -6,7 +6,7 @@
 # Usage:
 #   watch-session.sh <sessionId> [worker_url]
 #
-# Defaults to the launcher's PUBLIC_BASE_URL passthrough on
+# Defaults to the launcher's WORKER_URL passthrough on
 # http://localhost:8787 — pass the deployed Worker URL otherwise.
 #
 # This is the recommended fallback when the host platform cannot hold
