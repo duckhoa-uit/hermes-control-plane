@@ -500,11 +500,35 @@ Logs / details: ${parsed.detailsUrl}
           }
           const data = (await r.json()) as { sessionId?: string };
           newSessionId = data.sessionId ?? null;
-          if (newSessionId) {
-            // Hand the inflight slot over to the spawned session; its own
-            // transition() hook will release it on terminal.
-            await prIndex.transferAmendSlot(parsed.prKey, newSessionId);
+          if (!newSessionId) {
+            // 2xx without a sessionId means we cannot transfer the slot to
+            // the spawned session. Without transfer, the slot stays
+            // claimed under the parent id; releaseAmendSlot from the
+            // spawned DO is a no-op (id mismatch) and the PR is blocked
+            // from auto-amend until the 10-min INFLIGHT_TTL_MS elapses.
+            // Treat the same as launcher failure: roll back and report.
+            console.error(
+              `[webhook] launcher /sessions returned ${r.status} without sessionId; rolling back claim`,
+            );
+            await prIndex.rollbackAmendClaim(parsed.prKey, row.sessionId);
+            try {
+              const stub = env.SESSION_DO.get(env.SESSION_DO.idFromString(row.sessionId));
+              await asRpc(stub).appendAutofixEvent({
+                triggered: false,
+                trigger: parsed.kind,
+                deliveryId: parsed.deliveryId,
+                headSha: parsed.headSha,
+                skipReason: "launcher_no_session_id",
+              });
+            } catch {}
+            return new Response(
+              JSON.stringify({ ok: true, kind: parsed.kind, dispatched: false, reason: "launcher_no_session_id" }),
+              { status: 200, headers: CORS_HEADERS },
+            );
           }
+          // Hand the inflight slot over to the spawned session; its own
+          // transition() hook will release it on terminal.
+          await prIndex.transferAmendSlot(parsed.prKey, newSessionId);
         } catch (err) {
           console.error(
             `[webhook] launcher /sessions error: ${(err as Error).message}; rolling back claim`,

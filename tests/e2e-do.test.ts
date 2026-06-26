@@ -1664,6 +1664,42 @@ describe("E2E: Worker + SessionDurableObject", () => {
     expect(callCount).toBe(2);
   });
 
+  it("launcher 2xx without sessionId: rollback claim + dispatched=false (slot not stuck)", async () => {
+    const env = makeEnv() as any;
+    env.GITHUB_WEBHOOK_SECRET = "supersecret";
+    env.CONTROL_PLANE_LAUNCHER_URL = "http://launcher.test";
+    await seedPr(env, "o/r#52", "https://github.com/o/r/pull/52");
+
+    // Launcher returns 200 OK but the body has no sessionId — could be a
+    // misconfigured launcher, a proxy injecting a static page, etc.
+    mockLauncher(async () => new Response(JSON.stringify({ ok: true }), {
+      ...({ status: 200 }), headers: { "content-type": "application/json" },
+    }));
+    try {
+      const r1 = await postWebhook(env, "pull_request_review", "del-nosess-1",
+        reviewChangesPayload(52, "sha-N", "rev"));
+      expect(await r1.json()).toMatchObject({ dispatched: false, reason: "launcher_no_session_id" });
+      // Slot must be fully released (no inflight, autofixCount rolled back,
+      // lastAmendedSha cleared) so a retry on the same sha is allowed.
+      const row = prIndexRows.get("o/r#52");
+      expect(row?.inflightAmendStartedAt).toBeUndefined();
+      expect(row?.inflightSessionId).toBeUndefined();
+      expect(row?.autofixCount).toBe(0);
+      expect(row?.lastAmendedSha).toBeUndefined();
+    } finally { restoreFetch(); }
+
+    // Second attempt with a real sessionId succeeds (proves the slot is
+    // fully reclaimable after the no-sessionId rollback).
+    mockLauncher(async () => new Response(JSON.stringify({ sessionId: "sess-recover", sandboxId: "sbx" }), {
+      ...({ status: 201 }), headers: { "content-type": "application/json" },
+    }));
+    try {
+      const r2 = await postWebhook(env, "pull_request_review", "del-nosess-2",
+        reviewChangesPayload(52, "sha-N", "rev"));
+      expect((await r2.json() as any).dispatched).toBe(true);
+    } finally { restoreFetch(); }
+  });
+
   it("CONTROL_PLANE_LAUNCHER_URL unset: skip with reason=launcher_not_configured", async () => {
     const env = makeEnv() as any;
     env.GITHUB_WEBHOOK_SECRET = "supersecret";
