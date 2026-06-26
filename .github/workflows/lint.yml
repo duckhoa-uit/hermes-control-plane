@@ -79,6 +79,13 @@ jobs:
       - name: AGENTS.md freshness audit
         run: bun run agents:check
 
+      # OpenAPI sanity check: parses docs/openapi.yaml, verifies every
+      # operation has a 2xx/3xx/default response, and that every $ref
+      # resolves. Catches drift between the route handlers and the
+      # spec without needing a full Spectral install.
+      - name: OpenAPI spec sanity check
+        run: bun run openapi:check
+
   bundle-size:
     name: Worker bundle size budget
     runs-on: ubuntu-latest
