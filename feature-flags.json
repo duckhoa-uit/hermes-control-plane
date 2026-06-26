@@ -1,0 +1,25 @@
+{
+  "$schema": "./scripts/feature-flags.schema.json",
+  "_comment": [
+    "Registry of every feature flag this repo recognises. The dead-flag",
+    "detector (scripts/detect-dead-flags.ts) reads this file and the call",
+    "sites in src/**.ts, then reports:",
+    "  - declared-but-unused flags (dead — delete the entry + the branch)",
+    "  - used-but-undeclared flags (forgot to register a new flag)",
+    "  - flags older than `maxAgeDays` (stale — schedule cleanup)",
+    "",
+    "Add a new flag here in the same PR that introduces the call site.",
+    "Remove the entry in the same PR that removes the call site.",
+    "",
+    "Conventions:",
+    "  name        lowercase snake_case, matches the string passed to",
+    "              isFlagEnabled / percentageRollout / flagValue.",
+    "  envVar      derived: FF_<NAME>  (or FF_<NAME>_PCT for rollout flags).",
+    "  kind        'boolean' | 'rollout' | 'variant'",
+    "  owner       GitHub login or team handle responsible for cleanup.",
+    "  createdAt   ISO-8601 date the flag was introduced.",
+    "  maxAgeDays  Optional override (defaults to 90 in the detector).",
+    "  cleanup     Free-form note describing what 'done' looks like."
+  ],
+  "flags": []
+}

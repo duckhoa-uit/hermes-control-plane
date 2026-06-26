@@ -182,6 +182,38 @@ named `FF_<UPPERCASE>`:
 | `flagValue("model", env)` | `FF_MODEL` | raw string (variant flags) |
 
 Set flags via `wrangler secret put FF_FOO` (Worker), `.dev.vars` (local),
-or the launcher's systemd unit env (VPS). Removing a stale flag is a
-one-line PR — the call site just becomes the code path that was behind
-the flag.
+or the launcher's systemd unit env (VPS).
+
+### Flag lifecycle (registry + dead-flag detection)
+
+Every flag the code reads is registered in
+[`feature-flags.json`](feature-flags.json). The registry is the
+single source of truth for "what flags exist, who owns them, and when
+were they introduced". The dead-flag detector
+([`scripts/detect-dead-flags.ts`](scripts/detect-dead-flags.ts), run as
+`bun run flags:check`) reconciles the registry with grep results from
+`src/`, `scripts/`, and `infra/` and fails CI on three conditions:
+
+| Finding | What it means | Fix |
+|---|---|---|
+| **Declared but unused** | Flag exists in `feature-flags.json` but no call site mentions it | Delete the registry entry and the dead branch in the same PR. The flag's code path has already been removed; the registry hasn't caught up. |
+| **Used but undeclared** | A call site references a flag name not in the registry | Add a registry entry (with `owner`, `createdAt`, `kind`) in the same PR. New flags must be registered when they're introduced. |
+| **Stale** | A registered flag is older than `maxAgeDays` (default 90) and still has live call sites | Either ship the change and remove the flag, or bump `maxAgeDays` in the entry with a written justification in the PR description. |
+
+This runs in the `lint` CI workflow on every PR (blocking) and in
+[`.github/workflows/feature-flags-audit.yml`](.github/workflows/feature-flags-audit.yml)
+on a weekly cron so flags that age out without any related PR still
+surface.
+
+Adding a new flag — short version:
+
+1. Add a call to `isFlagEnabled` / `percentageRollout` / `flagValue`.
+2. Add an entry to `feature-flags.json` with `name`, `kind`, `owner`,
+   `createdAt`, and an optional `cleanup` note saying what "done" looks
+   like for this flag.
+3. Set `FF_<NAME>` in your `.dev.vars` / `wrangler secret put` /
+   launcher unit env as appropriate.
+
+Removing a stale flag is a one-line PR — the call site becomes the
+code path that was behind the flag, and the registry entry is deleted
+in the same commit.

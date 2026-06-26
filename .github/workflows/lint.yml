@@ -63,6 +63,15 @@ jobs:
       - name: Duplicate-code check (jscpd)
         run: bun run dupes
 
+      # Feature flag audit: reconciles feature-flags.json with isFlagEnabled
+      # / percentageRollout / flagValue call sites under src/. Fails CI on:
+      #   - declared-but-unused flags (dead branch, registry entry to delete)
+      #   - used-but-undeclared flags (forgot to register a new flag)
+      #   - flags older than maxAgeDays (default 90) still in the codebase
+      # See CONTRIBUTING.md §"Feature flags" for the cleanup workflow.
+      - name: Feature flag audit (dead/stale flag detection)
+        run: bun run flags:check
+
   bundle-size:
     name: Worker bundle size budget
     runs-on: ubuntu-latest

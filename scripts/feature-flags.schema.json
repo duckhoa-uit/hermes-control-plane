@@ -1,0 +1,57 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Feature flag registry",
+  "description": "Schema for feature-flags.json — read by scripts/detect-dead-flags.ts.",
+  "type": "object",
+  "required": ["flags"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "_comment": {
+      "description": "Free-form documentation. Ignored by the detector.",
+      "oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }]
+    },
+    "flags": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "kind", "owner", "createdAt"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "description": "Lowercase snake_case flag name, matches the string passed to isFlagEnabled/percentageRollout/flagValue."
+          },
+          "kind": {
+            "type": "string",
+            "enum": ["boolean", "rollout", "variant"],
+            "description": "boolean -> isFlagEnabled (FF_<NAME>); rollout -> percentageRollout (FF_<NAME>_PCT); variant -> flagValue (FF_<NAME>)."
+          },
+          "owner": {
+            "type": "string",
+            "minLength": 1,
+            "description": "GitHub login or team handle responsible for the flag's lifecycle."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date",
+            "description": "ISO-8601 date (YYYY-MM-DD) the flag was added."
+          },
+          "maxAgeDays": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Optional. Override the default 90-day staleness window."
+          },
+          "cleanup": {
+            "type": "string",
+            "description": "Free-form note describing the condition under which this flag should be removed."
+          },
+          "description": {
+            "type": "string",
+            "description": "What this flag controls in plain English."
+          }
+        }
+      }
+    }
+  }
+}

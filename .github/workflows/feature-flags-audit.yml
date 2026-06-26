@@ -1,0 +1,46 @@
+# Weekly feature-flag audit.
+#
+# `flags:check` already runs inside the `lint` workflow on every PR (it
+# blocks merging on dead/undeclared/stale flags). This workflow re-runs the
+# same script on a cron so flags that become stale **without** any PR
+# touching the file still get surfaced — the audit findings land in the
+# scheduled run's step summary, and the workflow goes red so the dashboard
+# shows it instead of silently passing forever.
+#
+# Also wired to workflow_dispatch so an operator can audit on demand from
+# the Actions tab.
+name: feature-flags-audit
+
+on:
+  schedule:
+    # Mondays 09:00 UTC — start of the work week, before the standup.
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: feature-flags-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache bun store
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-store-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-store-${{ runner.os }}-
+
+      - run: bun install --frozen-lockfile
+
+      - name: Feature flag audit
+        run: bun run flags:check
