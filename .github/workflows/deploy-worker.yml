@@ -1,0 +1,39 @@
+# Deploy the Cloudflare Worker (control plane) on every push to main
+# that touches worker code. Launcher is deployed manually via
+# infra/launcher/install.sh on the VPS — see infra/launcher/README.md.
+name: deploy-worker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/worker/**'
+      - 'src/core/**'
+      - 'wrangler.jsonc'
+      - 'package.json'
+      - 'bun.lock'
+      - '.github/workflows/deploy-worker.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-worker
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun run typecheck
+
+      - run: bunx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
