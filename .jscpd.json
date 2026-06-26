@@ -1,0 +1,23 @@
+{
+  "$schema": "https://raw.githubusercontent.com/kucherenko/jscpd/master/packages/jscpd/schema.json",
+  "threshold": 4,
+  "reporters": ["consoleFull"],
+  "ignore": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/.wrangler/**",
+    "**/bun.lock",
+    "**/*.d.ts",
+    "src/runner/sandbox-runner.ts.txt",
+    "docs/**",
+    "tests/_shims/**",
+    "tests/**"
+  ],
+  "minTokens": 70,
+  "minLines": 8,
+  "ignoreCase": false,
+  "gitignore": true,
+  "absolute": true,
+  "format": ["typescript", "javascript"],
+  "exitCode": 0
+}

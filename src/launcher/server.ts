@@ -25,6 +25,7 @@ import { provisionSession, killSandbox, type ProvisionResult } from "./provision
 import { publishPr } from "./publish";
 import { sweepOrphans } from "./sweeper";
 import { buildMcpHandler } from "../mcp/server";
+import { timingSafeEqualStrings } from "../core/secrets";
 
 const PORT = Number(process.env.LAUNCHER_PORT ?? 8789);
 const WORKER_URL = process.env.WORKER_URL;
@@ -196,16 +197,7 @@ interface PrIndexRowWire {
   autofixCount: number;
 }
 
-/** Constant-time string compare for shared-secret auth on launcher
- *  REST routes. Avoids leaking match length via early-exit equality. */
-function timingSafeEqualStrings(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let mismatch = 0;
-  for (let i = 0; i < a.length; i++) {
-    mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  }
-  return mismatch === 0;
-}
+// timingSafeEqualStrings moved to src/core/secrets.ts (shared with worker).
 
 async function resolveParentAmend(parentSessionId: string): Promise<
   | {

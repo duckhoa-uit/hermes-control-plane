@@ -122,16 +122,7 @@ const PROMPT_STATUS_BY_KIND: Record<string, number> = {
   ok: 200,
 };
 
-/** Constant-time string compare for shared-secret auth. Avoids leaking
- *  the length of the matching prefix via early-exit string equality. */
-function timingSafeEqualStrings(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let mismatch = 0;
-  for (let i = 0; i < a.length; i++) {
-    mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  }
-  return mismatch === 0;
-}
+import { timingSafeEqualStrings } from "../core/secrets";
 
 export default {
   async fetch(request: Request, env: CloudflareEnv): Promise<Response> {

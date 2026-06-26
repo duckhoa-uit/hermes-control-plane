@@ -36,7 +36,25 @@
     "no-await-in-loop": "off",
     "no-underscore-dangle": "off",
     "no-useless-concat": "off",
-    "unicorn/consistent-function-scoping": "off"
+    "unicorn/consistent-function-scoping": "off",
+    "complexity": ["warn", { "max": 25 }],
+    "max-lines": ["warn", { "max": 1500, "skipBlankLines": true, "skipComments": true }],
+    "max-lines-per-function": [
+      "warn",
+      {
+        "max": 250,
+        "skipBlankLines": true,
+        "skipComments": true,
+        "IIFEs": false
+      }
+    ],
+    "no-warning-comments": [
+      "warn",
+      {
+        "terms": ["todo:", "fixme:", "hack:"],
+        "location": "anywhere"
+      }
+    ]
   },
   "ignorePatterns": [
     "node_modules",
@@ -51,7 +69,10 @@
       "files": ["tests/**/*.ts"],
       "rules": {
         "typescript/no-unused-vars": "off",
-        "no-unused-vars": "off"
+        "no-unused-vars": "off",
+        "max-lines": "off",
+        "max-lines-per-function": "off",
+        "complexity": "off"
       }
     }
   ]
