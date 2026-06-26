@@ -272,29 +272,10 @@ describe("provisionSession", () => {
       githubUserToken: "ghp_write",
       githubReadToken: "ghp_read",
       githubUserLogin: "alice",
-      publishViaLauncher: true,
     });
     const cfg = JSON.parse(filesWrite.mock.calls[0][1] as string);
     expect(cfg.HERMES_GITHUB_WRITE_TOKEN).toBeUndefined();
-    expect(cfg.HERMES_PUBLISH_VIA_LAUNCHER).toBe("true");
-  });
-
-  it("publishViaLauncher=false (legacy): HERMES_GITHUB_WRITE_TOKEN is present in start.json", async () => {
-    await provisionSession({
-      sessionId: "session_b3_b",
-      runnerToken: "tok",
-      controlWsUrl: "wss://x",
-      repoUrl: "https://github.com/test/repo",
-      e2bApiKey: "key",
-      e2bTemplate: "control-plane-runner",
-      githubUserToken: "ghp_write",
-      githubReadToken: "ghp_read",
-      githubUserLogin: "alice",
-      publishViaLauncher: false,
-    });
-    const cfg = JSON.parse(filesWrite.mock.calls[0][1] as string);
-    expect(cfg.HERMES_GITHUB_WRITE_TOKEN).toBe("ghp_write");
-    expect(cfg.HERMES_PUBLISH_VIA_LAUNCHER).toBe("false");
+    expect(cfg.HERMES_PUBLISH_VIA_LAUNCHER).toBeUndefined();
   });
 
   it("publishViaLauncher=true: sandbox origin URL uses the READ token, not the write token", async () => {
@@ -308,7 +289,6 @@ describe("provisionSession", () => {
       githubUserToken: "ghp_writexxx",
       githubReadToken: "ghp_readyyy",
       githubUserLogin: "alice",
-      publishViaLauncher: true,
     });
     // First call is the clone, second is the setup chain that includes
     // `git remote set-url origin '<url>'`.  Match against the joined cmd.
@@ -330,7 +310,6 @@ describe("provisionSession", () => {
       githubUserToken: "ghp_write_only",
       // No githubReadToken supplied (legacy setup).
       githubUserLogin: "alice",
-      publishViaLauncher: true,
     });
     const calls = cmdRun.mock.calls.map((c) => (c[0] as string));
     const setupCmd = calls.find((c) => c.includes("git remote set-url origin"));

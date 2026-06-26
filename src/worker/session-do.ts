@@ -444,7 +444,7 @@ export class SessionDurableObject extends DurableObject<CloudflareEnv> {
             );
           } else if (eventType === "runner.ready_to_publish") {
             // B2 — runner finished local prep under
-            // HERMES_PUBLISH_VIA_LAUNCHER=true. Log the prep event for
+            // the runner finished local prep. Log it for
             // observability, then drive the launcher publish.
             this.appendEvent(eventType, "opencode", eventPayload);
             this.handleReadyToPublish(eventPayload);

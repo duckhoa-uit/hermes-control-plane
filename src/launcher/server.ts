@@ -32,10 +32,10 @@ const E2B_API_KEY = process.env.E2B_API_KEY;
 const E2B_TEMPLATE = process.env.E2B_TEMPLATE ?? "control-plane-runner";
 const ZAI_API_KEY = process.env.ZAI_API_KEY;
 const HERMES_GITHUB_WRITE_TOKEN = process.env.HERMES_GITHUB_WRITE_TOKEN;
-// B3: read-only PAT (Contents: Read) baked into the sandbox origin remote
-// under publishViaLauncher=true.  Optional today so legacy deployments
-// without the second token keep working (provision falls back to the
-// write token when this is unset).
+// B3 / PR #C: read-only PAT (Contents: Read) baked into the sandbox
+// origin remote.  Optional only because launcher unit tests + the
+// offline CLI can run without a real PAT; production launchers should
+// always supply both tokens.
 const HERMES_GITHUB_READ_TOKEN = process.env.HERMES_GITHUB_READ_TOKEN;
 const GITHUB_USER_LOGIN = process.env.GITHUB_USER_LOGIN;
 const HERMES_LAUNCHER_SECRET = process.env.HERMES_LAUNCHER_SECRET;
@@ -44,11 +44,6 @@ const MAX_CONCURRENT_SESSIONS = Number(process.env.MAX_CONCURRENT_SESSIONS ?? 10
 // Useful for e2e tests that need to send follow-up prompts before the
 // runner exits. Default true (production behaviour).
 const AUTO_PR = (process.env.CONTROL_PLANE_AUTO_PR ?? "1") !== "0";
-// B2 — when true, the launcher tells the runner to skip its in-sandbox
-// push + REST and emit runner.ready_to_publish instead. The DO then
-// drives publish via /sessions/:id/publish-pr.
-const PUBLISH_VIA_LAUNCHER =
-  (process.env.HERMES_PUBLISH_VIA_LAUNCHER ?? "false").toLowerCase() === "true";
 
 const requiredEnv: Array<[string, string | undefined]> = [
   ["E2B_API_KEY", E2B_API_KEY],
@@ -369,7 +364,6 @@ async function handleCreate(req: Request): Promise<Response> {
       prMode,
       branchSuffix: body.branchSuffix,
       amendTrigger: body.amendTrigger,
-      publishViaLauncher: PUBLISH_VIA_LAUNCHER,
     });
   } catch (err) {
     await fetch(`${CONTROL_PLANE_BASE_URL}/sessions/${session.id}/abort`, { method: "POST" });
@@ -545,9 +539,10 @@ async function handlePublishPr(
   sessionId: string,
   req: Request,
 ): Promise<Response> {
-  // B1 — server-server publish chokepoint. Caller is the Worker DO
-  // (handleCreatePR under HERMES_PUBLISH_VIA_LAUNCHER=true), already
-  // authenticated by the launcher-secret middleware in main().
+  // B1 / PR #C — server-server publish chokepoint. Caller is the Worker
+  // DO's handleReadyToPublish(), authenticated by the launcher-secret
+  // middleware in main().  The legacy in-sandbox publish path was
+  // removed in PR #C; this endpoint is the sole publish chokepoint.
   //
   // Body: { branch, baseBranch, title, body, amendMode?, amendPrNumber?,
   //         amendPrUrl?, repoUrl?, ownerLogin? }. Sandbox id is resolved
@@ -737,7 +732,6 @@ async function main(): Promise<void> {
   log(`  worker = ${CONTROL_PLANE_BASE_URL}`);
   log(`  cap    = ${MAX_CONCURRENT_SESSIONS}`);
   log(`  autoPR = ${AUTO_PR}`);
-  log(`  publishViaLauncher = ${PUBLISH_VIA_LAUNCHER}`);
   log(`  mcp    = http://localhost:${server.port}/mcp`);
 }
 

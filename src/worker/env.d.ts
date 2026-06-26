@@ -38,6 +38,4 @@ interface CloudflareEnv {
   // PR publication via the launcher's POST /sessions/:id/publish-pr
   // endpoint instead of asking the runner to push + open the PR
   // itself. PR #B (publish-via-launcher) reads this; PR #A only
-  // wires it so PR #B is a single-PR change later.
-  HERMES_PUBLISH_VIA_LAUNCHER?: string;
 }
