@@ -206,11 +206,34 @@ async function resolveParentAmend(
   if (idx.row.status !== "open") {
     return { ok: false, status: 410, error: `PR is ${idx.row.status}`, reason: "amend mode requires the PR to still be open" };
   }
+  // The parent's session.branch is NOT reliable as the PR head ref:
+  // when the parent is itself an amend session, its branch field was set
+  // from the spawned session id (hermes/<short of spawn id>), not the
+  // original PR branch. Source-of-truth is GitHub itself.
+  let headBranch = data.session.branch;
+  if (GITHUB_USER_TOKEN) {
+    try {
+      const ghResp = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${number}`, {
+        headers: {
+          Authorization: `Bearer ${GITHUB_USER_TOKEN}`,
+          Accept: "application/vnd.github+json",
+        },
+      });
+      if (ghResp.ok) {
+        const pr = (await ghResp.json()) as { head?: { ref?: string } };
+        if (pr.head?.ref) headBranch = pr.head.ref;
+      } else {
+        log(`resolveParentAmend: GitHub /pulls/${number} ${ghResp.status} — falling back to session.branch=${data.session.branch}`);
+      }
+    } catch (err) {
+      log(`resolveParentAmend: GitHub /pulls/${number} error: ${(err as Error).message} — falling back to session.branch`);
+    }
+  }
   return {
     ok: true,
     repoUrl: data.repoUrl,
     baseBranch: data.baseBranch ?? "main",
-    prMode: { branch: data.session.branch, prNumber: number, prUrl },
+    prMode: { branch: headBranch, prNumber: number, prUrl },
   };
 }
 

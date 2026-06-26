@@ -245,6 +245,7 @@ interface FakeEnv {
       tryClaimAmendSlot(prKey: string, headSha: string, sessionId: string, cap: number): Promise<any>;
       transferAmendSlot(prKey: string, newSessionId: string): Promise<void>;
       releaseAmendSlot(prKey: string, sessionId: string): Promise<void>;
+      rollbackAmendClaim(prKey: string, sessionId: string): Promise<void>;
     };
   };
   E2B_TEMPLATE: string;
@@ -374,6 +375,16 @@ function makeEnv(): FakeEnv {
             const row = prIndexRows.get(prKey);
             if (!row) return;
             if (row.inflightSessionId && row.inflightSessionId !== sessionId) return;
+            row.inflightAmendStartedAt = undefined;
+            row.inflightSessionId = undefined;
+            row.lastUpdated = Date.now();
+          },
+          async rollbackAmendClaim(prKey: string, sessionId: string) {
+            const row = prIndexRows.get(prKey);
+            if (!row) return;
+            if (row.inflightSessionId !== sessionId) return;
+            row.autofixCount = Math.max(0, row.autofixCount - 1);
+            row.lastAmendedSha = undefined;
             row.inflightAmendStartedAt = undefined;
             row.inflightSessionId = undefined;
             row.lastUpdated = Date.now();
@@ -1531,10 +1542,12 @@ describe("E2E: Worker + SessionDurableObject", () => {
       const r1 = await postWebhook(env, "pull_request_review", "del-recover-1",
         reviewChangesPayload(49, "sha-A", "rev"));
       expect(await r1.json()).toMatchObject({ dispatched: false, reason: "launcher_500" });
-      // Slot must have been released after the failed POST so the next
-      // trigger can claim (different sha so duplicate_sha doesn't fire).
+      // Rollback must have cleared autofixCount + lastAmendedSha so a
+      // retry on the SAME sha is allowed.
+      expect(prIndexRows.get("o/r#49")?.autofixCount).toBe(0);
+      expect(prIndexRows.get("o/r#49")?.lastAmendedSha).toBeUndefined();
       const r2 = await postWebhook(env, "pull_request_review", "del-recover-2",
-        reviewChangesPayload(49, "sha-B", "rev"));
+        reviewChangesPayload(49, "sha-A", "rev"));
       expect((await r2.json() as any).dispatched).toBe(true);
     } finally { restoreFetch(); }
     expect(callCount).toBe(2);

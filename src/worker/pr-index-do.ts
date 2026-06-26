@@ -195,6 +195,25 @@ export class PrIndexDurableObject extends DurableObject<CloudflareEnv> {
     await this.ctx.storage.put(rowKey(prKey), row);
   }
 
+  /** Roll back a claim that failed to spawn (launcher unreachable / 5xx).
+   *  Restores autofixCount to its pre-claim value and clears lastAmendedSha
+   *  so the next webhook for the same sha can retry. Only mutates when the
+   *  sessionId still matches the inflight one (otherwise we would corrupt
+   *  a re-claim that happened in the meantime). Used by the webhook
+   *  handler on infrastructure failure; the spawned-session terminal
+   *  path uses releaseAmendSlot instead because the work DID land. */
+  async rollbackAmendClaim(prKey: string, sessionId: string): Promise<void> {
+    const row = await this.ctx.storage.get<PrIndexRow>(rowKey(prKey));
+    if (!row) return;
+    if (row.inflightSessionId !== sessionId) return;
+    row.autofixCount = Math.max(0, row.autofixCount - 1);
+    row.lastAmendedSha = undefined;
+    row.inflightAmendStartedAt = undefined;
+    row.inflightSessionId = undefined;
+    row.lastUpdated = Date.now();
+    await this.ctx.storage.put(rowKey(prKey), row);
+  }
+
   /** Release the single-flight slot. Called when the auto-amend session
    *  reaches a terminal state (success or failure). Idempotent — calling
    *  twice or against a row that no longer holds the slot is a no-op.

@@ -81,6 +81,7 @@ interface PrIndexDORpc {
     | { ok: false; reason: "unknown_pr" | "cap_exceeded" | "duplicate_sha" | "inflight" }
   >;
   releaseAmendSlot(prKey: string, sessionId: string): Promise<void>;
+  rollbackAmendClaim(prKey: string, sessionId: string): Promise<void>;
   transferAmendSlot(prKey: string, newSessionId: string): Promise<void>;
 }
 
@@ -455,9 +456,9 @@ Logs / details: ${parsed.detailsUrl}
           if (!r.ok) {
             const txt = await r.text().catch(() => "");
             console.error(
-              `[webhook] launcher /sessions ${r.status}: ${txt.slice(0, 200)}; releasing slot`,
+              `[webhook] launcher /sessions ${r.status}: ${txt.slice(0, 200)}; rolling back claim`,
             );
-            await prIndex.releaseAmendSlot(parsed.prKey, row.sessionId);
+            await prIndex.rollbackAmendClaim(parsed.prKey, row.sessionId);
             try {
               const stub = env.SESSION_DO.get(env.SESSION_DO.idFromString(row.sessionId));
               await asRpc(stub).appendAutofixEvent({
@@ -482,9 +483,9 @@ Logs / details: ${parsed.detailsUrl}
           }
         } catch (err) {
           console.error(
-            `[webhook] launcher /sessions error: ${(err as Error).message}; releasing slot`,
+            `[webhook] launcher /sessions error: ${(err as Error).message}; rolling back claim`,
           );
-          await prIndex.releaseAmendSlot(parsed.prKey, row.sessionId);
+          await prIndex.rollbackAmendClaim(parsed.prKey, row.sessionId);
           return new Response(
             JSON.stringify({ ok: true, kind: parsed.kind, dispatched: false, reason: "launcher_unreachable" }),
             { status: 200, headers: CORS_HEADERS },

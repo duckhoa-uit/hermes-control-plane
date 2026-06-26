@@ -240,6 +240,32 @@ describe("PrIndexDurableObject — auto-amend single-flight + cap", () => {
     if (r.ok) expect(r.autofixCount).toBe(2);
   });
 
+  it("rollbackAmendClaim: restores autofixCount, clears lastAmendedSha + inflight", async () => {
+    pr = newDo();
+    await pr.register("o/r#1", "sess-parent", "alice");
+    await pr.tryClaimAmendSlot("o/r#1", "sha-A", "sess-A", 3);
+    let row = (await pr.lookup("o/r#1"))!;
+    expect(row.autofixCount).toBe(1);
+    expect(row.lastAmendedSha).toBe("sha-A");
+    await pr.rollbackAmendClaim("o/r#1", "sess-A");
+    row = (await pr.lookup("o/r#1"))!;
+    expect(row.autofixCount).toBe(0);
+    expect(row.lastAmendedSha).toBeUndefined();
+    expect(row.inflightAmendStartedAt).toBeUndefined();
+  });
+
+  it("rollbackAmendClaim: no-op if sessionId doesn't match (slot was transferred)", async () => {
+    pr = newDo();
+    await pr.register("o/r#1", "sess-parent", "alice");
+    await pr.tryClaimAmendSlot("o/r#1", "sha-A", "sess-A", 3);
+    await pr.transferAmendSlot("o/r#1", "sess-B");
+    await pr.rollbackAmendClaim("o/r#1", "sess-A");   // stale id; should NOT clobber
+    const row = (await pr.lookup("o/r#1"))!;
+    expect(row.autofixCount).toBe(1);
+    expect(row.lastAmendedSha).toBe("sha-A");
+    expect(row.inflightSessionId).toBe("sess-B");
+  });
+
   it("register preserves new auto-amend fields across a re-register", async () => {
     await pr.register("o/r#1", "sess-parent", "alice");
     await pr.tryClaimAmendSlot("o/r#1", "sha-A", "sess-A", 3);

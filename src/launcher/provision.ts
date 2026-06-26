@@ -140,7 +140,21 @@ export async function provisionSession(input: ProvisionInput): Promise<Provision
         const branch = `hermes/${input.sessionId.slice(-8)}`;
         setupCmds.push(`git checkout -B ${branch}`);
       }
-      await sbx.commands.run(setupCmds.join(" && "), { timeoutMs: 30_000 });
+      const setup = await sbx.commands.run(
+        // Suffix with `; echo __exit=$?` so we capture the real exit code
+        // from the chain — E2B SDK throws on non-zero, so wrap in `(... ; true)`
+        // and grep the exit ourselves to get a useful error message.
+        `(${setupCmds.join(" && ")}; echo "__setup_exit=$?") 2>&1`,
+        { timeoutMs: 30_000 },
+      );
+      const setupExitMatch = setup.stdout.match(/__setup_exit=(\d+)/);
+      const setupExit = setupExitMatch ? Number(setupExitMatch[1]) : 0;
+      if (setupExit !== 0) {
+        await killOnce();
+        throw new Error(
+          `git setup failed (exit ${setupExit}): ${setup.stdout.trim().split("\n").slice(-10).join(" | ")}`,
+        );
+      }
     }
 
     // 4. Drop the per-session start config. The supervisor (baked into the
