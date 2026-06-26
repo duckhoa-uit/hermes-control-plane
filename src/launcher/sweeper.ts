@@ -6,7 +6,7 @@
 //   - Only consider sandboxes tagged with metadata.hermes_session_id.
 //     (Sandboxes without the tag are someone else's; never touch.)
 //   - For each tagged sandbox: ask the Worker for the session's status.
-//     If terminal (completed/failed/aborted), kill.
+//     If terminal (completed/failed/aborted/archived), kill.
 //     If the session is unknown (404), kill — DO state is the source of truth
 //     and a sandbox tied to a vanished session is by definition orphaned.
 //     Otherwise (running/needs_approval/...): leave alone.
@@ -60,7 +60,9 @@ export async function sweepOrphans(input: SweepInput): Promise<SweepResult> {
       } else if (r.ok) {
         const data = (await r.json()) as { session?: { status: string } };
         const status = data.session?.status;
-        if (status && ["completed", "failed", "aborted"].includes(status)) {
+        // `archived` is included so sandboxes whose session was archived
+        // via a merge webhook (race vs. the watcher) still get reclaimed.
+        if (status && ["completed", "failed", "aborted", "archived"].includes(status)) {
           shouldKill = true;
         }
       }

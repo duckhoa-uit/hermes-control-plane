@@ -57,6 +57,28 @@ describe("sweepOrphans", () => {
     global.fetch = realFetch;
   });
 
+  it("kills sandboxes whose session is archived (merge webhook race)", async () => {
+    const sandboxes = [
+      { sandboxID: "sbx_arch", metadata: { hermes_session_id: "sess_arch" } },
+    ];
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/v2/sandboxes")) {
+        return new Response(JSON.stringify(sandboxes), { status: 200 });
+      }
+      if (url.includes("/sessions/sess_arch")) {
+        return new Response(JSON.stringify({ session: { status: "archived" } }), { status: 200 });
+      }
+      return new Response("unhandled", { status: 500 });
+    }) as typeof fetch;
+
+    const result = await sweepOrphans({ e2bApiKey: "key", hermesBaseUrl: "http://worker" });
+    expect(result.killed).toEqual(["sbx_arch"]);
+    expect(result.kept).toEqual([]);
+    expect(killSpy).toHaveBeenCalledWith("sbx_arch");
+    global.fetch = realFetch;
+  });
+
   it("keeps sandboxes when Worker is unreachable (does not destructively act on uncertainty)", async () => {
     const sandboxes = [
       { sandboxID: "sbx_a", metadata: { hermes_session_id: "sess_a" } },

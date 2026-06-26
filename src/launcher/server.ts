@@ -53,7 +53,12 @@ if (missing.length > 0) {
   process.exit(1);
 }
 
-const TERMINAL_STATUSES = new Set(["completed", "failed", "aborted"]);
+// Sandbox-cleanup terminal set. Includes `archived` because a webhook
+// (pull_request.closed merged=true) can transition completed -> archived
+// before the watcher next polls; without `archived` here the watcher
+// would never observe a terminal state and the sandbox would stay
+// tracked until the 24h E2B deadline.
+const TERMINAL_STATUSES = new Set(["completed", "failed", "aborted", "archived"]);
 
 interface ActiveSession {
   sandboxId: string;
