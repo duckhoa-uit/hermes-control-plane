@@ -100,7 +100,7 @@ current status.
 | Gap (research §2) | Status |
 |---|---|
 | G1 — `renderContextPackage()` has no behavioural rules | ✅ closed (A3) — verified live on PR #15 |
-| G2 — Amend-mode preamble is one short paragraph | ✅ closed (A5) — code wired; live verification requires an open PR + a webhook trigger and is deferred to the next amend session |
+| G2 — Amend-mode preamble is one short paragraph | ✅ closed (A5) — code wired; verified live post-merge via synthetic webhook smoke (see §4.4): both `review_changes_requested` and `check_run_failed` preambles confirmed in spawned sessions |
 | G3 — No task-class differentiation in trigger payload | ✅ closed (A5) — `triggerKind` plumbed webhook → launcher → runner; unit tests in `tests/provision.test.ts` confirm both `review_changes_requested` and `ci_failure` shapes |
 | G4 — No AGENTS.md/CLAUDE.md loader | ✅ closed (A4) — verified live on PR #15 |
 | G5 — No commit-message / PR-body authoring guidance | ✅ closed (A2) — verified live on PR #15 |
@@ -160,15 +160,34 @@ unit tests assert on `parsePrMetadata` correctness in isolation,
 but the runtime path involves a third file (the DO) that wasn't
 covered.  Adding a regression test for this is a P-low follow-up.
 
-### 4.4 A5's amend preamble was not exercised in this round
+### 4.4 A5's amend preamble — verified live (synthetic webhook smoke)
 
-The runner code is wired and the env vars flow through provision +
-start.json correctly (unit-tested in `tests/provision.test.ts`),
-but live exercise requires (a) an open PR that (b) gets a real
-`pull_request_review.changes_requested` or `check_run.completed`
-event.  Neither happened during the e2e runs.  This is left to the
-next round (or a manual webhook injection — `scripts/` already has
-helpers).
+Smoke-tested post-merge against PR #15 on `duckhoa-uit/lawn` using
+HMAC-signed synthetic payloads delivered to `POST /webhooks/github`
+(`GITHUB_WEBHOOK_SECRET` set in `.dev.vars`; chosen so we did not have
+to broaden the `GITHUB_USER_TOKEN` PAT to include the Webhooks scope).
+Both trigger kinds covered:
+
+| Trigger | Spawned session | `agent.message.complete` seq 10 (preamble) |
+|---|---|---|
+| `pull_request_review.submitted` (state=`changes_requested`) | `afc64b83…` (autofixCount=1) | `# Hermes amend — address review feedback` + reviewer body + branch/PR header |
+| `check_run.completed` (conclusion=`failure`) | `6aca589e…` (autofixCount=2) | `# Hermes amend — fix failing CI` + check name + `details_url` |
+
+Also incidentally verified:
+- Single-flight cap (`tryClaimAmendSlot` → `inflight` rejection) when
+  the first amend session was still running; releasing the slot via
+  `DELETE /sessions/:id` on the launcher unblocked the second.
+- A4 `repo.instructions.loaded` (`AGENTS.md`, 1227 B) fires on amend
+  sessions too — confirming the loader is amend-aware, not just for
+  fresh tasks.
+- Self-trigger guards (`row.ownerLogin` != `sender.login`) not exercised
+  here because the synthetic sender was `smoke-reviewer` /
+  `github-actions[bot]`; covered by unit tests.
+
+No production GitHub webhook delivery was used, so the GitHub-side
+signature header path is only exercised by the HMAC verifier unit
+tests.  Real-PR exercise remains a P-low follow-up but is no longer
+blocking PR #A sign-off.
 
 ---
 
