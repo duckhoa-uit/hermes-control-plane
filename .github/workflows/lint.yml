@@ -19,12 +19,24 @@ concurrency:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
 
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+
+      # Cache bun's package store so a cold-cache install drops from
+      # ~7s -> <2s on warm runs. Keyed on the lockfile so any
+      # dependency bump invalidates the cache automatically.
+      - name: Cache bun store
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-store-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-store-${{ runner.os }}-
 
       - run: bun install --frozen-lockfile
 
@@ -50,3 +62,31 @@ jobs:
       # past that bar.
       - name: Duplicate-code check (jscpd)
         run: bun run dupes
+
+  bundle-size:
+    name: Worker bundle size budget
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache bun store
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-store-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-store-${{ runner.os }}-
+
+      - run: bun install --frozen-lockfile
+
+      # Wrangler dry-run + size budget. Today's bundle is ~272 KiB; budget
+      # is 1 MiB and hard limit is the Cloudflare Free-tier 3 MiB upload cap.
+      # Numbers + budget % land in the run page's step summary so reviewers
+      # don't have to log-dive.
+      - name: Bundle size budget
+        run: bun run bundle:size

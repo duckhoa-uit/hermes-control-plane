@@ -1,0 +1,35 @@
+# Drafts the next GitHub Release notes on every push to main.
+#
+# Reads .github/release-drafter.yml. Runs in ~5s. The draft release is
+# updated in place; no actual tag/publish happens until a human clicks
+# "Publish" in the GitHub UI.
+#
+# Also auto-labels PRs on open/edit/reopen based on the Conventional-Commit
+# prefix in the title (so unlabeled PRs still land in the right category
+# when drafted).
+name: release-drafter
+
+on:
+  push:
+    branches: [main]
+  pull_request_target:
+    types: [opened, reopened, synchronize, edited]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-drafter
+  cancel-in-progress: false
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: release-drafter/release-drafter@v6
+        with:
+          config-name: release-drafter.yml
+          disable-autolabeler: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

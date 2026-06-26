@@ -1,0 +1,84 @@
+# release-drafter config — drafts the next GitHub Release notes from
+# merged PRs grouped by Conventional-Commit prefix.
+#
+# Triggered by .github/workflows/release-drafter.yml on each merge to main.
+# Renovate also emits 'chore(deps): ...' subjects so its PRs land under
+# Dependencies automatically.
+
+name-template: "v$RESOLVED_VERSION"
+tag-template: "v$RESOLVED_VERSION"
+categories:
+  - title: "🚀 Features"
+    labels: ["feature", "enhancement", "feat"]
+  - title: "🐛 Bug Fixes"
+    labels: ["bug", "fix"]
+  - title: "🧪 Tests"
+    labels: ["test", "tests"]
+  - title: "📚 Documentation"
+    labels: ["docs", "documentation"]
+  - title: "🏗️ Refactoring"
+    labels: ["refactor", "chore"]
+  - title: "🔒 Security"
+    labels: ["security"]
+  - title: "📦 Dependencies"
+    labels: ["dependencies", "renovate"]
+  - title: "🛠️ CI / Tooling"
+    labels: ["ci", "tooling", "quality"]
+
+# Title-prefix → label mapping so unlabeled PRs still land in a category.
+autolabeler:
+  - label: "feat"
+    title:
+      - "/^feat(\\(.+\\))?:/i"
+  - label: "fix"
+    title:
+      - "/^fix(\\(.+\\))?:/i"
+  - label: "docs"
+    title:
+      - "/^docs(\\(.+\\))?:/i"
+  - label: "refactor"
+    title:
+      - "/^refactor(\\(.+\\))?:/i"
+  - label: "test"
+    title:
+      - "/^tests?(\\(.+\\))?:/i"
+  - label: "chore"
+    title:
+      - "/^chore(\\(.+\\))?:/i"
+  - label: "ci"
+    title:
+      - "/^ci(\\(.+\\))?:/i"
+  - label: "dependencies"
+    title:
+      - "/^chore\\(deps\\)/i"
+
+version-resolver:
+  major:
+    labels: ["major", "breaking"]
+  minor:
+    labels: ["feat", "feature", "enhancement", "minor"]
+  patch:
+    labels:
+      - "fix"
+      - "bug"
+      - "patch"
+      - "docs"
+      - "chore"
+      - "refactor"
+      - "test"
+      - "ci"
+      - "dependencies"
+  default: patch
+
+change-template: "- $TITLE (#$NUMBER) by @$AUTHOR"
+change-title-escapes: '\<*_&' # Escape Markdown
+exclude-labels:
+  - "skip-changelog"
+  - "no-release-note"
+
+template: |
+  ## What's changed in $RESOLVED_VERSION
+
+  $CHANGES
+
+  **Full changelog:** https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION
