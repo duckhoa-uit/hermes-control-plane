@@ -85,11 +85,11 @@ async function http<T = any>(
   const headers: Record<string, string> = {};
   if (body) headers["Content-Type"] = "application/json";
   if (isLauncher && LAUNCHER_SECRET) headers["x-hermes-launcher-secret"] = LAUNCHER_SECRET;
-  const resp = await fetch(url, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  // fetch rejects `body` (even when undefined) on GET — only attach for
+  // methods that allow a payload.
+  const init: RequestInit = { method, headers };
+  if (body !== undefined) init.body = JSON.stringify(body);
+  const resp = await fetch(url, init);
   const raw = await resp.text();
   let parsed: any = raw;
   try { parsed = raw ? JSON.parse(raw) : null; } catch {}

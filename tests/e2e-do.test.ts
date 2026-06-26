@@ -160,7 +160,7 @@ class FakeStorage {
   async list<T>(opts?: { prefix?: string }): Promise<Map<string, T>> {
     const out = new Map<string, T>();
     const prefix = opts?.prefix ?? "";
-    const keys = [...this.kv.keys()].filter(k => k.startsWith(prefix)).sort();
+    const keys = [...this.kv.keys()].filter(k => k.startsWith(prefix)).toSorted();
     for (const k of keys) out.set(k, this.kv.get(k) as T);
     return out;
   }
@@ -1466,7 +1466,10 @@ describe("E2E: Worker + SessionDurableObject", () => {
     mockLauncher(async (req) => {
       launcherSecretHeader = req.headers.get("x-hermes-launcher-secret");
       launcherCall = await req.json();
-      return new Response(JSON.stringify({ sessionId: "sess-amend-1", sandboxId: "sbx-1" }), { ...({ status: 201 }), headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify({ sessionId: "sess-amend-1", sandboxId: "sbx-1" }), ({
+	status: 201,
+	headers: { 'content-type': 'application/json' }
+}));
     });
     try {
       const resp = await postWebhook(env, "pull_request_review", "del-review-1",
@@ -1510,7 +1513,10 @@ describe("E2E: Worker + SessionDurableObject", () => {
     await seedPr(env, "o/r#43", "https://github.com/o/r/pull/43");
 
     let called = false;
-    mockLauncher(async () => { called = true; return new Response(JSON.stringify({}), { ...({ status: 500 }), headers: { "content-type": "application/json" } }); });
+    mockLauncher(async () => { called = true; return new Response(JSON.stringify({}), ({
+	status: 500,
+	headers: { 'content-type': 'application/json' }
+})); });
     try {
       const approved = reviewChangesPayload(43, "sha-A", "reviewer2", "lgtm");
       (approved.review as any).state = "approved";
@@ -1530,7 +1536,10 @@ describe("E2E: Worker + SessionDurableObject", () => {
     const parentId = await seedPr(env, "o/r#44", "https://github.com/o/r/pull/44");
 
     let called = false;
-    mockLauncher(async () => { called = true; return new Response(JSON.stringify({}), { ...({ status: 500 }), headers: { "content-type": "application/json" } }); });
+    mockLauncher(async () => { called = true; return new Response(JSON.stringify({}), ({
+	status: 500,
+	headers: { 'content-type': 'application/json' }
+})); });
     try {
       const resp = await postWebhook(env, "pull_request_review", "del-rev-self",
         reviewChangesPayload(44, "sha-self", "alice", "i had second thoughts"));
@@ -1563,7 +1572,10 @@ describe("E2E: Worker + SessionDurableObject", () => {
       sender: { login: "alice", type: "User" }, // operator login, User type
     };
     let called = false;
-    mockLauncher(async () => { called = true; return new Response(JSON.stringify({}), { ...({ status: 500 }), headers: { "content-type": "application/json" } }); });
+    mockLauncher(async () => { called = true; return new Response(JSON.stringify({}), ({
+	status: 500,
+	headers: { 'content-type': 'application/json' }
+})); });
     try {
       const resp = await postWebhook(env, "check_run", "del-cr-self", payload);
       expect(resp.status).toBe(200);
@@ -1594,7 +1606,10 @@ describe("E2E: Worker + SessionDurableObject", () => {
       repository: { full_name: "o/r" },
       sender: { login: "alice", type: "Bot" },
     };
-    mockLauncher(async () => new Response(JSON.stringify({ sessionId: "sess-bot", sandboxId: "sbx-b" }), { ...({ status: 201 }), headers: { "content-type": "application/json" } }));
+    mockLauncher(async () => new Response(JSON.stringify({ sessionId: "sess-bot", sandboxId: "sbx-b" }), ({
+	status: 201,
+	headers: { 'content-type': 'application/json' }
+})));
     try {
       const resp = await postWebhook(env, "check_run", "del-bot", payload);
       expect((await resp.json() as any).dispatched).toBe(true);
@@ -1610,7 +1625,10 @@ describe("E2E: Worker + SessionDurableObject", () => {
     let launcherCall: any = null;
     mockLauncher(async (req) => {
       launcherCall = await req.json();
-      return new Response(JSON.stringify({ sessionId: "sess-cr-1", sandboxId: "sbx-2" }), { ...({ status: 201 }), headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify({ sessionId: "sess-cr-1", sandboxId: "sbx-2" }), ({
+	status: 201,
+	headers: { 'content-type': 'application/json' }
+}));
     });
     try {
       const resp = await postWebhook(env, "check_run", "del-cr-1",
@@ -1635,7 +1653,10 @@ describe("E2E: Worker + SessionDurableObject", () => {
     let n = 0;
     mockLauncher(async () => {
       n++;
-      return new Response(JSON.stringify({ sessionId: `sess-cap-${n}`, sandboxId: `sbx-${n}` }), { ...({ status: 201 }), headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify({ sessionId: `sess-cap-${n}`, sandboxId: `sbx-${n}` }), ({
+	status: 201,
+	headers: { 'content-type': 'application/json' }
+}));
     });
     try {
       for (let i = 1; i <= 3; i++) {
@@ -1667,7 +1688,10 @@ describe("E2E: Worker + SessionDurableObject", () => {
     env.LAUNCHER_URL = "http://launcher.test";
     await seedPr(env, "o/r#47", "https://github.com/o/r/pull/47");
 
-    mockLauncher(async () => new Response(JSON.stringify({ sessionId: "sess-dup-1", sandboxId: "sbx-d" }), { ...({ status: 201 }), headers: { "content-type": "application/json" } }));
+    mockLauncher(async () => new Response(JSON.stringify({ sessionId: "sess-dup-1", sandboxId: "sbx-d" }), ({
+	status: 201,
+	headers: { 'content-type': 'application/json' }
+})));
     try {
       const r1 = await postWebhook(env, "pull_request_review", "del-dup-1",
         reviewChangesPayload(47, "sha-X", "rev"));
@@ -1688,7 +1712,10 @@ describe("E2E: Worker + SessionDurableObject", () => {
     env.LAUNCHER_URL = "http://launcher.test";
     await seedPr(env, "o/r#48", "https://github.com/o/r/pull/48");
 
-    mockLauncher(async () => new Response(JSON.stringify({ sessionId: "sess-inf-1", sandboxId: "sbx-i" }), { ...({ status: 201 }), headers: { "content-type": "application/json" } }));
+    mockLauncher(async () => new Response(JSON.stringify({ sessionId: "sess-inf-1", sandboxId: "sbx-i" }), ({
+	status: 201,
+	headers: { 'content-type': 'application/json' }
+})));
     try {
       const r1 = await postWebhook(env, "pull_request_review", "del-inf-1",
         reviewChangesPayload(48, "sha-A", "rev"));
@@ -1709,8 +1736,14 @@ describe("E2E: Worker + SessionDurableObject", () => {
     let callCount = 0;
     mockLauncher(async () => {
       callCount++;
-      if (callCount === 1) return new Response(JSON.stringify({ error: "boom" }), { ...({ status: 500 }), headers: { "content-type": "application/json" } });
-      return new Response(JSON.stringify({ sessionId: "sess-r-1", sandboxId: "sbx-r" }), { ...({ status: 201 }), headers: { "content-type": "application/json" } });
+      if (callCount === 1) return new Response(JSON.stringify({ error: "boom" }), ({
+	status: 500,
+	headers: { 'content-type': 'application/json' }
+}));
+      return new Response(JSON.stringify({ sessionId: "sess-r-1", sandboxId: "sbx-r" }), ({
+	status: 201,
+	headers: { 'content-type': 'application/json' }
+}));
     });
     try {
       const r1 = await postWebhook(env, "pull_request_review", "del-recover-1",
@@ -1735,9 +1768,10 @@ describe("E2E: Worker + SessionDurableObject", () => {
 
     // Launcher returns 200 OK but the body has no sessionId — could be a
     // misconfigured launcher, a proxy injecting a static page, etc.
-    mockLauncher(async () => new Response(JSON.stringify({ ok: true }), {
-      ...({ status: 200 }), headers: { "content-type": "application/json" },
-    }));
+    mockLauncher(async () => new Response(JSON.stringify({ ok: true }), ({
+	status: 200,
+	headers: { 'content-type': 'application/json' }
+})));
     try {
       const r1 = await postWebhook(env, "pull_request_review", "del-nosess-1",
         reviewChangesPayload(52, "sha-N", "rev"));
@@ -1753,9 +1787,10 @@ describe("E2E: Worker + SessionDurableObject", () => {
 
     // Second attempt with a real sessionId succeeds (proves the slot is
     // fully reclaimable after the no-sessionId rollback).
-    mockLauncher(async () => new Response(JSON.stringify({ sessionId: "sess-recover", sandboxId: "sbx" }), {
-      ...({ status: 201 }), headers: { "content-type": "application/json" },
-    }));
+    mockLauncher(async () => new Response(JSON.stringify({ sessionId: "sess-recover", sandboxId: "sbx" }), ({
+	status: 201,
+	headers: { 'content-type': 'application/json' }
+})));
     try {
       const r2 = await postWebhook(env, "pull_request_review", "del-nosess-2",
         reviewChangesPayload(52, "sha-N", "rev"));
@@ -1782,7 +1817,10 @@ describe("E2E: Worker + SessionDurableObject", () => {
     env.LAUNCHER_URL = "http://launcher.test";
     env.AUTOFIX_CAP_PER_PR = "1";
     await seedPr(env, "o/r#51", "https://github.com/o/r/pull/51");
-    mockLauncher(async () => new Response(JSON.stringify({ sessionId: "sess-x", sandboxId: "sbx-x" }), { ...({ status: 201 }), headers: { "content-type": "application/json" } }));
+    mockLauncher(async () => new Response(JSON.stringify({ sessionId: "sess-x", sandboxId: "sbx-x" }), ({
+	status: 201,
+	headers: { 'content-type': 'application/json' }
+})));
     try {
       const r1 = await postWebhook(env, "pull_request_review", "del-cap1-1",
         reviewChangesPayload(51, "sha-1", "rev"));

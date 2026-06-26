@@ -49,10 +49,10 @@ describe("sweepOrphans", () => {
     });
 
     expect(result.scanned).toBe(3); // 3 tagged with hermes_session_id
-    expect(result.killed.sort()).toEqual(["sbx_404", "sbx_done"]);
+    expect(result.killed.toSorted()).toEqual(["sbx_404", "sbx_done"]);
     expect(result.kept).toEqual(["sbx_run"]);
     expect(killSpy).toHaveBeenCalledTimes(2);
-    expect(killSpy.mock.calls.map((c) => c[0]).sort()).toEqual(["sbx_404", "sbx_done"]);
+    expect(killSpy.mock.calls.map((c) => c[0]).toSorted()).toEqual(["sbx_404", "sbx_done"]);
 
     global.fetch = realFetch;
   });

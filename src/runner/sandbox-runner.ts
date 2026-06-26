@@ -537,7 +537,7 @@ async function runPrCreation(payload: Record<string, unknown>): Promise<void> {
     await execStrict(`git add -A`);
     const stagedDiff = await execCmd(`git diff --cached --name-only`);
     if (stagedDiff.trim()) {
-      await execStrict(`git commit -m "${title.replace(/"/g, '\"')}"`);
+      await execStrict(`git commit -m "${title.replace(/"/g, '"')}"`);
     } else {
       // Agent already committed during the run. Verify HEAD has something
       // worth pushing.

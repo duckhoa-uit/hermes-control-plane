@@ -48,11 +48,13 @@ async function http<T = any>(
   path: string,
   body?: unknown,
 ): Promise<{ status: number; body: T }> {
-  const resp = await fetch(`${BASE}${path}`, {
-    method,
-    headers: body ? { "Content-Type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  // Build init incrementally — fetch rejects `body` (even `undefined`) on GET.
+  const init: RequestInit = { method };
+  if (body !== undefined) {
+    init.headers = { "Content-Type": "application/json" };
+    init.body = JSON.stringify(body);
+  }
+  const resp = await fetch(`${BASE}${path}`, init);
   const text = await resp.text();
   let parsed: any = text;
   try { parsed = text ? JSON.parse(text) : null; } catch {}

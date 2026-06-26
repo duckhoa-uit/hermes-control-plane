@@ -658,7 +658,7 @@ Logs / details: ${parsed.detailsUrl}
           id: body.projectId,
           repoUrl: body.repoUrl ?? DEFAULT_PROFILE.repoUrl,
           env: {
-            ...(body.profile?.env ?? {}),
+            ...body.profile?.env,
           },
         };
 
