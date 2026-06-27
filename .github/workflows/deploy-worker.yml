@@ -59,18 +59,19 @@ jobs:
             --data "{\"content\":\":rocket: Deploying \`hermes-control-plane\` worker — sha \`${GITHUB_SHA::7}\` (${GITHUB_ACTOR}) — <https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}>\"}" \
             "$DISCORD_DEPLOY_WEBHOOK" || true
 
-      # Push SENTRY_RELEASE = current git sha so the Worker's runtime
-      # Sentry init tags issues with the release that introduced the
-      # regression. `wrangler secret put` is one-shot per env, so we
-      # write it on every deploy. No-op when SENTRY_DSN secret is unset.
-      - name: Push SENTRY_RELEASE secret
-        if: env.SENTRY_DSN_PRESENT == 'true'
+      # Push POSTHOG_RELEASE = current git sha so the Worker's runtime
+      # PostHog client tags $exception events with the release that
+      # introduced the regression. `wrangler secret put` is one-shot
+      # per env, so we write it on every deploy. No-op when
+      # POSTHOG_PROJECT_TOKEN secret is unset.
+      - name: Push POSTHOG_RELEASE secret
+        if: env.POSTHOG_TOKEN_PRESENT == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          SENTRY_DSN_PRESENT: ${{ secrets.SENTRY_DSN != '' }}
+          POSTHOG_TOKEN_PRESENT: ${{ secrets.POSTHOG_PROJECT_TOKEN != '' }}
         run: |
-          echo "$GITHUB_SHA" | bunx wrangler secret put SENTRY_RELEASE
+          echo "$GITHUB_SHA" | bunx wrangler secret put POSTHOG_RELEASE
 
       - name: Deploy
         id: wrangler

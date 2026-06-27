@@ -39,19 +39,21 @@ interface CloudflareEnv {
   // endpoint instead of asking the runner to push + open the PR
   // itself. PR #B (publish-via-launcher) reads this; PR #A only
 
-  // ---------- Error tracking ----------
-  // Sentry DSN for the Worker. When set, the worker entrypoint is
-  // wrapped with @sentry/cloudflare so unhandled errors, structured
-  // log lines at level=error, and the request context all flow into
-  // the configured Sentry project. When unset, the worker runs
-  // exactly as before (no wrapper, no overhead). Set via
-  // `wrangler secret put SENTRY_DSN`.
-  SENTRY_DSN?: string;
+  // ---------- Error tracking + product analytics (PostHog) ----------
+  // PostHog project token. When set, the worker entrypoint is wrapped
+  // with posthog-node so unhandled errors + request context flow into
+  // the configured PostHog project. Same token also gates product-
+  // analytics capture. When unset, the worker runs exactly as before
+  // (no wrapper, no overhead). Set via `wrangler secret put POSTHOG_PROJECT_TOKEN`.
+  POSTHOG_PROJECT_TOKEN?: string;
+  // PostHog ingest host. Defaults to https://us.i.posthog.com.
+  // Override to https://eu.i.posthog.com for the EU cloud region or
+  // to a self-hosted URL.
+  POSTHOG_HOST?: string;
   // Optional environment tag (production / staging / preview).
-  // Defaults to "production" when SENTRY_DSN is set.
-  SENTRY_ENVIRONMENT?: string;
+  POSTHOG_ENVIRONMENT?: string;
   // Optional release identifier. CI sets this to the git sha so a
-  // Sentry issue can be pivoted back to the commit that introduced
-  // the regression. Falls back to the bundle hash when unset.
-  SENTRY_RELEASE?: string;
+  // PostHog $exception event can be pivoted back to the commit that
+  // introduced the regression.
+  POSTHOG_RELEASE?: string;
 }

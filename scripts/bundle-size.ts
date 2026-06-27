@@ -26,10 +26,11 @@ const HARD_LIMIT_BYTES = 3 * 1024 * 1024;
 // the deploy actually fails. Bump this number deliberately when a real
 // new dependency lands.
 //
-// Bumped to 2 MiB in PR #47 (error tracking): @sentry/cloudflare adds
-// ~1.4 MiB. The hard limit is still the CF Free-tier 3 MiB upload cap,
-// so we keep 1 MiB of headroom for future intentional additions.
-const BUDGET_BYTES = 2 * 1024 * 1024;
+// History: bumped to 2 MiB in PR #47 (error tracking) to accommodate
+// @sentry/cloudflare (~1.4 MiB). Reset to 1 MiB after swapping to
+// posthog-node (~400 KiB) — bundle now sits comfortably under the
+// original budget again.
+const BUDGET_BYTES = 1024 * 1024;
 
 function fmt(bytes: number): string {
   if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(2)} MiB`;

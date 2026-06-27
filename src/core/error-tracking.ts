@@ -1,110 +1,121 @@
 // ============================================================
-// Error tracking — Sentry integration
+// Error tracking — PostHog integration
 //
-// Thin wrapper around `@sentry/cloudflare` so the worker entrypoint
-// stays readable. The Sentry SDK is lazy-loaded (`import("…")`) and the
-// wrapper short-circuits when `SENTRY_DSN` is unset, so a fork running
-// without a Sentry project pays exactly zero runtime cost.
+// Posts captured exceptions to PostHog's error-tracking endpoint via
+// `posthog-node`'s workerd-friendly entry point. The module short-
+// circuits when `POSTHOG_PROJECT_TOKEN` is unset, so forks/dev/tests
+// pay zero overhead.
 //
-// What flows into Sentry:
+// What flows into PostHog:
 //   - Unhandled exceptions thrown inside `fetch()` — captured by the
-//     `withSentry` wrapper from `@sentry/cloudflare`.
-//   - Errors explicitly reported via `captureError(err, context)` —
+//     `wrapWorker(handler)` helper below.
+//   - Errors explicitly reported via `captureError(err, ctx, env)` —
 //     called from request-failed paths so we attach the request id,
-//     path, and method as Sentry tags. The DO logger module also calls
-//     this when a structured log line is emitted at level=error.
-//   - Source maps and release identifier (the git sha CI passes in
-//     SENTRY_RELEASE) so the stack trace links to the right source.
-//   - Breadcrumbs and request context (URL, headers minus the
-//     SENTRY_REDACTED secret-bearing ones) for every captured event.
+//     path, method, status, and optional session_id as $exception
+//     event properties.
+//   - A release tag (POSTHOG_RELEASE — CI sets to the git sha) so a
+//     regression can be traced back to the introducing commit.
 //
-// What does NOT flow into Sentry:
+// What does NOT flow into PostHog:
 //   - Secrets — `redactString` from src/core/logger.ts is run against
-//     every string field on the event before send. Defense-in-depth in
-//     case a token leaks into an error message.
+//     every string property on the event before send. Defense-in-depth
+//     in case a token leaks into an error message.
+//
+// Why PostHog (and not Sentry)?
+//   - PostHog free tier is generous: 100k exceptions/month + 1M product
+//     analytics events/month + 1M feature-flag requests/month, all on a
+//     single shared free quota. Sentry's free plan caps at 5k errors.
+//   - Same JSON contract for both error tracking and product analytics,
+//     so the same SDK covers the `error_tracking_contextualized` and
+//     `product_analytics_instrumentation` Agent Readiness signals.
 //
 // Configuration knobs (see src/worker/env.d.ts):
-//   - SENTRY_DSN: gate. When unset, the wrapper is a passthrough.
-//   - SENTRY_ENVIRONMENT: tag (defaults to "production").
-//   - SENTRY_RELEASE: tag (CI sets to the git sha).
+//   - POSTHOG_PROJECT_TOKEN: gate. When unset, the wrapper is a passthrough.
+//   - POSTHOG_HOST: PostHog ingest URL. Defaults to https://us.i.posthog.com.
+//   - POSTHOG_RELEASE: optional release tag (CI sets to the git sha).
+//   - POSTHOG_ENVIRONMENT: optional environment tag (production/staging/preview).
 // ============================================================
 
-import * as Sentry from "@sentry/cloudflare";
+import { PostHog } from "posthog-node";
 import { redactString } from "./logger";
+
+const DEFAULT_HOST = "https://us.i.posthog.com";
 
 /**
  * Surface of the Worker env we read. Kept structural so the launcher
  * (which has its own env shape) can share the helpers below.
  */
-export interface SentryEnv {
-  SENTRY_DSN?: string;
-  SENTRY_ENVIRONMENT?: string;
-  SENTRY_RELEASE?: string;
+export interface PosthogEnv {
+  POSTHOG_PROJECT_TOKEN?: string;
+  POSTHOG_HOST?: string;
+  POSTHOG_RELEASE?: string;
+  POSTHOG_ENVIRONMENT?: string;
+}
+
+/** Shape of the Cloudflare Worker `ExecutionContext` we need. */
+interface MinimalExecutionContext {
+  waitUntil(promise: Promise<unknown>): void;
 }
 
 /**
- * @sentry/cloudflare's `withSentry` helper takes a Worker default
- * export and wraps fetch/scheduled/queue handlers with the SDK. We
- * use the function form so the options can read from the per-request
- * env binding (DSN lives in `wrangler secret put`).
+ * Wraps a Worker default-export handler so unhandled exceptions thrown
+ * inside `fetch()` are captured by PostHog, then re-thrown so the
+ * Worker runtime's existing error path still runs (and the structured
+ * logger still emits the request.failed line).
  *
- * When SENTRY_DSN is unset we return the handler unwrapped, so the
- * import has zero side-effects in dev / forks / tests.
+ * Zero overhead when POSTHOG_PROJECT_TOKEN is unset — the SDK never
+ * instantiates.
  */
-// `unknown` cast: Sentry's withSentry types as a specific
-// ExportedHandler<Env>, but the worker module exports a structurally
-// compatible handler whose env shape is wider than the SDK's generic.
-// Passing it through unknown is the standard escape hatch.
-export function wrapWorker<H>(handler: H): H {
-  return Sentry.withSentry(
-    (env: SentryEnv) => {
-      if (!env.SENTRY_DSN) return undefined;
-      return {
-        dsn: env.SENTRY_DSN,
-        environment: env.SENTRY_ENVIRONMENT ?? "production",
-        release: env.SENTRY_RELEASE,
-        // 10% of transactions; matches our existing
-        // wrangler.jsonc observability head_sampling_rate so
-        // logs+traces stay correlatable. Bump to 1.0 to chase a
-        // specific incident.
-        tracesSampleRate: 0.1,
-        // Strip token-shaped substrings + sensitive header values
-        // before send. We pass everything through `redactString` so
-        // the same patterns the structured logger redacts (PATs,
-        // bearer headers, hex blobs) also disappear from Sentry.
-        beforeSend(event) {
-          return redactEvent(event) as Sentry.ErrorEvent;
-        },
-      };
+export function wrapWorker<H extends WorkerHandler>(handler: H): H {
+  const wrapped: WorkerHandler = {
+    async fetch(request, env, ctx) {
+      const client = createClient(env as PosthogEnv);
+      try {
+        return await handler.fetch(request, env, ctx);
+      } catch (err) {
+        if (client) {
+          captureToClient(client, err, {
+            path: new URL(request.url).pathname,
+            method: request.method,
+          });
+          // Don't block the response on flush; let the Worker isolate
+          // ship the payload after we re-throw.
+          (ctx as MinimalExecutionContext).waitUntil(client.shutdown());
+        }
+        throw err;
+      }
     },
-    handler as unknown as Parameters<typeof Sentry.withSentry>[1],
-  ) as unknown as H;
+  };
+  return wrapped as H;
+}
+
+interface WorkerHandler {
+  fetch(request: Request, env: unknown, ctx: unknown): Promise<Response>;
 }
 
 /**
- * Report an error to Sentry from a caller-known failure path. The
- * structured tags (request id, path, method, status) make the issue
- * filterable in the Sentry UI and drop into the GitHub-issue payload
- * (.github/workflows/sentry-issue.yml) verbatim.
+ * Report an error to PostHog from a caller-known failure path. Tags
+ * (requestId, path, method, status, sessionId) become properties on
+ * the `$exception` event so they're filterable in the PostHog UI.
  *
- * No-op when Sentry isn't wired (the SDK throws if called outside an
- * active scope).
+ * Optional `ctx` (the Worker ExecutionContext) lets the caller delay
+ * the worker isolate's teardown until the event is flushed; without
+ * it, the call may best-effort drop the event if the isolate dies
+ * before the request finishes.
+ *
+ * No-op when POSTHOG_PROJECT_TOKEN is unset.
  */
-export function captureError(err: unknown, context: ErrorContext): void {
-  try {
-    Sentry.withScope((scope) => {
-      if (context.requestId) scope.setTag("request_id", context.requestId);
-      if (context.path) scope.setTag("path", context.path);
-      if (context.method) scope.setTag("method", context.method);
-      if (context.status !== undefined) scope.setTag("status", String(context.status));
-      if (context.sessionId) scope.setTag("session_id", context.sessionId);
-      if (context.extra) scope.setContext("extra", context.extra);
-      Sentry.captureException(err instanceof Error ? err : new Error(String(err)));
-    });
-  } catch {
-    // No active hub (SENTRY_DSN unset) — swallow. The structured logger
-    // already wrote the error to stderr; Sentry is the secondary sink.
-  }
+export function captureError(
+  err: unknown,
+  context: ErrorContext,
+  env: PosthogEnv,
+  ctx?: MinimalExecutionContext,
+): void {
+  const client = createClient(env);
+  if (!client) return;
+  captureToClient(client, err, context);
+  const shutdown = client.shutdown();
+  if (ctx) ctx.waitUntil(shutdown);
 }
 
 export interface ErrorContext {
@@ -117,27 +128,40 @@ export interface ErrorContext {
 }
 
 // ---------------------------------------------------------------------------
-// Redaction (Sentry-side defense in depth)
+// Internals
 
-function redactEvent(event: Sentry.ErrorEvent): Sentry.ErrorEvent {
-  // Recursive walk: any string we own (message, exception messages,
-  // breadcrumbs, request URL/body, tags, contexts) goes through
-  // `redactString`. Cheap — the redaction regex set is the same one
-  // the structured logger uses.
-  return redactValue(event) as unknown as Sentry.ErrorEvent;
+function createClient(env: PosthogEnv): PostHog | null {
+  if (!env.POSTHOG_PROJECT_TOKEN) return null;
+  return new PostHog(env.POSTHOG_PROJECT_TOKEN, {
+    host: env.POSTHOG_HOST ?? DEFAULT_HOST,
+    // Cloudflare isolates die between requests; batching loses events.
+    // Force per-event flush. The cost is one extra HTTP request per
+    // captured exception, which is fine for an error-path SDK.
+    flushAt: 1,
+    flushInterval: 0,
+  });
 }
 
-function redactValue(v: unknown): unknown {
-  if (v == null) return v;
-  if (typeof v === "string") return redactString(v);
-  if (typeof v === "number" || typeof v === "boolean") return v;
-  if (Array.isArray(v)) return v.map(redactValue);
-  if (typeof v === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-      out[k] = redactValue(val);
-    }
-    return out;
+function captureToClient(client: PostHog, err: unknown, ctx: ErrorContext): void {
+  const error = err instanceof Error ? err : new Error(String(err));
+  client.captureException(error, ctx.requestId ?? ctx.sessionId ?? "anonymous", {
+    ...redactProps(ctx.extra),
+    request_id: ctx.requestId,
+    path: ctx.path,
+    method: ctx.method,
+    status: ctx.status,
+    session_id: ctx.sessionId,
+    // Redact the error message itself in case a stack trace embedded a
+    // bearer token (e.g. inside an "HTTP 401: ..." string).
+    $exception_message: redactString(error.message),
+  });
+}
+
+function redactProps(extra?: Record<string, unknown>): Record<string, unknown> {
+  if (!extra) return {};
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(extra)) {
+    out[k] = typeof v === "string" ? redactString(v) : v;
   }
-  return v;
+  return out;
 }

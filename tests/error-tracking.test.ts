@@ -1,46 +1,47 @@
 // Tests for src/core/error-tracking.ts.
 //
-// The Sentry wrapper has two failure modes that need automated coverage:
+// PostHog wrapper has two failure modes that need automated coverage:
 //
-//   1. `captureError` must be a no-op when SENTRY_DSN is unset (i.e.
-//      no active Sentry hub). Otherwise tests + forks + dev would
-//      throw uncaught.
-//   2. The wrapper's `beforeSend` redaction must scrub the same
-//      token-shaped strings the structured logger scrubs. Otherwise a
-//      secret leaked into a thrown error would land in Sentry — the
-//      exact failure mode the wrapper is supposed to prevent.
+//   1. `captureError` must be a no-op when POSTHOG_PROJECT_TOKEN is
+//      unset. Otherwise tests + forks + dev would lazily instantiate
+//      the SDK and try to POST to the default ingest host.
+//   2. The redaction helper must scrub the same token-shaped strings
+//      the structured logger scrubs. Otherwise a secret leaked into a
+//      thrown error would land in PostHog — the exact failure mode the
+//      wrapper is supposed to prevent.
 //
-// We don't unit-test `wrapWorker` directly (that would require booting
-// the Workers runtime); the e2e tests already exercise the unwrapped
-// handler.
+// We don't unit-test `wrapWorker` against a live PostHog instance
+// (that would require booting the Workers runtime + a network hop);
+// the e2e tests already exercise the unwrapped handler.
 
 import { describe, it, expect } from "vitest";
-import { captureError } from "../src/core/error-tracking";
+import { captureError, type PosthogEnv } from "../src/core/error-tracking";
 import { redactString } from "../src/core/logger";
 
+const NO_TOKEN_ENV: PosthogEnv = {};
+
 describe("captureError", () => {
-  it("is a no-op when no Sentry hub is active (does not throw)", () => {
+  it("is a no-op when POSTHOG_PROJECT_TOKEN is unset (does not throw)", () => {
     expect(() =>
-      captureError(new Error("boom"), {
-        requestId: "abc",
-        path: "/sessions",
-        method: "POST",
-        status: 500,
-      }),
+      captureError(
+        new Error("boom"),
+        { requestId: "abc", path: "/sessions", method: "POST", status: 500 },
+        NO_TOKEN_ENV,
+      ),
     ).not.toThrow();
   });
 
   it("accepts non-Error values without crashing", () => {
-    expect(() => captureError("not-an-error", { requestId: "x" })).not.toThrow();
-    expect(() => captureError({ shape: "object" }, { requestId: "x" })).not.toThrow();
-    expect(() => captureError(undefined, { requestId: "x" })).not.toThrow();
+    expect(() => captureError("not-an-error", { requestId: "x" }, NO_TOKEN_ENV)).not.toThrow();
+    expect(() => captureError({ shape: "object" }, { requestId: "x" }, NO_TOKEN_ENV)).not.toThrow();
+    expect(() => captureError(undefined, { requestId: "x" }, NO_TOKEN_ENV)).not.toThrow();
   });
 });
 
 describe("redaction (shared with the structured logger)", () => {
-  // We exercise `redactString` here too because the Sentry wrapper's
-  // `beforeSend` is built on top of it; if the helper's behaviour
-  // regresses, the Sentry sink would start leaking secrets even if
+  // We exercise `redactString` here too because PostHog's
+  // captureToClient is built on top of it; if the helper's behaviour
+  // regresses, the PostHog sink would start leaking secrets even if
   // logger.test.ts goes green.
 
   const A20 = "A".repeat(20);
