@@ -14,17 +14,20 @@
 #        Authorization: token <a fine-grained PAT with `Contents:write` +
 #                              `Issues:write` on this repo>
 #        Accept: application/vnd.github+json
-#      Payload (use PostHog Liquid templating):
+#      Payload (PostHog Hog templating uses single braces `{ }`; the
+#      legacy double-brace `{{ }}` Liquid syntax is opt-in via the
+#      "Templating" dropdown on the destination, but the default Hog
+#      flavour is shown here):
 #        {
 #          "event_type": "posthog-issue",
 #          "client_payload": {
-#            "issue_id": "{{ event.properties.$exception_fingerprint }}",
-#            "title": "{{ event.properties.$exception_type }}: {{ event.properties.$exception_message }}",
-#            "url": "https://us.posthog.com/project/{project_id}/error_tracking/{{ event.properties.$exception_fingerprint }}",
-#            "project": "hermes-control-plane",
+#            "issue_id": "{event.properties.$exception_fingerprint}",
+#            "title": "{event.properties.$exception_type}: {event.properties.$exception_message}",
+#            "url": "{event.url}",
+#            "project": "{project.name}",
 #            "level": "error",
-#            "culprit": "{{ event.properties.path }} {{ event.properties.method }}",
-#            "first_seen": "{{ event.timestamp }}"
+#            "culprit": "{event.properties.path} {event.properties.method}",
+#            "first_seen": "{event.timestamp}"
 #          }
 #        }
 #   3. Filters: event = "$exception", optionally throttle to first
