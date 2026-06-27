@@ -95,6 +95,13 @@ That runs `scripts/dev-setup.sh`: verifies tooling, `bun install`, runs lint
 + typecheck + the vitest suite, copies `.dev.vars.example` → `.dev.vars`
 (if missing), and lists the env vars still left to fill in. Idempotent.
 
+**Codespaces / Dev Containers**: the repo ships a
+[`.devcontainer/devcontainer.json`](.devcontainer/devcontainer.json) so
+opening this repo in VS Code Dev Containers, Cursor, or GitHub
+Codespaces drops you into a Node 22 + Bun + `gh` env with the editor
+extensions our toolchain wants. `bun run setup` runs on attach. See
+[`.devcontainer/README.md`](.devcontainer/README.md) for the walkthrough.
+
 Then, in three terminals:
 
 ```bash
