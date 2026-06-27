@@ -55,20 +55,21 @@ echo 'phc_...' | bunx wrangler secret put POSTHOG_PROJECT_TOKEN
 One-time wiring per PostHog project (commented at the top of the workflow):
 
 1. PostHog → **Data pipelines → Destinations → New → Webhook**.
-2. URL: `https://api.github.com/repos/<owner>/<repo>/dispatches`. Auth = a fine-grained PAT with `Contents:write` + `Issues:write`. Payload templated with PostHog Liquid:
+2. URL: `https://api.github.com/repos/<owner>/<repo>/dispatches`. Auth = a fine-grained PAT with `Contents:write` + `Issues:write`. PostHog destinations default to **Hog templating** (single curly braces `{ }`); the older Liquid syntax (`{{ }}`) is opt-in via the **Templating** dropdown on the destination form. The example below uses Hog:
    ```json
    {
      "event_type": "posthog-issue",
      "client_payload": {
-       "issue_id": "{{ event.properties.$exception_fingerprint }}",
-       "title": "{{ event.properties.$exception_type }}: {{ event.properties.$exception_message }}",
-       "url": "https://us.posthog.com/project/<project_id>/error_tracking/{{ event.properties.$exception_fingerprint }}",
+       "issue_id": "{event.properties.$exception_fingerprint}",
+       "title": "{event.properties.$exception_type}: {event.properties.$exception_message}",
+       "url": "{event.url}",
        "level": "error",
-       "culprit": "{{ event.properties.path }} {{ event.properties.method }}",
-       "first_seen": "{{ event.timestamp }}"
+       "culprit": "{event.properties.path} {event.properties.method}",
+       "first_seen": "{event.timestamp}"
      }
    }
    ```
+   (`{event.url}` is the canonical PostHog event URL — preferable to hand-building one from `<project_id>`.)
 3. Filter: event = `$exception`. Throttle to first occurrence per fingerprint to avoid spamming.
 
 The workflow can also be triggered manually via `workflow_dispatch` for testing — mirrors the same payload shape.
