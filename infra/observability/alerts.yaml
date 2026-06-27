@@ -1,13 +1,20 @@
 # Alert rules for hermes-control-plane.
 #
 # Declarative source of truth for "what should page on-call". An
-# operator imports these into Cloudflare Notifications, PagerDuty
-# service rules, or whatever monitoring backend ships the actual alerts.
-# Re-importing is idempotent because each rule has a stable `name`.
+# operator imports these into Cloudflare Notifications or whatever
+# monitoring backend ships the actual alerts. Re-importing is
+# idempotent because each rule has a stable `name`.
 #
 # Channels:
-#   slack:#hermes-deploys  — informational; deploys, weekly digests
-#   pagerduty:hermes       — wakes someone up
+#   discord:#hermes-deploys — Discord webhook. severity:critical rules
+#                             are also tagged with `@here` in the
+#                             matching deploy-worker.yml step so the
+#                             channel's mobile push notifications fire.
+#
+# To swap channels later (e.g. add PagerDuty when a real on-call
+# rotation appears), keep the same schema and just change the
+# destination — the validator (scripts/validate-alerts.ts) does not
+# pin the channel vocabulary.
 #
 # Schema (project-local, kept dependency-free so an agent can read it
 # without a schema fetch):
@@ -15,7 +22,7 @@
 #   name:        unique, slug-cased identifier
 #   summary:     one-liner shown in the alert payload
 #   severity:    info | warning | critical
-#   channels:    list of [slack|pagerduty]:<destination>
+#   channels:    list of <provider>:<destination>
 #   trigger:     human-readable description of the condition
 #   metric:      machine-readable source: type + selector
 #                  type: log_count | log_rate | latency | http_status
@@ -37,7 +44,7 @@ rules:
   - name: deploy_started
     summary: "Worker deploy started"
     severity: info
-    channels: [slack:#hermes-deploys]
+    channels: [discord:#hermes-deploys]
     trigger: |
       GitHub Actions workflow `deploy-worker` started a run on `main`.
     metric:
@@ -48,7 +55,7 @@ rules:
   - name: deploy_succeeded
     summary: "Worker deployed"
     severity: info
-    channels: [slack:#hermes-deploys]
+    channels: [discord:#hermes-deploys]
     trigger: |
       GitHub Actions workflow `deploy-worker` finished successfully.
     metric:
@@ -59,9 +66,7 @@ rules:
   - name: deploy_failed
     summary: "Worker deploy FAILED — page on-call"
     severity: critical
-    channels:
-      - slack:#hermes-deploys
-      - pagerduty:hermes
+    channels: [discord:#hermes-deploys]
     trigger: |
       GitHub Actions workflow `deploy-worker` exited with failure on
       `main`. Triggered immediately on first failed run.
@@ -78,7 +83,7 @@ rules:
   - name: worker_error_rate_high
     summary: "Worker error rate > 5% over 5m"
     severity: critical
-    channels: [pagerduty:hermes]
+    channels: [discord:#hermes-deploys]
     trigger: |
       Ratio of `level=error` NDJSON lines to total `request.completed`
       lines exceeds 5% on a rolling 5-minute window. Sourced from
@@ -93,7 +98,7 @@ rules:
   - name: worker_p99_latency_high
     summary: "Worker /sessions p99 latency > 2s"
     severity: warning
-    channels: [slack:#hermes-deploys]
+    channels: [discord:#hermes-deploys]
     trigger: |
       Sustained slow responses on session-CRUD routes. Almost always
       points to a degraded DO or a downstream (E2B / GitHub) wait.
@@ -108,7 +113,7 @@ rules:
   - name: github_webhook_unauthorized
     summary: "GitHub webhook HMAC mismatch"
     severity: critical
-    channels: [pagerduty:hermes]
+    channels: [discord:#hermes-deploys]
     trigger: |
       Worker returned 401 on `/webhooks/github` — either the repo's
       `GITHUB_WEBHOOK_SECRET` rotated or the worker secret did. Auto-
@@ -126,7 +131,7 @@ rules:
   - name: launcher_unreachable
     summary: "Worker can't reach launcher (/pr-index or /resume)"
     severity: critical
-    channels: [pagerduty:hermes]
+    channels: [discord:#hermes-deploys]
     trigger: |
       The Worker DO logs `launcher_unreachable` when calls to
       LAUNCHER_URL time out / 5xx. If sustained, follow-up prompts +
@@ -141,7 +146,7 @@ rules:
   - name: e2b_circuit_open
     summary: "E2B circuit breaker open — sweeper paused"
     severity: warning
-    channels: [slack:#hermes-deploys]
+    channels: [discord:#hermes-deploys]
     trigger: |
       `src/core/resilience.ts` opened the `e2b.list` breaker after 5
       consecutive transient failures. Sweeper backs off for 30s. Page
@@ -156,7 +161,7 @@ rules:
   - name: sweeper_overkill
     summary: "Sweeper killed > 5 sandboxes in one run"
     severity: warning
-    channels: [slack:#hermes-deploys]
+    channels: [discord:#hermes-deploys]
     trigger: |
       Each sweep emits a `sweep.complete killed=N` metric. >5 in one
       run is suspicious — usually a stale Worker returning 404 on
@@ -174,7 +179,7 @@ rules:
   - name: amend_cap_exceeded
     summary: "PR hit auto-amend cap (3 sessions)"
     severity: info
-    channels: [slack:#hermes-deploys]
+    channels: [discord:#hermes-deploys]
     trigger: |
       `pr.autofix.skipped reason=cap_exceeded`. Informational only —
       means a human probably needs to intervene on that PR.
