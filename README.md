@@ -12,6 +12,8 @@ an *amend session* that pushes a follow-up commit onto the same PR
 for the full matrix.
 
 Docs:
+- [`AGENTS.md`](AGENTS.md) — agent-targeted instruction file (stack, commands, conventions, CI gates).
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — full conventions playbook for humans.
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — how the system works today (stable snapshot).
 - [`docs/SETUP.md`](docs/SETUP.md) — local-development setup.
 - [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — release plan, Cloudflare Access, Hermes + Slack integration.
