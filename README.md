@@ -121,6 +121,11 @@ GitHub PAT. Full per-service walk-through is in
 
 ## HTTP API
 
+Machine-readable OpenAPI 3.1 spec: [`docs/openapi.yaml`](docs/openapi.yaml).
+The tables below mirror the most common operations; the spec is the
+authoritative contract (and is sanity-checked in CI by
+`bun run openapi:check`).
+
 ### Launcher (`http://localhost:8789` by default)
 
 | Method | Path | Body / notes |

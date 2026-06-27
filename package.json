@@ -19,6 +19,7 @@
     "bundle:size": "bun run scripts/bundle-size.ts",
     "flags:check": "bun run scripts/detect-dead-flags.ts",
     "agents:check": "bun run scripts/validate-agents-md.ts",
+    "openapi:check": "bun run scripts/validate-openapi.ts",
     "api": "bun run src/testing/api-client.ts",
     "fake-runner": "bun run src/testing/fake-runner.ts",
     "template:build": "bun run infra/e2b/build-template.ts",
@@ -40,7 +41,8 @@
     "oxlint": "^1.71.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0",
-    "wrangler": "^4.0.0"
+    "wrangler": "^4.0.0",
+    "yaml": "^2.9.0"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
