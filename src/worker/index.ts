@@ -10,6 +10,7 @@ import type { PromptResult } from "./session-do";
 import type { ProjectProfile, Session, HermesEvent, SessionArtifacts } from "../core/types";
 import { timingSafeEqualStrings } from "../core/secrets";
 import { createLogger, requestIdFrom } from "../core/logger";
+import { captureError, wrapWorker } from "../core/error-tracking";
 
 // RPC contract surface — explicit interface so TS does not have to walk the
 // full DO class (whose return shapes contain Record<string, unknown> which
@@ -124,7 +125,10 @@ const PROMPT_STATUS_BY_KIND: Record<string, number> = {
   ok: 200,
 };
 
-export default {
+// The handler object. Wrapped below in `wrapWorker` so unhandled errors
+// flow to Sentry when SENTRY_DSN is set. The wrapper is a passthrough
+// when the env var is unset, so tests + forks pay zero overhead.
+const handler = {
   async fetch(request: Request, env: CloudflareEnv): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
@@ -182,6 +186,10 @@ export default {
         durationMs: Date.now() - startedAt,
         error: message,
       });
+      // Report to Sentry (no-op if SENTRY_DSN is unset). The tags here
+      // give the on-call a one-click filter from a Sentry issue back
+      // to the structured Worker log line via `request_id`.
+      captureError(err, { requestId, method: request.method, path, status: 500 });
       log.metric("worker.request", 1, { path, status: 500 });
       return withRequestId(
         new Response(JSON.stringify({ error: message }), {
@@ -193,6 +201,8 @@ export default {
     }
   },
 };
+
+export default wrapWorker(handler);
 
 // Echo the request ID back to the caller so a client can paste it into a
 // bug report and an operator can grep for it across both runtimes. We

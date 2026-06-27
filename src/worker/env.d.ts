@@ -38,4 +38,20 @@ interface CloudflareEnv {
   // PR publication via the launcher's POST /sessions/:id/publish-pr
   // endpoint instead of asking the runner to push + open the PR
   // itself. PR #B (publish-via-launcher) reads this; PR #A only
+
+  // ---------- Error tracking ----------
+  // Sentry DSN for the Worker. When set, the worker entrypoint is
+  // wrapped with @sentry/cloudflare so unhandled errors, structured
+  // log lines at level=error, and the request context all flow into
+  // the configured Sentry project. When unset, the worker runs
+  // exactly as before (no wrapper, no overhead). Set via
+  // `wrangler secret put SENTRY_DSN`.
+  SENTRY_DSN?: string;
+  // Optional environment tag (production / staging / preview).
+  // Defaults to "production" when SENTRY_DSN is set.
+  SENTRY_ENVIRONMENT?: string;
+  // Optional release identifier. CI sets this to the git sha so a
+  // Sentry issue can be pivoted back to the commit that introduced
+  // the regression. Falls back to the bundle hash when unset.
+  SENTRY_RELEASE?: string;
 }
