@@ -10,10 +10,16 @@
 #   1. PostHog -> Data pipelines -> Destinations -> "Webhook" -> Create.
 #   2. URL = https://api.github.com/repos/duckhoa-uit/hermes-control-plane/dispatches
 #      Method = POST
-#      Headers:
+#      Headers (all four required):
 #        Authorization: token <a fine-grained PAT with `Contents:write` +
 #                              `Issues:write` on this repo>
 #        Accept: application/vnd.github+json
+#        Content-Type: application/json
+#        User-Agent: posthog-webhook-hermes-control-plane
+#          ^ GitHub returns 403 "Request forbidden by administrative
+#            rules. Please make sure your request has a User-Agent
+#            header" if this header is missing. PostHog does not set
+#            one by default; any non-empty string works.
 #      Payload (PostHog Hog templating uses single braces `{ }`; the
 #      legacy double-brace `{{ }}` Liquid syntax is opt-in via the
 #      "Templating" dropdown on the destination, but the default Hog
