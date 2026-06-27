@@ -32,39 +32,48 @@ destination — agents read this table first.
 
 ## 2. Alerts
 
-The repo ships two configurable notification channels driven by the
-deploy workflow + the alert-rules file:
+The repo ships a single configurable notification channel — Discord —
+driven by the deploy workflow + the alert-rules file:
 
 | Channel | Secret | Used by |
 |---|---|---|
-| Slack incoming webhook | `SLACK_DEPLOY_WEBHOOK` | `.github/workflows/deploy-worker.yml` posts on deploy start / success / failure. |
-| PagerDuty Events V2 routing key | `PAGERDUTY_ROUTING_KEY` | Triggered on deploy failure with `event_action: trigger` and a `dedup_key` of `deploy-worker-<sha>`. |
+| Discord webhook | `DISCORD_DEPLOY_WEBHOOK` | `.github/workflows/deploy-worker.yml` posts on deploy start / success / failure. Failures include `@here` so channel members get a mobile push. |
 
 The actual alert thresholds live in
 [`infra/observability/alerts.yaml`](../infra/observability/alerts.yaml) so
 they're version-controlled, code-reviewable, and inspectable by an agent
 that doesn't have console access. The file declares what should page
-and at what threshold; an operator wires it into Cloudflare Notifications
-(workers-rule sources) and/or PagerDuty service rules manually.
+and at what threshold; an operator wires it into Cloudflare
+Notifications (workers-rule sources) with the same Discord webhook URL.
 
-### Configuring Slack
+### Configuring Discord
 
-1. Create a Slack channel — `#hermes-deploys` is the convention.
-2. Add an Incoming Webhook integration; copy the URL.
-3. `gh secret set SLACK_DEPLOY_WEBHOOK --body 'https://hooks.slack.com/services/...'`.
+1. Create a Discord server (or use an existing one) and a channel —
+   `#hermes-deploys` is the convention.
+2. Channel settings → **Integrations** → **Webhooks** → **New Webhook**.
+   Rename to "hermes-deploys", optionally set an avatar, copy the
+   webhook URL.
+3. `gh secret set DISCORD_DEPLOY_WEBHOOK --body 'https://discord.com/api/webhooks/...'`.
 4. Trigger a `workflow_dispatch` run of `deploy-worker.yml` to confirm.
+5. Turn on **mobile push notifications** for the channel so failure
+   alerts wake you up (Discord settings → Notifications →
+   `#hermes-deploys` → All Messages, or Mentions only with `@here`).
 
-### Configuring PagerDuty
+For Cloudflare alert rules (Notifications → Rules), use the same
+webhook URL as the destination.
 
-1. Create a **PagerDuty service** "Hermes Control Plane — deploys".
-2. Add an **Events API V2** integration; copy the routing key.
-3. `gh secret set PAGERDUTY_ROUTING_KEY --body '<routing-key>'`.
-4. Optional: also wire the same routing key to Cloudflare Notifications
-   for the rules in `infra/observability/alerts.yaml`.
+When the secret is unset, the deploy workflow still runs — the
+notification steps no-op via `if: env.X != ''` guards. Useful for
+forks and local PR testing.
 
-When both secrets are unset, the deploy workflow still runs — the
-notification steps no-op via `if: env.X != ''` guards. Useful for forks
-and local PR testing.
+### Why Discord (and not Slack / PagerDuty)?
+
+For a solo or small-team project, Discord's webhook gives the same
+on-call coverage as PagerDuty + Slack combined: free, mobile push,
+`@here` mention for critical, message history, no per-seat cost. If
+the project later grows past one on-call rotation, replace the
+Discord step with PagerDuty Events API V2 — the alerts.yaml schema
+already supports the channel swap.
 
 ---
 
@@ -72,7 +81,7 @@ and local PR testing.
 
 ### Deploy failed
 
-1. Open the GH Actions run linked in the Slack / PagerDuty payload.
+1. Open the GH Actions run linked in the Discord payload.
 2. Look at the failing step: `bunx wrangler deploy`, `bun run lint`,
    `bun run typecheck`, or `bun run bundle:size`. Each fails with a
    distinct payload — typecheck dumps the `tsc` errors inline.
