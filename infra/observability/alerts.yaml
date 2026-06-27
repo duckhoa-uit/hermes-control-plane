@@ -1,0 +1,188 @@
+# Alert rules for hermes-control-plane.
+#
+# Declarative source of truth for "what should page on-call". An
+# operator imports these into Cloudflare Notifications, PagerDuty
+# service rules, or whatever monitoring backend ships the actual alerts.
+# Re-importing is idempotent because each rule has a stable `name`.
+#
+# Channels:
+#   slack:#hermes-deploys  — informational; deploys, weekly digests
+#   pagerduty:hermes       — wakes someone up
+#
+# Schema (project-local, kept dependency-free so an agent can read it
+# without a schema fetch):
+#
+#   name:        unique, slug-cased identifier
+#   summary:     one-liner shown in the alert payload
+#   severity:    info | warning | critical
+#   channels:    list of [slack|pagerduty]:<destination>
+#   trigger:     human-readable description of the condition
+#   metric:      machine-readable source: type + selector
+#                  type: log_count | log_rate | latency | http_status
+#                  selector: NDJSON field-equality expression evaluated
+#                  on the Logpush stream OR a Workers Analytics Engine
+#                  query identifier.
+#   window:      evaluation window (e.g. "5m")
+#   threshold:   string comparison; e.g. ">5%", ">= 10/min"
+#   runbook:     anchor in docs/OBSERVABILITY.md the responder opens
+#                first. REQUIRED — alerts without a runbook get
+#                rejected in code review.
+
+version: 1
+
+rules:
+  # -------------------------------------------------------------------
+  # Deploy lifecycle
+  # -------------------------------------------------------------------
+  - name: deploy_started
+    summary: "Worker deploy started"
+    severity: info
+    channels: [slack:#hermes-deploys]
+    trigger: |
+      GitHub Actions workflow `deploy-worker` started a run on `main`.
+    metric:
+      type: log_count
+      selector: github_actions.workflow="deploy-worker" event="started"
+    runbook: "#deploy-failed"
+
+  - name: deploy_succeeded
+    summary: "Worker deployed"
+    severity: info
+    channels: [slack:#hermes-deploys]
+    trigger: |
+      GitHub Actions workflow `deploy-worker` finished successfully.
+    metric:
+      type: log_count
+      selector: github_actions.workflow="deploy-worker" event="success"
+    runbook: "#deploy-failed"
+
+  - name: deploy_failed
+    summary: "Worker deploy FAILED — page on-call"
+    severity: critical
+    channels:
+      - slack:#hermes-deploys
+      - pagerduty:hermes
+    trigger: |
+      GitHub Actions workflow `deploy-worker` exited with failure on
+      `main`. Triggered immediately on first failed run.
+    metric:
+      type: log_count
+      selector: github_actions.workflow="deploy-worker" event="failure"
+    window: 0m
+    threshold: ">= 1"
+    runbook: "#deploy-failed"
+
+  # -------------------------------------------------------------------
+  # Worker health
+  # -------------------------------------------------------------------
+  - name: worker_error_rate_high
+    summary: "Worker error rate > 5% over 5m"
+    severity: critical
+    channels: [pagerduty:hermes]
+    trigger: |
+      Ratio of `level=error` NDJSON lines to total `request.completed`
+      lines exceeds 5% on a rolling 5-minute window. Sourced from
+      Logpush + Workers Analytics Engine.
+    metric:
+      type: log_rate
+      selector: service="worker" level="error"
+    window: 5m
+    threshold: "> 5%"
+    runbook: "#worker-error-rate-5-over-5-min"
+
+  - name: worker_p99_latency_high
+    summary: "Worker /sessions p99 latency > 2s"
+    severity: warning
+    channels: [slack:#hermes-deploys]
+    trigger: |
+      Sustained slow responses on session-CRUD routes. Almost always
+      points to a degraded DO or a downstream (E2B / GitHub) wait.
+    metric:
+      type: latency
+      selector: service="worker" path=~"^/sessions"
+      stat: p99
+    window: 10m
+    threshold: "> 2000ms"
+    runbook: "#worker-error-rate-5-over-5-min"
+
+  - name: github_webhook_unauthorized
+    summary: "GitHub webhook HMAC mismatch"
+    severity: critical
+    channels: [pagerduty:hermes]
+    trigger: |
+      Worker returned 401 on `/webhooks/github` — either the repo's
+      `GITHUB_WEBHOOK_SECRET` rotated or the worker secret did. Auto-
+      amend stops working until this is resolved.
+    metric:
+      type: http_status
+      selector: path="/webhooks/github" status=401
+    window: 5m
+    threshold: ">= 3"
+    runbook: "#worker-error-rate-5-over-5-min"
+
+  # -------------------------------------------------------------------
+  # Launcher
+  # -------------------------------------------------------------------
+  - name: launcher_unreachable
+    summary: "Worker can't reach launcher (/pr-index or /resume)"
+    severity: critical
+    channels: [pagerduty:hermes]
+    trigger: |
+      The Worker DO logs `launcher_unreachable` when calls to
+      LAUNCHER_URL time out / 5xx. If sustained, follow-up prompts +
+      publish-pr both stall.
+    metric:
+      type: log_count
+      selector: service="worker" msg="launcher_unreachable"
+    window: 5m
+    threshold: ">= 5"
+    runbook: "#launcher-down"
+
+  - name: e2b_circuit_open
+    summary: "E2B circuit breaker open — sweeper paused"
+    severity: warning
+    channels: [slack:#hermes-deploys]
+    trigger: |
+      `src/core/resilience.ts` opened the `e2b.list` breaker after 5
+      consecutive transient failures. Sweeper backs off for 30s. Page
+      only if sustained > 10m (indicates E2B outage, not a blip).
+    metric:
+      type: log_count
+      selector: service="launcher" msg="breaker.open" name="e2b.list"
+    window: 10m
+    threshold: ">= 1"
+    runbook: "#sandbox-sweeper-killing-too-aggressively"
+
+  - name: sweeper_overkill
+    summary: "Sweeper killed > 5 sandboxes in one run"
+    severity: warning
+    channels: [slack:#hermes-deploys]
+    trigger: |
+      Each sweep emits a `sweep.complete killed=N` metric. >5 in one
+      run is suspicious — usually a stale Worker returning 404 on
+      `/sessions/:id`.
+    metric:
+      type: log_count
+      selector: service="launcher" name="sweep.complete" value=">5"
+    window: 5m
+    threshold: ">= 1"
+    runbook: "#sandbox-sweeper-killing-too-aggressively"
+
+  # -------------------------------------------------------------------
+  # Auto-amend pipeline
+  # -------------------------------------------------------------------
+  - name: amend_cap_exceeded
+    summary: "PR hit auto-amend cap (3 sessions)"
+    severity: info
+    channels: [slack:#hermes-deploys]
+    trigger: |
+      `pr.autofix.skipped reason=cap_exceeded`. Informational only —
+      means a human probably needs to intervene on that PR.
+    metric:
+      type: log_count
+      selector: msg="webhook" reason="cap_exceeded"
+    window: 1h
+    threshold: ">= 1"
+    runbook: "#auto-amend-session-not-spawning"
+
+# vim: ft=yaml ts=2 sw=2 et
