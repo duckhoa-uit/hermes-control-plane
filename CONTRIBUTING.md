@@ -188,6 +188,50 @@ Conventions:
 - Don't use bare `console.log` in `src/` — it skips the redaction pass
   and breaks the NDJSON contract.
 
+## Resilience (retry + circuit breakers)
+
+External calls (E2B, GitHub REST, Z.AI, launcher ↔ Worker) go through
+the primitives in [`src/core/resilience.ts`](src/core/resilience.ts).
+The module ships two helpers — `withRetry` and `CircuitBreaker` — and
+a `withResilience` composition for the common case.
+
+```ts
+import { CircuitBreaker, RetryableHttpError, withResilience } from "@/core/resilience";
+
+const E2B_BREAKER = new CircuitBreaker({
+  name: "e2b.list",
+  failureThreshold: 5,
+  coolDownMs: 30_000,
+});
+
+const resp = await withResilience(
+  E2B_BREAKER,
+  { name: "e2b.list", maxAttempts: 3, baseDelayMs: 200 },
+  async () => {
+    const r = await fetch(url, { headers });
+    if (!r.ok) throw new RetryableHttpError(r.status, await r.text());
+    return r;
+  },
+);
+```
+
+Defaults:
+- **Retry**: 3 attempts, full-jitter exponential backoff, 10 s
+  per-sleep ceiling. Retryable = `RetryableHttpError` with 5xx / 408 /
+  425 / 429, plus common network error messages (`ECONNRESET`,
+  `ETIMEDOUT`, `socket hang up`). Permanent 4xx (404, 422, …) are not
+  retried.
+- **Circuit breaker**: 5 consecutive transient failures flip
+  closed → open; 30 s coolDown; one probe in half_open; success
+  closes, failure reopens. Permanent errors don't move the breaker.
+
+When to wrap a call:
+- **External HTTP**: always. Use `withResilience`.
+- **Idempotent operation**: safe to retry. Non-idempotent operations
+  (POST that creates a PR) should only retry on confirmed network
+  failures, not on response 5xx — `isRetryable` lets you narrow this
+  per call site.
+
 ## Feature flags
 
 Lightweight env-driven flag system in `src/core/feature-flags.ts`. No

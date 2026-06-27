@@ -13,9 +13,28 @@
 
 import { killSandbox } from "./provision";
 
+import {
+  CircuitBreaker,
+  RetryableHttpError,
+  withResilience,
+  type ResilienceLogger,
+} from "../core/resilience";
+
+// Module-level breaker so multiple sweeper invocations share state. If
+// E2B has been flaking for the last 5 calls we don't want a fresh sweep
+// to hammer it again — fail fast for 30s and reclaim slots on the next
+// scheduled run.
+const E2B_LIST_BREAKER = new CircuitBreaker({
+  name: "e2b.list",
+  failureThreshold: 5,
+  coolDownMs: 30_000,
+});
+
 interface SweepInput {
-  e2bApiKey: string;
+  e2bAuth: string; // E2B X-API-Key header value
   hermesBaseUrl: string;
+  /** Optional logger so retries / breaker trips are visible. */
+  log?: ResilienceLogger;
 }
 
 interface SweepResult {
@@ -33,12 +52,21 @@ interface E2BSandbox {
 export async function sweepOrphans(input: SweepInput): Promise<SweepResult> {
   const result: SweepResult = { scanned: 0, killed: [], kept: [] };
 
-  const listResp = await fetch("https://api.e2b.dev/v2/sandboxes", {
-    headers: { "X-API-Key": input.e2bApiKey },
-  });
-  if (!listResp.ok) {
-    throw new Error(`E2B list failed ${listResp.status}: ${await listResp.text()}`);
-  }
+  // E2B's list endpoint occasionally 502s under load. Wrap in circuit
+  // breaker + retry so a single transient blip doesn't fail the sweep,
+  // and a sustained outage trips the breaker so we fail fast on
+  // subsequent ticks until E2B recovers.
+  const listResp = await withResilience(
+    E2B_LIST_BREAKER,
+    { name: "e2b.list", maxAttempts: 3, baseDelayMs: 200, log: input.log },
+    async () => {
+      const r = await fetch("https://api.e2b.dev/v2/sandboxes", {
+        headers: { "X-API-Key": input.e2bAuth },
+      });
+      if (!r.ok) throw new RetryableHttpError(r.status, await r.text());
+      return r;
+    },
+  );
   const body = (await listResp.json()) as E2BSandbox[] | { sandboxes?: E2BSandbox[] };
   const sandboxes: E2BSandbox[] = Array.isArray(body)
     ? body
@@ -72,7 +100,7 @@ export async function sweepOrphans(input: SweepInput): Promise<SweepResult> {
     }
 
     if (shouldKill) {
-      await killSandbox(input.e2bApiKey, id);
+      await killSandbox(input.e2bAuth, id);
       result.killed.push(id);
     } else {
       result.kept.push(id);

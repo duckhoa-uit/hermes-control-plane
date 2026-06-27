@@ -676,7 +676,7 @@ async function main(): Promise<void> {
   // Startup sweep.
   try {
     const sweep = await sweepOrphans({
-      e2bApiKey: E2B_API_KEY!,
+      e2bAuth: E2B_API_KEY!,
       hermesBaseUrl: WORKER_URL!,
     });
     log(

@@ -44,7 +44,7 @@ describe("sweepOrphans", () => {
     }) as typeof fetch;
 
     const result = await sweepOrphans({
-      e2bApiKey: "key",
+      e2bAuth: "key",
       hermesBaseUrl: "http://worker",
     });
 
@@ -70,7 +70,7 @@ describe("sweepOrphans", () => {
       return new Response("unhandled", { status: 500 });
     }) as typeof fetch;
 
-    const result = await sweepOrphans({ e2bApiKey: "key", hermesBaseUrl: "http://worker" });
+    const result = await sweepOrphans({ e2bAuth: "key", hermesBaseUrl: "http://worker" });
     expect(result.killed).toEqual(["sbx_arch"]);
     expect(result.kept).toEqual([]);
     expect(killSpy).toHaveBeenCalledWith("sbx_arch");
@@ -90,7 +90,7 @@ describe("sweepOrphans", () => {
     }) as typeof fetch;
 
     const result = await sweepOrphans({
-      e2bApiKey: "key",
+      e2bAuth: "key",
       hermesBaseUrl: "http://worker",
     });
     expect(result.killed).toEqual([]);
