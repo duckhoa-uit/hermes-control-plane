@@ -108,6 +108,13 @@ jobs:
               --body ":bell: New occurrence reported by PostHog at $(date -u +%FT%TZ). See $URL."
           else
             echo "Opening new issue for posthog:${ISSUE_ID}"
+            # gh issue create --label rejects unknown labels. Pre-create
+            # the per-fingerprint dedup label + the two static ones; the
+            # `|| true` makes the create idempotent on subsequent runs
+            # (where the labels already exist).
+            gh label create "$LABEL" --repo "$GITHUB_REPOSITORY" --color FF6B6B --description "Sentry-style dedup key for the PostHog $exception_fingerprint" 2>/dev/null || true
+            gh label create "bug" --repo "$GITHUB_REPOSITORY" --color d73a4a 2>/dev/null || true
+            gh label create "from:posthog" --repo "$GITHUB_REPOSITORY" --color 5319e7 --description "Issue surfaced by the PostHog -> GitHub webhook automation" 2>/dev/null || true
             gh issue create \
               --repo "$GITHUB_REPOSITORY" \
               --title "[posthog] ${TITLE}" \
