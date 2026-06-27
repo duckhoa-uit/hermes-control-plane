@@ -23,7 +23,11 @@
     { "tag": "v2", "new_sqlite_classes": ["PrIndexDurableObject"] }
   ],
   "vars": {
-    "E2B_TEMPLATE": "control-plane-runner"
+    "E2B_TEMPLATE": "control-plane-runner",
+    // PostHog ingest host. Default to US region. Override to
+    // https://eu.i.posthog.com on the EU instance, or to a self-hosted
+    // URL. POSTHOG_PROJECT_TOKEN itself is a secret (wrangler secret put).
+    "POSTHOG_HOST": "https://us.i.posthog.com"
     // LAUNCHER_URL is set via `wrangler secret put` in prod
     // (Cloudflare Tunnel URL of the VPS launcher). For `wrangler dev`, set
     // it inline in .dev.vars instead.

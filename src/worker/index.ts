@@ -126,10 +126,11 @@ const PROMPT_STATUS_BY_KIND: Record<string, number> = {
 };
 
 // The handler object. Wrapped below in `wrapWorker` so unhandled errors
-// flow to Sentry when SENTRY_DSN is set. The wrapper is a passthrough
-// when the env var is unset, so tests + forks pay zero overhead.
+// flow to PostHog when POSTHOG_PROJECT_TOKEN is set. The wrapper is a
+// passthrough when the env var is unset, so tests + forks pay zero
+// overhead.
 const handler = {
-  async fetch(request: Request, env: CloudflareEnv): Promise<Response> {
+  async fetch(request: Request, env: CloudflareEnv, ctx?: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
 
@@ -189,7 +190,7 @@ const handler = {
       // Report to Sentry (no-op if SENTRY_DSN is unset). The tags here
       // give the on-call a one-click filter from a Sentry issue back
       // to the structured Worker log line via `request_id`.
-      captureError(err, { requestId, method: request.method, path, status: 500 });
+      captureError(err, { requestId, method: request.method, path, status: 500 }, env, ctx);
       log.metric("worker.request", 1, { path, status: 500 });
       return withRequestId(
         new Response(JSON.stringify({ error: message }), {
