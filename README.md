@@ -17,6 +17,7 @@ Docs:
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — how the system works today (stable snapshot).
 - [`docs/SETUP.md`](docs/SETUP.md) — local-development setup.
 - [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — release plan, Cloudflare Access, Hermes + Slack integration.
+- [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md) — on-call runbook: dashboards, alert channels, and the per-symptom triage steps. Alert rule declarations live in [`infra/observability/alerts.yaml`](infra/observability/alerts.yaml).
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — gap analysis vs. [Ramp Inspect](https://builders.ramp.com/post/why-we-built-our-background-agent), prioritized roadmap, implementation diaries, and the locked P1.1 OAuth design (§14).
 
 ## Architecture

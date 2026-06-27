@@ -47,7 +47,60 @@ jobs:
       # Bundle-size budget. Cheap (~3s); if it fails, deploy never starts.
       - run: bun run bundle:size
 
-      - run: bunx wrangler deploy
+      # Notify Slack the deploy is starting so on-call can correlate any
+      # post-deploy alerts. Skipped silently when SLACK_DEPLOY_WEBHOOK is
+      # unset (e.g. forked PRs that workflow_dispatch).
+      - name: Notify Slack (deploy starting)
+        if: env.SLACK_DEPLOY_WEBHOOK != ''
+        env:
+          SLACK_DEPLOY_WEBHOOK: ${{ secrets.SLACK_DEPLOY_WEBHOOK }}
+        run: |
+          curl -sS -X POST -H 'Content-Type: application/json' \
+            --data "{\"text\":\":rocket: Deploying \`hermes-control-plane\` worker — sha \`${GITHUB_SHA::7}\` (${GITHUB_ACTOR}) — <https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}|run>\"}" \
+            "$SLACK_DEPLOY_WEBHOOK" || true
+
+      - name: Deploy
+        id: wrangler
+        run: bunx wrangler deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # Success: emit a deploy marker so downstream dashboards (Grafana,
+      # Datadog, CF Analytics Engine) can overlay deploy boundaries on
+      # latency / error-rate panels. The marker is just the commit sha
+      # and the actor; the dashboard query (see docs/OBSERVABILITY.md)
+      # joins it against the time axis.
+      - name: Notify Slack (deploy success)
+        if: ${{ success() && env.SLACK_DEPLOY_WEBHOOK != '' }}
+        env:
+          SLACK_DEPLOY_WEBHOOK: ${{ secrets.SLACK_DEPLOY_WEBHOOK }}
+        run: |
+          curl -sS -X POST -H 'Content-Type: application/json' \
+            --data "{\"text\":\":white_check_mark: Worker deployed — sha \`${GITHUB_SHA::7}\`. Dashboards: https://dash.cloudflare.com/?to=workers (see docs/OBSERVABILITY.md for filters).\"}" \
+            "$SLACK_DEPLOY_WEBHOOK" || true
+
+      # Failure: page on-call via Slack and PagerDuty (if configured).
+      # `always() && failure()` is the only correct combo here — `failure()`
+      # alone would not run if a previous step set continue-on-error.
+      - name: Notify Slack (deploy FAILED — page on-call)
+        if: ${{ always() && failure() && env.SLACK_DEPLOY_WEBHOOK != '' }}
+        env:
+          SLACK_DEPLOY_WEBHOOK: ${{ secrets.SLACK_DEPLOY_WEBHOOK }}
+        run: |
+          curl -sS -X POST -H 'Content-Type: application/json' \
+            --data "{\"text\":\":rotating_light: <!channel> Worker deploy FAILED — sha \`${GITHUB_SHA::7}\` — <https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}|run>. See docs/OBSERVABILITY.md §\\\"Deploy failed\\\" runbook.\"}" \
+            "$SLACK_DEPLOY_WEBHOOK" || true
+
+      # PagerDuty Events API V2 — optional. Set PAGERDUTY_ROUTING_KEY
+      # for the deploy-alerts service to enable. The launcher's
+      # GITHUB_REPOSITORY + sha go in custom_details so the responder
+      # has a one-click pivot back to the run.
+      - name: Page PagerDuty on deploy failure
+        if: ${{ always() && failure() && env.PAGERDUTY_ROUTING_KEY != '' }}
+        env:
+          PAGERDUTY_ROUTING_KEY: ${{ secrets.PAGERDUTY_ROUTING_KEY }}
+        run: |
+          curl -sS -X POST -H 'Content-Type: application/json' \
+            -d "{\"routing_key\":\"$PAGERDUTY_ROUTING_KEY\",\"event_action\":\"trigger\",\"dedup_key\":\"deploy-worker-${GITHUB_SHA}\",\"payload\":{\"summary\":\"hermes-control-plane worker deploy FAILED on $GITHUB_SHA\",\"source\":\"github-actions:deploy-worker\",\"severity\":\"error\",\"custom_details\":{\"run_url\":\"https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}\",\"sha\":\"$GITHUB_SHA\",\"actor\":\"$GITHUB_ACTOR\"}}}" \
+            https://events.pagerduty.com/v2/enqueue || true

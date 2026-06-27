@@ -79,6 +79,13 @@ jobs:
       - name: AGENTS.md freshness audit
         run: bun run agents:check
 
+      # Alerts sanity check: parses infra/observability/alerts.yaml,
+      # verifies every rule has the required fields and points at a
+      # real runbook anchor in docs/OBSERVABILITY.md. Catches alerts
+      # that would page on-call into a dead-end.
+      - name: Alert rules audit
+        run: bun run alerts:check
+
       # OpenAPI sanity check: parses docs/openapi.yaml, verifies every
       # operation has a 2xx/3xx/default response, and that every $ref
       # resolves. Catches drift between the route handlers and the
