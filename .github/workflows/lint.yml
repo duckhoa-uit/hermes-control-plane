@@ -93,6 +93,15 @@ jobs:
       - name: OpenAPI spec sanity check
         run: bun run openapi:check
 
+      # Auto-doc freshness: regenerate docs/api-reference.md +
+      # docs/events-reference.md + docs/state-machine.mmd from the
+      # source-of-truth files, and fail if the result differs from
+      # what's checked in. main also has a docs-refresh workflow that
+      # auto-commits the regenerated files, so this PR-time gate exists
+      # mostly to flag the drift to the author up front.
+      - name: Auto-generated docs freshness
+        run: bun run docs:check
+
   bundle-size:
     name: Worker bundle size budget
     runs-on: ubuntu-latest

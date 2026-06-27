@@ -1,0 +1,70 @@
+# Auto-refresh generated docs on push to main.
+#
+# `scripts/generate-docs.ts` produces three files from source-of-truth
+# locations:
+#   docs/api-reference.md       (from src/worker/index.ts + src/launcher/server.ts)
+#   docs/events-reference.md    (from src/core/types.ts)
+#   docs/state-machine.mmd      (from src/core/types.ts SessionStatus + state-machine.ts)
+#
+# On every push to main this workflow regenerates them. If the result
+# differs from what's checked in, it commits the refresh back to main
+# with a [skip ci] tag so the docs are never older than the most recent
+# source change.
+#
+# A complementary `docs:check` gate also runs in the `lint` workflow on
+# PRs so drift is flagged at PR time, not silently fixed up after merge.
+name: docs-refresh
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Only one refresh at a time so two quick merges don't race a commit
+# back to main.
+concurrency:
+  group: docs-refresh
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Need a writeable token + history so we can commit back.
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache bun store
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-store-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-store-${{ runner.os }}-
+
+      - run: bun install --frozen-lockfile
+
+      - name: Regenerate docs
+        run: bun run docs:gen
+
+      - name: Commit refreshed docs (if any)
+        run: |
+          if [ -z "$(git status --porcelain docs/)" ]; then
+            echo "No doc drift. Nothing to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/api-reference.md docs/events-reference.md docs/state-machine.mmd
+          git commit -m "docs(auto): refresh generated reference [skip ci]"
+          git push

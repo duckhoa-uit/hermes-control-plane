@@ -21,6 +21,8 @@
     "agents:check": "bun run scripts/validate-agents-md.ts",
     "openapi:check": "bun run scripts/validate-openapi.ts",
     "alerts:check": "bun run scripts/validate-alerts.ts",
+    "docs:gen": "bun run scripts/generate-docs.ts",
+    "docs:check": "bun run scripts/generate-docs.ts --check",
     "api": "bun run src/testing/api-client.ts",
     "fake-runner": "bun run src/testing/fake-runner.ts",
     "template:build": "bun run infra/e2b/build-template.ts",
