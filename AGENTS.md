@@ -42,6 +42,8 @@ For the full architecture, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 | Launcher dev server | `bun run launcher` | Port 8789. Reads `.dev.vars`. |
 | Run full vitest suite | `bun run test` | ~2 s. Pure: no network, no real sandbox. |
 | Watch tests | `bun run test:watch` | |
+| Tests with coverage gate | `bun run test:coverage` | v8 provider; thresholds in `vitest.config.ts`. Same gate CI runs. |
+| Tests as CI runs them | `bun run test:ci` | Adds verbose + junit reporters and `retry: 2` for flake surfacing. |
 | Typecheck | `bun run typecheck` | `tsc --noEmit`. |
 | Lint | `bun run lint` | Oxlint. CI gate. |
 | Lint with autofix | `bun run lint:fix` | Safe autofixes only. |
@@ -167,7 +169,13 @@ Every PR runs:
 1. **lint** — `oxlint` (no warnings, no errors).
 2. **format:check** — `biome format` (no diff).
 3. **typecheck** — `tsc --noEmit`.
-4. **test** — `vitest run` (all green).
+4. **tests** — `bun run test:ci` (vitest + v8 coverage). Job fails on:
+   - any failing test;
+   - line/function/statement coverage below 60% or branch below 70%
+     (thresholds in `vitest.config.ts`);
+   - any test that turns green only after a retry surfaces as
+     `:warning: Flaky tests` in the run summary (vitest `retry: 2` on CI).
+   The junit XML + lcov report are uploaded as workflow artifacts.
 5. **deadcode** — `knip` (no unused files / exports / deps).
 6. **dupes** — `jscpd` (<4% duplication).
 7. **flags:check** — feature-flag registry consistency.

@@ -129,3 +129,74 @@ jobs:
       # don't have to log-dive.
       - name: Bundle size budget
         run: bun run bundle:size
+
+  # Test suite + coverage gate + flake / performance reporting.
+  #
+  # Runs in its own job so the artifact upload + step summary are
+  # discoverable from the run page without scrolling through the lint
+  # output. The job also feeds the three Agent Readiness signals that
+  # the previous incarnation of this workflow left failing:
+  #
+  #   - test_performance_tracking: vitest is invoked with the verbose
+  #     reporter (per-test duration to stdout) AND the junit reporter
+  #     (machine-readable timing artifact). The artifact is uploaded
+  #     via `actions/upload-artifact@v4`, and a one-line `Test analytics
+  #     summary` step parses it into the run's step-summary so reviewers
+  #     see slow + retried tests without downloading anything.
+  #
+  #   - flaky_test_detection: vitest is configured with `retry: 2` on
+  #     CI (see vitest.config.ts). A green-after-retry test produces a
+  #     `<rerunFailure>` block in the junit XML, which the summary step
+  #     surfaces as a "FLAKY" annotation.
+  #
+  #   - test_coverage_thresholds: `bun run test:ci` runs vitest with
+  #     coverage enabled (60% lines/functions/statements, 70% branches —
+  #     see vitest.config.ts). Below threshold = job fails.
+  tests:
+    name: Tests + coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache bun store
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-store-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-store-${{ runner.os }}-
+
+      - run: bun install --frozen-lockfile
+
+      # Vitest with coverage. CI=1 is set by GH Actions itself; the
+      # config keys on it to enable the verbose + junit reporters and
+      # `retry: 2`. Coverage thresholds fail the job below the floor.
+      - name: Run tests with coverage
+        run: bun run test:ci
+
+      # Parse the junit XML into a step-summary table: total tests,
+      # duration, top-10 slowest, and any flake (rerunFailure) seen on
+      # CI. Stays inline so reviewers don't have to download the
+      # artifact for the common case.
+      - name: Test analytics summary
+        if: always()
+        run: bun run scripts/test-analytics.ts reports/junit.xml >> "$GITHUB_STEP_SUMMARY"
+
+      # Artifacts: junit XML for the GH test-reporter ecosystem +
+      # lcov/html coverage report for ad-hoc inspection.
+      - name: Upload junit + coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            reports/junit.xml
+            reports/coverage/lcov.info
+            reports/coverage/coverage-summary.json
+          retention-days: 14
+          if-no-files-found: warn

@@ -19,7 +19,9 @@ For the high-level project layout and operational instructions, see
 | `bun install` | Install dependencies (lockfile pinned, `--frozen-lockfile` in CI). |
 | `bun run dev` | `wrangler dev` — boot the Worker locally on port 8787. |
 | `bun run launcher` | Boot the launcher sidecar on port 8789 (reads `.dev.vars`). |
-| `bun run test` | Run the full vitest suite (17 files / 214 tests). |
+| `bun run test` | Run the full vitest suite (24 files / 298 tests). |
+| `bun run test:coverage` | Run vitest with v8 coverage. Fails if any of `lines`/`functions`/`statements` falls below 60% or `branches` below 70%. Writes `reports/coverage/` + `reports/junit.xml`. |
+| `bun run test:ci` | Same gate CI runs (`CI=1 vitest run --coverage`) — adds the `verbose` + `junit` + `github-actions` reporters and `retry: 2` to surface flaky tests. |
 | `bun run typecheck` | `tsc --noEmit`. |
 | `bun run lint` | Oxlint with the rules below. CI gate. |
 | `bun run lint:fix` | Oxlint with `--fix` (safe autofixes). |
@@ -107,6 +109,70 @@ Enforced by oxlint and surfaced in CI:
 Tests files are exempt from `max-lines*` and `complexity` (see
 `.oxlintrc.json overrides`); some integration tests are intentionally
 fat fixtures.
+
+---
+
+## Testing (coverage, flakes, performance)
+
+The vitest suite is the gate that protects `main`. Three things matter
+beyond "tests pass":
+
+### Coverage
+
+`vitest.config.ts` configures the `v8` coverage provider with these
+thresholds (CI fails below):
+
+| Metric | Floor |
+|---|---|
+| Lines | 60% |
+| Functions | 60% |
+| Statements | 60% |
+| Branches | 70% |
+
+Coverage is measured against `src/**/*.ts` minus the bootstrap entry
+points that are exercised by the e2e harness instead (`src/worker/index.ts`,
+`src/launcher/server.ts`, `src/runner/**`, `src/testing/**`,
+`*/index.ts`, `*.d.ts`). Bump the floor in the same PR that adds the
+tests that lift the number.
+
+```bash
+bun run test:coverage   # locally; writes reports/coverage/{lcov.info,html/,coverage-summary.json}
+```
+
+### Flaky test detection
+
+`vitest.config.ts` sets `retry: process.env.CI ? 2 : 0`:
+
+- **Locally**, a flake fails the first run so the author sees the
+  regression immediately.
+- **On CI**, vitest retries up to two extra attempts. A test that
+  passes only after a retry is real — the junit reporter records it as
+  a `<rerunFailure>`, and the workflow's `Test analytics summary` step
+  (`scripts/test-analytics.ts`) renders a `:warning: Flaky tests`
+  table in the run summary so the next PR author can quarantine /
+  fix it.
+
+Persistent flakes should be quarantined with `it.skip(...)` plus an
+inline TODO that names the issue, **not** a permanent `retry` bump.
+
+### Test performance tracking
+
+The CI run uses `reporters: ["verbose", "junit", "github-actions"]`:
+
+- `verbose` prints a per-test name + duration line. `slowTestThreshold`
+  in `vitest.config.ts` (300 ms today) annotates anything slow.
+- `junit` writes `reports/junit.xml` — uploaded as a workflow artifact
+  and parsed by `scripts/test-analytics.ts` into a `:snail: Slow tests`
+  table in the step summary.
+- `github-actions` emits `::error::` annotations on the changed-files
+  view so a failing test surfaces inline in the PR diff.
+
+Run the same shape locally:
+
+```bash
+bun run test:ci        # CI=1 + verbose + junit + retry
+bun run scripts/test-analytics.ts reports/junit.xml
+```
 
 ---
 
