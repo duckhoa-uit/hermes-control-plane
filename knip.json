@@ -8,7 +8,8 @@
     "src/do/pr-index-do.ts",
     "src/core/**/*.ts",
     "scripts/**/*.ts",
-    "tests/**/*.test.ts"
+    "tests/**/*.test.ts",
+    "tests/**/*.mts"
   ],
   "project": ["src/**/*.ts", "scripts/**/*.ts"],
   "ignoreBinaries": ["wrangler"],

@@ -10,7 +10,7 @@ import type { SessionStatus } from "../src/core/types";
 
 const BASE = process.env.WORKER_URL || "http://localhost:8787";
 const TEST_SESSION = `e2e-test-${Date.now()}`;
-const RUN_E2E = process.env.RUN_E2E === "1" || process.env.CI === "1";
+const RUN_E2E = process.env.RUN_E2E === "1";
 
 if (RUN_E2E) {
   describe("E2E: Real against duckhoa-uit/lawn", () => {

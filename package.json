@@ -16,8 +16,10 @@
     "test:coverage": "vitest run --coverage",
     "test:ci": "CI=1 vitest run --coverage",
     "deadcode": "knip",
-    "e2e:real": "bun run scripts/e2e-real.ts",
-    "prepare": "husky"
+    "prepare": "husky",
+    "bundle:size": "bun run scripts/bundle-size.ts",
+    "flags:check": "bun run scripts/detect-dead-flags.ts",
+    "dupes": "jscpd"
   },
   "dependencies": {
     "@cloudflare/sandbox": "^0.7.0",
@@ -39,7 +41,9 @@
     "oxlint": "^1.71.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0",
-    "wrangler": "^4.0.0"
+    "wrangler": "^4.0.0",
+    "knip": "^6.21.0",
+    "jscpd": "^5.0.11"
   },
   "lint-staged": {
     "*.{ts,tsx,js,mjs,json,jsonc,md}": [

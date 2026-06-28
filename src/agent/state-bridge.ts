@@ -14,7 +14,7 @@
 // Most transitions are direct (no intermediate E2B states).
 
 import type { SessionStatus } from "../core/types";
-import { canTransition, assertTransition, isTerminal } from "../core/state-machine";
+import { assertTransition, isTerminal } from "../core/state-machine";
 
 export type AgentLifecycle =
   | "created"
