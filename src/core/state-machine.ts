@@ -1,18 +1,19 @@
 // ============================================================
 // Session State Machine
 // ============================================================
+// Simplified after Flue migration:
+// - Removed runner_connecting, ready (E2B-specific states)
+// - Pi harness transitions: created → provisioning → running
+// - stalled preserved for potential future use
 
 import type { SessionStatus } from "./types";
 
 const VALID_TRANSITIONS: Record<SessionStatus, SessionStatus[]> = {
   created: ["provisioning", "aborted", "failed"],
-  provisioning: ["runner_connecting", "failed", "aborted"],
-  runner_connecting: ["ready", "failed", "aborted"],
-  ready: ["running", "failed", "aborted"],
+  provisioning: ["running", "failed", "aborted"],
   running: ["needs_approval", "review_ready", "stalled", "failed", "completed", "aborted"],
   needs_approval: ["running", "aborted", "failed"],
-  // running: follow-up prompt while still connected (M4 follow-up flow)
-  review_ready: ["creating_pr", "completed", "aborted", "running"],
+  review_ready: ["running", "creating_pr", "completed", "aborted"],
   creating_pr: ["completed", "failed"],
   completed: ["archived"],
   failed: ["archived"],
@@ -49,8 +50,6 @@ export function getValidTransitions(from: SessionStatus): SessionStatus[] {
 const TERMINAL_STATES = new Set<SessionStatus>(["completed", "failed", "aborted"]);
 const ACTIVE_STATES = new Set<SessionStatus>([
   "provisioning",
-  "runner_connecting",
-  "ready",
   "running",
   "needs_approval",
   "review_ready",

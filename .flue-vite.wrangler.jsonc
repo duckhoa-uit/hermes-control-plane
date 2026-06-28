@@ -4,7 +4,10 @@
   "main": ".flue-vite/_entry.ts",
   "compatibility_date": "2026-06-28",
   "compatibility_flags": ["nodejs_compat"],
-  "observability": { "enabled": true, "head_sampling_rate": 0.1 },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.1
+  },
   "containers": [
     {
       "class_name": "Sandbox",
@@ -15,11 +18,26 @@
   ],
   "durable_objects": {
     "bindings": [
-      { "name": "Sandbox", "class_name": "Sandbox" },
-      { "name": "PR_INDEX_DO", "class_name": "PrIndexDurableObject" },
-      { "name": "FlueRegistry", "class_name": "FlueRegistry" },
-      { "name": "FLUE_HERMES_AGENT", "class_name": "FlueHermesAgent" },
-      { "name": "FLUE_REGISTRY", "class_name": "FlueRegistry" }
+      {
+        "name": "Sandbox",
+        "class_name": "Sandbox"
+      },
+      {
+        "name": "PR_INDEX_DO",
+        "class_name": "PrIndexDurableObject"
+      },
+      {
+        "name": "FlueRegistry",
+        "class_name": "FlueRegistry"
+      },
+      {
+        "name": "FLUE_HERMES_AGENT",
+        "class_name": "FlueHermesAgent"
+      },
+      {
+        "name": "FLUE_REGISTRY",
+        "class_name": "FlueRegistry"
+      }
     ]
   },
   "migrations": [
@@ -28,7 +46,9 @@
       "new_sqlite_classes": ["Sandbox", "PrIndexDurableObject", "FlueRegistry", "FlueHermesAgent"]
     }
   ],
-  "ai": { "binding": "AI" },
+  "ai": {
+    "binding": "AI"
+  },
   "vars": {
     "LLM_MODEL": "zai/glm-5.2",
     "POSTHOG_HOST": "https://us.i.posthog.com",

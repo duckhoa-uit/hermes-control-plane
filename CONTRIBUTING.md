@@ -1,365 +1,49 @@
-# Contributing to hermes-control-plane
+# Contributing
 
-This file documents the conventions a human (or autonomous agent) needs to
-follow when changing this repository. The CI lint job
-(`.github/workflows/lint.yml`) is the authoritative gate; this document
-exists so reviewers and agents can predict what the gate will reject
-without having to re-read the full lint config.
+## Stack
 
-For the high-level project layout and operational instructions, see
-[`README.md`](README.md) and the runbook in
-[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
+- **Runtime:** Cloudflare Worker + Durable Objects (SQLite)
+- **Agent framework:** Flue (`@flue/runtime`) with Pi harness
+- **Sandbox:** Cloudflare Containers (`@cloudflare/sandbox`)
+- **LLM:** z.ai (glm-5.2) via `registerProvider('zai', ...)`
+- **Package manager:** Bun (1.3+). Never switch to npm/pnpm/yarn.
+- **Language:** TypeScript strict mode
+- **Tests:** Vitest (`tests/`). 140+ tests.
 
----
+## Key conventions
 
-## Local commands
+- File names: `kebab-case.ts`. Test files: `<name>.test.ts`.
+- Identifiers: `camelCase` for vars/functions, `PascalCase` for types.
+- Event types: FlueEvent from DS protocol (no custom HermesEvent).
+- State machine states: `snake_case` (11 states).
+- Branches: `codex/<description>` for agent sessions, `chore/`, `fix/` otherwise.
+- Commits: Conventional Commits.
 
-| Command | Purpose |
+## Commands
+
+| Need | Command |
 |---|---|
-| `bun install` | Install dependencies (lockfile pinned, `--frozen-lockfile` in CI). |
-| `bun run dev` | `wrangler dev` — boot the Worker locally on port 8787. |
-| `bun run launcher` | Boot the launcher sidecar on port 8789 (reads `.dev.vars`). |
-| `bun run test` | Run the full vitest suite (24 files / 298 tests). |
-| `bun run test:coverage` | Run vitest with v8 coverage. Fails if any of `lines`/`functions`/`statements` falls below 60% or `branches` below 70%. Writes `reports/coverage/` + `reports/junit.xml`. |
-| `bun run test:ci` | Same gate CI runs (`CI=1 vitest run --coverage`) — adds the `verbose` + `junit` + `github-actions` reporters and `retry: 2` to surface flaky tests. |
-| `bun run typecheck` | `tsc --noEmit`. |
-| `bun run lint` | Oxlint with the rules below. CI gate. |
-| `bun run lint:fix` | Oxlint with `--fix` (safe autofixes). |
-| `bun run format` | Biome formatter, write mode. |
-| `bun run format:check` | Biome formatter, check mode. CI gate. |
-| `bun run deadcode` | Knip dead-code / unused-export / unused-dep check. CI gate. |
-| `bun run dupes` | jscpd duplicate-code check (threshold 4%). CI gate. |
-
-A `husky` pre-commit hook runs `lint-staged` (Biome format + Oxlint
---fix on changed files only). The hook is installed automatically by
-`bun install` via the `prepare` script. Bypass with
-`git commit --no-verify` if you really have to; CI will still catch the
-issue.
-
----
-
-## Naming conventions
-
-Oxlint does not yet port `@typescript-eslint/naming-convention`, so these
-conventions are enforced socially via review and via reference to this
-document. They are followed consistently across `src/`, `tests/`,
-`scripts/`, and `infra/`.
-
-### TypeScript identifiers
-
-| Construct | Convention | Examples |
-|---|---|---|
-| Variables, parameters, properties | `camelCase` | `sessionId`, `prKey`, `headSha` |
-| Functions, methods | `camelCase` | `handleAmendTrigger()`, `buildStartConfig()` |
-| Boolean flags | `camelCase` with predicate prefix | `isTerminal`, `hasAdmin`, `shouldRetry`, `amendMode` |
-| Module-level constants holding literals | `UPPER_SNAKE_CASE` | `HEARTBEAT_INTERVAL_MS`, `REPO_DIR`, `CORS_HEADERS` |
-| Classes, types, interfaces, enums | `PascalCase` | `SessionDurableObject`, `ProjectProfile`, `RunnerCommand` |
-| Type parameters (generics) | `PascalCase`, single-letter or descriptive | `T`, `Req`, `Resp` |
-| Enum members | `PascalCase` (we rarely use enums; prefer string unions) | `PrStatus = "open" \| "merged" \| "closed"` |
-| React-style hooks (n/a here) | not used | — |
-| Unused-but-required identifiers | leading underscore | `_allowedTools`, `_unusedArg` |
-
-### File and directory names
-
-| Construct | Convention | Examples |
-|---|---|---|
-| TypeScript source files | `kebab-case.ts` | `state-machine.ts`, `github-webhook.ts`, `pr-index-do.ts` |
-| Test files | `<unit-name>.test.ts` mirroring the file under test | `state-machine.test.ts`, `github-webhook.test.ts` |
-| Folders | `kebab-case` or single-word | `src/worker/`, `src/core/`, `tests/_shims/` |
-| Top-level config files | dot-prefixed where appropriate | `.oxlintrc.json`, `biome.json`, `knip.json` |
-
-### Event / state-machine string literals
-
-| Construct | Convention | Examples |
-|---|---|---|
-| Hermes event types | `dot.separated.lowercase` | `session.created`, `agent.message.delta`, `pr.created`, `runner.ready_to_publish` |
-| State machine states | `snake_case` | `provisioning`, `runner_connecting`, `review_ready`, `creating_pr` |
-| WebSocket framing types | `lowercase` | `event`, `command`, `replay`, `heartbeat` |
-
-### Environment variables
-
-| Construct | Convention | Examples |
-|---|---|---|
-| Operator-facing env vars | `UPPER_SNAKE_CASE`, no `HERMES_` prefix on tokens or shared secrets | `E2B_API_KEY`, `GITHUB_WRITE_TOKEN`, `LAUNCHER_SHARED_SECRET` |
-| Sandbox-internal env vars set by the launcher | `CONTROL_PLANE_*` prefix | `CONTROL_PLANE_SESSION_ID`, `CONTROL_PLANE_PR_MODE_BRANCH` |
-| GitHub-derived identity envs | `GITHUB_*` | `GITHUB_USER_LOGIN`, `GITHUB_USER_EMAIL`, `GITHUB_OWNER`, `GITHUB_REPO` |
-
-### Branch and PR names
-
-| Construct | Convention | Examples |
-|---|---|---|
-| Agent-authored branches | `hermes/<sessionId-suffix>` or `hermes/<task-slug>-<id4>` | `hermes/34aab1e6`, `hermes/add-rate-limit-1234` |
-| Human-authored branches | `<category>/<short-description>` | `chore/oxlint-biome`, `fix/install-sh-no-overwrite-env` |
-| Commit subject | Conventional Commits style | `chore(lint): add oxlint + biome formatter, wire into CI` |
-
----
-
-## Module size and complexity budgets
-
-Enforced by oxlint and surfaced in CI:
-
-| Rule | Budget | What it catches |
-|---|---|---|
-| `complexity` | 25 | Deeply nested or sprawling logic; tells you a function should split. |
-| `max-lines` (file) | 1500 | Modules ballooning past the point of reviewability. |
-| `max-lines-per-function` (function) | 250 | God-functions. |
-| `no-warning-comments` | TODO:/FIXME:/HACK: terms | Un-ticketed tech debt that should at least be tagged. |
-| `unicorn/prefer-set-has` | n/a | Linear-scan lookups (`Array.includes`) that should be O(1) `Set.has`. |
-
-Tests files are exempt from `max-lines*` and `complexity` (see
-`.oxlintrc.json overrides`); some integration tests are intentionally
-fat fixtures.
-
----
-
-## Testing (coverage, flakes, performance)
-
-The vitest suite is the gate that protects `main`. Three things matter
-beyond "tests pass":
-
-### Coverage
-
-`vitest.config.ts` configures the `v8` coverage provider with these
-thresholds (CI fails below):
-
-| Metric | Floor |
-|---|---|
-| Lines | 60% |
-| Functions | 60% |
-| Statements | 60% |
-| Branches | 70% |
-
-Coverage is measured against `src/**/*.ts` minus the bootstrap entry
-points that are exercised by the e2e harness instead (`src/worker/index.ts`,
-`src/launcher/server.ts`, `src/runner/**`, `src/testing/**`,
-`*/index.ts`, `*.d.ts`). Bump the floor in the same PR that adds the
-tests that lift the number.
-
-```bash
-bun run test:coverage   # locally; writes reports/coverage/{lcov.info,html/,coverage-summary.json}
-```
-
-### Flaky test detection
-
-`vitest.config.ts` sets `retry: process.env.CI ? 2 : 0`:
-
-- **Locally**, a flake fails the first run so the author sees the
-  regression immediately.
-- **On CI**, vitest retries up to two extra attempts. A test that
-  passes only after a retry is real — the junit reporter records it as
-  a `<rerunFailure>`, and the workflow's `Test analytics summary` step
-  (`scripts/test-analytics.ts`) renders a `:warning: Flaky tests`
-  table in the run summary so the next PR author can quarantine /
-  fix it.
-
-Persistent flakes should be quarantined with `it.skip(...)` plus an
-inline TODO that names the issue, **not** a permanent `retry` bump.
-
-### Test performance tracking
-
-The CI run uses `reporters: ["verbose", "junit", "github-actions"]`:
-
-- `verbose` prints a per-test name + duration line. `slowTestThreshold`
-  in `vitest.config.ts` (300 ms today) annotates anything slow.
-- `junit` writes `reports/junit.xml` — uploaded as a workflow artifact
-  and parsed by `scripts/test-analytics.ts` into a `:snail: Slow tests`
-  table in the step summary.
-- `github-actions` emits `::error::` annotations on the changed-files
-  view so a failing test surfaces inline in the PR diff.
-
-Run the same shape locally:
-
-```bash
-bun run test:ci        # CI=1 + verbose + junit + retry
-bun run scripts/test-analytics.ts reports/junit.xml
-```
-
----
-
-## Code quality philosophy
-
-- **Don't add features beyond what the change requires.** A bug fix
-  doesn't need surrounding code cleaned up. A simple feature doesn't need
-  extra configurability.
-- **Don't add error handling, fallbacks, or validation for scenarios that
-  can't happen.** Trust internal code and framework guarantees. Validate
-  only at system boundaries (user input, external APIs).
-- **Don't create helpers, utilities, or abstractions for one-time
-  operations.** Three similar lines is better than a premature
-  abstraction.
-- **Don't add backwards-compatibility hacks.** If something is unused,
-  delete it.
-- **Only comment what isn't self-evident.** Don't add docstrings, type
-  annotations, or block comments to code you didn't change.
-
-These rules apply equally to humans and agents.
-
----
-
-## Dependency policy
-
-Renovate (`renovate.json`) is the source of truth for dependency upgrades.
-Key rules a reviewer or agent should know about:
-
-| Rule | Value | Why |
-|---|---|---|
-| `minimumReleaseAge` | **3 days** | Wait 72 hours after a release before opening a PR. Mitigates supply-chain attacks against freshly-published versions. Security advisories bypass this gate (`minimumReleaseAge: 0` under `vulnerabilityAlerts`). |
-| `rangeStrategy` | `bump` | Bumps the version in `package.json` instead of widening the range. Reproducible installs. |
-| `lockFileMaintenance` | weekly | Refreshes `bun.lock` even when no version bump exists. |
-| `dependencyDashboardApproval` for `major` | required | Major bumps wait for a human tick on the Renovate dashboard issue. |
-| `prHourlyLimit` / `prConcurrentLimit` | 3 / 6 | Caps the rate at which Renovate floods the PR list. |
-| Grouping | `cloudflare workers runtime`, `agent runtime (opencode + e2b)`, `dev toolchain` | Limits blast radius — runtime-critical upgrades land in their own PR. |
-
-If you need to merge a freshly-released dependency before the 3-day gate,
-edit `package.json` + `bun.lock` manually and explain why in the PR.
-
-Unused dependencies are caught by `bun run deadcode` (knip, CI gate) — no
-human policy needed there.
-
----
-
-## Observability
-
-The repo has a single shared logger in
-[`src/core/logger.ts`](src/core/logger.ts). It works in both runtimes
-(Cloudflare Worker + Bun launcher) and emits one JSON object per line on
-stdout/stderr so the output is scrapeable by `wrangler tail`,
-`journalctl -o cat | jq`, Datadog Logs, Axiom, etc. without a custom
-shipper.
-
-```ts
-import { createLogger, requestIdFrom } from "@/core/logger";
-
-const requestId = requestIdFrom(request.headers);
-const log = createLogger({ service: "worker", fields: { requestId } });
-
-log.info("session.created", { sessionId, mode });
-log.metric("worker.request", 1, { path, status: 200 });
-```
-
-Guarantees the logger gives you:
-
-| Guarantee | What it does | Why it matters for agents |
-|---|---|---|
-| **Structured (NDJSON)** | One JSON object per line with `ts`, `level`, `msg`, `service`, plus any fields you pass | Agents can grep + jq the logs deterministically instead of regexing a freeform string |
-| **Request-ID propagation** | `requestIdFrom(headers)` extracts `X-Request-Id` (or `cf-ray`) or mints a 16-char hex ID; the Worker echoes it back as `X-Request-Id` on every response | Lets you pivot from a launcher log line to the Worker log line that triggered it (distributed tracing baseline without OpenTelemetry overhead) |
-| **Redaction** | Field names matching `password\|secret\|token\|authorization\|api[-_]?key\|cookie\|webhook[-_]?secret` are auto-replaced; string values matching GitHub PATs, E2B/Z.AI keys, `Bearer …` headers, and long hex blobs are auto-replaced | Best-effort defense in depth so an accidentally-logged secret doesn't leak to the logs bucket. **Not a substitute** for not logging secrets in the first place. |
-| **Metrics envelope** | `log.metric(name, value, tags)` emits a line with `type: "metric"` so the ingestion pipeline can route it to a metrics store separately from human logs | Same `service` / `requestId` correlation as logs; compatible with DogStatsD / Prometheus exposition format |
-
-Conventions:
-- `LOG_LEVEL` env var (`debug` / `info` / `warn` / `error`, default
-  `info`) controls the threshold.
-- Prefer `log.child({ sessionId })` over re-passing the same field on
-  every call.
-- Don't use bare `console.log` in `src/` — it skips the redaction pass
-  and breaks the NDJSON contract.
-
-## Resilience (retry + circuit breakers)
-
-External calls (E2B, GitHub REST, Z.AI, launcher ↔ Worker) go through
-the primitives in [`src/core/resilience.ts`](src/core/resilience.ts).
-The module ships two helpers — `withRetry` and `CircuitBreaker` — and
-a `withResilience` composition for the common case.
-
-```ts
-import { CircuitBreaker, RetryableHttpError, withResilience } from "@/core/resilience";
-
-const E2B_BREAKER = new CircuitBreaker({
-  name: "e2b.list",
-  failureThreshold: 5,
-  coolDownMs: 30_000,
-});
-
-const resp = await withResilience(
-  E2B_BREAKER,
-  { name: "e2b.list", maxAttempts: 3, baseDelayMs: 200 },
-  async () => {
-    const r = await fetch(url, { headers });
-    if (!r.ok) throw new RetryableHttpError(r.status, await r.text());
-    return r;
-  },
-);
-```
-
-Defaults:
-- **Retry**: 3 attempts, full-jitter exponential backoff, 10 s
-  per-sleep ceiling. Retryable = `RetryableHttpError` with 5xx / 408 /
-  425 / 429, plus common network error messages (`ECONNRESET`,
-  `ETIMEDOUT`, `socket hang up`). Permanent 4xx (404, 422, …) are not
-  retried.
-- **Circuit breaker**: 5 consecutive transient failures flip
-  closed → open; 30 s coolDown; one probe in half_open; success
-  closes, failure reopens. Permanent errors don't move the breaker.
-
-When to wrap a call:
-- **External HTTP**: always. Use `withResilience`.
-- **Idempotent operation**: safe to retry. Non-idempotent operations
-  (POST that creates a PR) should only retry on confirmed network
-  failures, not on response 5xx — `isRetryable` lets you narrow this
-  per call site.
-
-## Feature flags
-
-Lightweight env-driven flag system in `src/core/feature-flags.ts`. No
-LaunchDarkly / Statsig; sufficient for kill-switches and progressive
-rollout of agent-shipped changes. Two primary entry points:
-
-```ts
-import { isFlagEnabled, percentageRollout } from "@/core/feature-flags";
-
-// Boolean kill-switch.
-if (isFlagEnabled("autofix_review_changes", env)) {
-  /* ... */
-}
-
-// Stable per-key rollout.
-if (percentageRollout("new_sandbox_image", sessionId, env)) {
-  /* ... */
-}
-```
-
-Flag-name convention: lowercase snake_case in code. Stored as an env var
-named `FF_<UPPERCASE>`:
-
-| Code call | Env var | Accepted values |
-|---|---|---|
-| `isFlagEnabled("foo", env)` | `FF_FOO` | `1`, `true`, `on`, `yes` (case-insensitive) → on; anything else (or missing) → off |
-| `percentageRollout("foo", key, env)` | `FF_FOO_PCT` | integer/float 0..100; bucket assignment is deterministic on `key` via FNV-1a |
-| `flagValue("model", env)` | `FF_MODEL` | raw string (variant flags) |
-
-Set flags via `wrangler secret put FF_FOO` (Worker), `.dev.vars` (local),
-or the launcher's systemd unit env (VPS).
-
-### Flag lifecycle (registry + dead-flag detection)
-
-Every flag the code reads is registered in
-[`feature-flags.json`](feature-flags.json). The registry is the
-single source of truth for "what flags exist, who owns them, and when
-were they introduced". The dead-flag detector
-([`scripts/detect-dead-flags.ts`](scripts/detect-dead-flags.ts), run as
-`bun run flags:check`) reconciles the registry with grep results from
-`src/`, `scripts/`, and `infra/` and fails CI on three conditions:
-
-| Finding | What it means | Fix |
-|---|---|---|
-| **Declared but unused** | Flag exists in `feature-flags.json` but no call site mentions it | Delete the registry entry and the dead branch in the same PR. The flag's code path has already been removed; the registry hasn't caught up. |
-| **Used but undeclared** | A call site references a flag name not in the registry | Add a registry entry (with `owner`, `createdAt`, `kind`) in the same PR. New flags must be registered when they're introduced. |
-| **Stale** | A registered flag is older than `maxAgeDays` (default 90) and still has live call sites | Either ship the change and remove the flag, or bump `maxAgeDays` in the entry with a written justification in the PR description. |
-
-This runs in the `lint` CI workflow on every PR (blocking) and in
-[`.github/workflows/feature-flags-audit.yml`](.github/workflows/feature-flags-audit.yml)
-on a weekly cron so flags that age out without any related PR still
-surface.
-
-Adding a new flag — short version:
-
-1. Add a call to `isFlagEnabled` / `percentageRollout` / `flagValue`.
-2. Add an entry to `feature-flags.json` with `name`, `kind`, `owner`,
-   `createdAt`, and an optional `cleanup` note saying what "done" looks
-   like for this flag.
-3. Set `FF_<NAME>` in your `.dev.vars` / `wrangler secret put` /
-   launcher unit env as appropriate.
-
-Removing a stale flag is a one-line PR — the call site becomes the
-code path that was behind the flag, and the registry entry is deleted
-in the same commit.
+| Install | `bun install` |
+| Test | `bun run test` |
+| Typecheck | `bun run typecheck` |
+| Lint | `bun run lint` / `bun run lint:fix` |
+| Format | `bun run format` / `bun run format:check` |
+| Build | `npx flue build --target cloudflare` |
+| Deploy | `npx wrangler deploy` |
+| Bundle size | `bun run bundle:size` |
+
+## CI gates
+
+- lint (oxlint)
+- format:check (biome)
+- typecheck (tsc)
+- tests (vitest)
+- bundle:size (<1 MiB)
+- deadcode (knip)
+
+## No legacy
+
+This project uses Flue + Cloudflare Workers. No E2B, no OpenCode, no Bun
+Launcher, no VPS, no event-mapper, no SessionDurableObject.
+
+See `docs/FLUE-MIGRATION-SPEC.md` for migration history.

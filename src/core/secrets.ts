@@ -3,7 +3,7 @@
 //
 // We re-implement `crypto.timingSafeEqual` in a runtime-portable way so
 // the same helper compiles for Cloudflare Workers (no `Buffer`) and
-// Node 22 (launcher sidecar) without pulling in a polyfill.
+// Avoids pulling in Node crypto polyfill.
 // ============================================================
 
 /**

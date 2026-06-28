@@ -2,11 +2,11 @@
 // Feature flag infrastructure
 //
 // Lightweight env-var-driven flag system. Lives in src/core/ so both the
-// Worker (Cloudflare runtime) and the launcher (Bun runtime) can import
+// Worker (Cloudflare runtime) can import
 // it without a runtime-specific dependency. Reads from Cloudflare Worker
 // `env` bindings + `process.env` so flag values can be set per-environment
 // via `wrangler secret put` (Worker) or `.dev.vars` (local) or the
-// systemd unit (launcher VPS).
+//
 //
 // Design goals:
 //   - Zero external service (no LaunchDarkly / Statsig). Sufficient for

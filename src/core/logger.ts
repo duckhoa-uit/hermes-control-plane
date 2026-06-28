@@ -2,7 +2,7 @@
 // Structured logger
 //
 // One opinionated logger for both runtimes (Cloudflare Worker + Bun
-// launcher). Emits one JSON object per line on stdout/stderr so it can be
+// Emits one JSON object per line on stdout/stderr so it can be
 // scraped by anything that understands NDJSON — `wrangler tail`,
 // `journalctl -o cat | jq`, Datadog Logs, Axiom, Better Stack, etc.
 //
@@ -26,7 +26,7 @@
 //      / generates the ID from the incoming `X-Request-Id` (or
 //      `cf-ray`) header and threads it via `createLogger({ requestId })`;
 //      downstream calls to `fetch()` add it back as a header. Together
-//      these let an operator pivot from a launcher log line to the
+//      these let an operator pivot from a log line to the
 //      Worker log line that triggered it.
 //
 //   3. Redaction of obvious secrets *before* they hit the transport.
@@ -89,7 +89,7 @@ const SENSITIVE_VALUE_PATTERNS: ValuePattern[] = [
   // GitHub PATs (classic + fine-grained + GH App tokens).
   { re: /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, replace: () => REDACTED },
   { re: /\bgithub_pat_[A-Za-z0-9_]{40,}\b/g, replace: () => REDACTED },
-  // E2B + Z.AI keys (project convention: `e2b_…`, `zai_…`).
+  // Z.AI keys (project convention: `zai_…`).
   { re: /\b(?:e2b|zai)_[A-Za-z0-9]{20,}\b/gi, replace: () => REDACTED },
   // `Authorization: Bearer …` / `Authorization: token …` header values.
   // Keep the prefix so the line stays diagnosable.
@@ -163,7 +163,6 @@ function envLevel(): LogLevel {
 export interface CreateLoggerOptions {
   /** Minimum level to emit. Defaults to `LOG_LEVEL` env var, else `info`. */
   level?: LogLevel;
-  /** Subsystem label baked into every line (`worker`, `launcher`, `runner`, …). */
   service?: string;
   /** Initial bound fields. `requestId` here is the canonical place to set it. */
   fields?: LogFields;
@@ -249,7 +248,7 @@ export function createLogger(opts: CreateLoggerOptions = {}): Logger {
 //
 // The Worker generates / extracts a request ID at the edge and threads it
 // down via `createLogger({ fields: { requestId } })`. Downstream HTTP
-// calls add it back as a header so the launcher's logs are correlatable.
+// calls add it back as a header for log correlation.
 
 const REQUEST_ID_HEADER = "x-request-id";
 

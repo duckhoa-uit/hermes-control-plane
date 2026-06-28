@@ -27,9 +27,19 @@
     "typescript/no-explicit-any": "off",
     "typescript/no-non-null-assertion": "off",
     "eqeqeq": ["error", "smart"],
-    "no-empty": ["warn", { "allowEmptyCatch": true }],
+    "no-empty": [
+      "warn",
+      {
+        "allowEmptyCatch": true
+      }
+    ],
     "no-fallthrough": "error",
-    "no-constant-condition": ["error", { "checkLoops": false }],
+    "no-constant-condition": [
+      "error",
+      {
+        "checkLoops": false
+      }
+    ],
     "promise/no-return-wrap": "error",
     "promise/always-return": "off",
     "import/no-duplicates": "warn",
@@ -37,8 +47,20 @@
     "no-underscore-dangle": "off",
     "no-useless-concat": "off",
     "unicorn/consistent-function-scoping": "off",
-    "complexity": ["warn", { "max": 25 }],
-    "max-lines": ["warn", { "max": 1500, "skipBlankLines": true, "skipComments": true }],
+    "complexity": [
+      "warn",
+      {
+        "max": 25
+      }
+    ],
+    "max-lines": [
+      "warn",
+      {
+        "max": 1500,
+        "skipBlankLines": true,
+        "skipComments": true
+      }
+    ],
     "max-lines-per-function": [
       "warn",
       {
@@ -59,6 +81,7 @@
   "ignorePatterns": [
     "node_modules",
     "dist",
+    ".flue-vite",
     ".wrangler",
     "**/*.d.ts",
     "tests/_shims/**",

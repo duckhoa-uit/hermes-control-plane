@@ -1,14 +1,12 @@
 # Deploy the Cloudflare Worker (control plane) on every push to main
-# that touches worker code. Launcher is deployed manually via
-# infra/launcher/install.sh on the VPS — see infra/launcher/README.md.
+# that touches worker code. Flue build + wrangler deploy.
 name: deploy-worker
 
 on:
   push:
     branches: [main]
     paths:
-      - 'src/worker/**'
-      - 'src/core/**'
+      - 'src/**'
       - 'wrangler.jsonc'
       - 'package.json'
       - 'bun.lock'
@@ -22,13 +20,17 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
 
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.18'
 
       - name: Cache bun store
         uses: actions/cache@v4
@@ -44,65 +46,14 @@ jobs:
 
       - run: bun run typecheck
 
-      # Bundle-size budget. Cheap (~3s); if it fails, deploy never starts.
       - run: bun run bundle:size
 
-      # Notify Discord the deploy is starting so on-call can correlate any
-      # post-deploy alerts. Skipped silently when DISCORD_DEPLOY_WEBHOOK
-      # is unset (e.g. forked PRs that workflow_dispatch).
-      - name: Notify Discord (deploy starting)
-        if: env.DISCORD_DEPLOY_WEBHOOK != ''
-        env:
-          DISCORD_DEPLOY_WEBHOOK: ${{ secrets.DISCORD_DEPLOY_WEBHOOK }}
-        run: |
-          curl -sS -X POST -H 'Content-Type: application/json' \
-            --data "{\"content\":\":rocket: Deploying \`hermes-control-plane\` worker — sha \`${GITHUB_SHA::7}\` (${GITHUB_ACTOR}) — <https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}>\"}" \
-            "$DISCORD_DEPLOY_WEBHOOK" || true
-
-      # Push POSTHOG_RELEASE = current git sha so the Worker's runtime
-      # PostHog client tags $exception events with the release that
-      # introduced the regression. `wrangler secret put` is one-shot
-      # per env, so we write it on every deploy. No-op when
-      # POSTHOG_PROJECT_TOKEN secret is unset.
-      - name: Push POSTHOG_RELEASE secret
-        if: env.POSTHOG_TOKEN_PRESENT == 'true'
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          POSTHOG_TOKEN_PRESENT: ${{ secrets.POSTHOG_PROJECT_TOKEN != '' }}
-        run: |
-          echo "$GITHUB_SHA" | bunx wrangler secret put POSTHOG_RELEASE
+      - name: Flue build
+        run: npx flue build --target cloudflare
 
       - name: Deploy
         id: wrangler
-        run: bunx wrangler deploy
+        run: npx wrangler deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
-      # Success: emit a deploy marker so downstream dashboards (Grafana,
-      # Datadog, CF Analytics Engine) can overlay deploy boundaries on
-      # latency / error-rate panels. The marker is just the commit sha
-      # and the actor; the dashboard query (see docs/OBSERVABILITY.md)
-      # joins it against the time axis.
-      - name: Notify Discord (deploy success)
-        if: ${{ success() && env.DISCORD_DEPLOY_WEBHOOK != '' }}
-        env:
-          DISCORD_DEPLOY_WEBHOOK: ${{ secrets.DISCORD_DEPLOY_WEBHOOK }}
-        run: |
-          curl -sS -X POST -H 'Content-Type: application/json' \
-            --data "{\"content\":\":white_check_mark: Worker deployed — sha \`${GITHUB_SHA::7}\`. Dashboards: https://dash.cloudflare.com/?to=workers (see docs/OBSERVABILITY.md for filters).\"}" \
-            "$DISCORD_DEPLOY_WEBHOOK" || true
-
-      # Failure: page on-call via Discord with @here mention so the
-      # channel's mobile notifications fire. `always() && failure()` is
-      # the only correct combo here — `failure()` alone would not run
-      # if a previous step set continue-on-error.
-      - name: Notify Discord (deploy FAILED — page on-call)
-        if: ${{ always() && failure() && env.DISCORD_DEPLOY_WEBHOOK != '' }}
-        env:
-          DISCORD_DEPLOY_WEBHOOK: ${{ secrets.DISCORD_DEPLOY_WEBHOOK }}
-        run: |
-          curl -sS -X POST -H 'Content-Type: application/json' \
-            --data "{\"content\":\"@here :rotating_light: Worker deploy FAILED — sha \`${GITHUB_SHA::7}\` — <https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}>. See docs/OBSERVABILITY.md §\\\"Deploy failed\\\" runbook.\",\"allowed_mentions\":{\"parse\":[\"everyone\"]}}" \
-            "$DISCORD_DEPLOY_WEBHOOK" || true
