@@ -12,7 +12,7 @@
     "tests/**/*.mts"
   ],
   "project": ["src/**/*.ts", "scripts/**/*.ts"],
-  "ignoreBinaries": ["wrangler"],
+  "ignoreBinaries": [],
   "ignoreDependencies": ["cloudflare"],
   "ignoreExportsUsedInFile": true,
   "vitest": {

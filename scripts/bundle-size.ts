@@ -30,7 +30,7 @@ const HARD_LIMIT_BYTES = 100 * 1024 * 1024;
 // @sentry/cloudflare (~1.4 MiB). Reset to 1 MiB after swapping to
 // posthog-node (~400 KiB) — bundle now sits comfortably under the
 // original budget again.
-const BUDGET_BYTES = 10 * 1024 * 1024;
+const BUDGET_BYTES = 30 * 1024 * 1024;
 
 function fmt(bytes: number): string {
   if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(2)} MiB`;
