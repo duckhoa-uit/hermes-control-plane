@@ -1,22 +1,23 @@
-# Hermes Control Plane — Environment Variables
-# Copy to .dev.vars and fill in the values.
+# Hermes Control Plane — Environment Variables (Cloudflare Workers production)
+# Copy to .dev.vars, fill in values. Secrets go through `wrangler secret put`.
 
-# GitHub
+# GitHub (fine-grained PAT)
 GITHUB_WRITE_TOKEN=ghp_...
 GITHUB_READ_TOKEN=ghp_...
-GITHUB_WEBHOOK_SECRET=...
+GITHUB_WEBHOOK_SECRET=openssl rand -hex 32
 GITHUB_USER_LOGIN=your-github-username
-GITHUB_OWNER=
-GITHUB_REPO=
+GITHUB_OWNER=your-org-or-user
+GITHUB_REPO=your-repo
 
-# LLM Model (provider/model format, e.g. anthropic/claude-sonnet-4-6)
-LLM_MODEL=anthropic/claude-sonnet-4-6
+# LLM Provider (Z.AI for zai/glm-5.2, or anthropic/openai)
+LLM_MODEL=zai/glm-5.2
+ZAI_API_KEY=zai_...
 
-# PostHog (optional analytics)
+# Observability (optional)
 POSTHOG_HOST=https://us.i.posthog.com
 POSTHOG_PROJECT_TOKEN=
 
-# Auto-fix limits
+# Limits
 AUTOFIX_CAP_PER_PR=3
 MAX_CONCURRENT_SESSIONS=10
 AUTO_CREATE_PR=1

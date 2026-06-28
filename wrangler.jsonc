@@ -4,12 +4,7 @@
   "main": ".flue-vite/_entry.ts",
   "compatibility_date": "2026-06-28",
   "compatibility_flags": ["nodejs_compat"],
-
-  "observability": {
-    "enabled": true,
-    "head_sampling_rate": 0.1
-  },
-
+  "observability": { "enabled": true, "head_sampling_rate": 0.1 },
   "containers": [
     {
       "class_name": "Sandbox",
@@ -18,7 +13,6 @@
       "max_instances": 10
     }
   ],
-
   "durable_objects": {
     "bindings": [
       { "name": "Sandbox", "class_name": "Sandbox" },
@@ -28,25 +22,19 @@
       { "name": "FLUE_REGISTRY", "class_name": "FlueRegistry" }
     ]
   },
-
   "migrations": [
     {
       "tag": "v1",
       "new_sqlite_classes": ["Sandbox", "PrIndexDurableObject", "FlueRegistry", "FlueHermesAgent"]
     }
   ],
-
-  "ai": {
-    "binding": "AI"
-  },
-
+  "ai": { "binding": "AI" },
   "vars": {
     "LLM_MODEL": "zai/glm-5.2",
     "POSTHOG_HOST": "https://us.i.posthog.com",
     "AUTOFIX_CAP_PER_PR": "3",
     "MAX_CONCURRENT_SESSIONS": "10",
     "AUTO_CREATE_PR": "1",
-    "WORKER_URL": "http://localhost:8787",
-    "ZAI_API_KEY": ""
+    "WORKER_URL": "http://localhost:8787"
   }
 }

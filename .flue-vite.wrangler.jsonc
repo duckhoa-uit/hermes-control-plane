@@ -55,7 +55,6 @@
     "AUTOFIX_CAP_PER_PR": "3",
     "MAX_CONCURRENT_SESSIONS": "10",
     "AUTO_CREATE_PR": "1",
-    "WORKER_URL": "http://localhost:8787",
-    "ZAI_API_KEY": ""
+    "WORKER_URL": "http://localhost:8787"
   }
 }

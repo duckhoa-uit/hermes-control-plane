@@ -51,7 +51,7 @@ export function advanceStatus(current: SessionStatus, next: SessionStatus): Sess
 
 /**
  * Apply a lifecycle event and compute resulting Hermes status.
- * Flue's Pi lifecycle is simpler than the old E2B/OpenCode flow:
+ * Flue's Pi lifecycle is simpler than the old architecture:
  * - provisioning → running is direct (no runner_connecting/ready)
  * - Follow-up submission while running stays running
  * - Terminal completed archives the session

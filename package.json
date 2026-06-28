@@ -24,12 +24,10 @@
     "@flue/github": "1.0.0-beta.1",
     "@flue/runtime": "1.0.0-beta.7",
     "@flue/sdk": "1.0.0-beta.7",
-    "@modelcontextprotocol/sdk": "^1.29.0",
     "@octokit/rest": "^22.0.0",
     "agents": "^0.14.0",
     "hono": "^4.7.0",
-    "valibot": "^1.0.0",
-    "zod": "^4.4.3"
+    "valibot": "^1.0.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.1",

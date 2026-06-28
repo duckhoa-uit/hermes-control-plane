@@ -1,16 +1,16 @@
 // ============================================================
 // Hermes Control Plane — Hono app (Flue user app)
 // ============================================================
-// Flue CLI generates `.flue-vite/_entry.ts` which imports this as
-// the user-defined HTTP handler. DO routing + Pi harness is handled
-// by Flue's generated `FlueHermesAgent`.
 //
 // Routes:
-//   GET  /health                 → health check
-//   POST /agents/:name/:id       → handled by Flue's flue() middleware
-//   GET  /agents/:name/:id       → SSE stream (Flue)
-//   POST /proxy/git-push         → credential-isolated git push
-//   POST /proxy/create-pr        → credential-isolated PR creation
+//   GET  /health                     → health check
+//   POST /proxy/git-push             → credential-isolated git push
+//   POST /proxy/create-pr            → credential-isolated PR creation
+//
+// Flue auto-mounts (via `flue()` + src/channels/github.ts):
+//   POST /channels/github/webhook    → GitHub webhook (HMAC verified)
+//   POST /agents/hermes/:id          → Agent dispatch
+//   GET  /agents/hermes/:id          → Agent event stream
 
 import { flue } from "@flue/runtime/routing";
 import { Hono } from "hono";
@@ -22,15 +22,12 @@ const app = new Hono<{ Bindings: Env }>();
 
 app.get("/health", (c) => c.json({ status: "ok", ts: Date.now() }));
 
-// ─── Flue agent router ─────────────────────────────────────────────────────
-// Mounts agent dispatch + event stream routes:
-//   POST /agents/:name/:id → dispatch agent (202)
-//   GET  /agents/:name/:id → DS event stream
+// ─── Flue routes ───────────────────────────────────────────────────────────
+// Mount agents, workflows, channels discovered by Flue build.
 
 app.route("/", flue());
 
 // ─── Proxy: Git Push ───────────────────────────────────────────────────────
-// Credential isolation: agent calls this endpoint, Worker injects token.
 
 app.post("/proxy/git-push", async (c) => {
   const body = await c.req.json().catch(() => ({}));

@@ -37,6 +37,7 @@ import { registerApiProvider, registerProvider } from "@flue/runtime";
 
 import * as handler_hermes_0 from "/Users/macbook/.codex/worktrees/e73c/hermes-control-plan/src/agents/hermes.ts";
 
+import * as channel_github_0 from "/Users/macbook/.codex/worktrees/e73c/hermes-control-plan/src/channels/github.ts";
 import userApp from "/Users/macbook/.codex/worktrees/e73c/hermes-control-plan/src/app.ts";
 import * as userCloudflareModule from "/Users/macbook/.codex/worktrees/e73c/hermes-control-plan/src/cloudflare.ts";
 export * from "/Users/macbook/.codex/worktrees/e73c/hermes-control-plan/src/cloudflare.ts";
@@ -171,7 +172,9 @@ const agentModules = {
   hermes: handler_hermes_0,
 };
 const workflowModules = {};
-const channelModules = {};
+const channelModules = {
+  github: channel_github_0,
+};
 const { agents, workflows, channelHandlers } = normalizeBuiltModules(
   agentModules,
   workflowModules,
