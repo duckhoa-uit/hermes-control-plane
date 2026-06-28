@@ -15,6 +15,10 @@ describe("state-machine", () => {
       expect(canTransition("created", "provisioning")).toBe(true);
     });
 
+    it("allows provisioning -> running", () => {
+      expect(canTransition("provisioning", "running")).toBe(true);
+    });
+
     it("allows running -> needs_approval", () => {
       expect(canTransition("running", "needs_approval")).toBe(true);
     });
@@ -31,7 +35,7 @@ describe("state-machine", () => {
       expect(canTransition("review_ready", "creating_pr")).toBe(true);
     });
 
-    it("allows review_ready -> running for follow-up prompts (M4)", () => {
+    it("allows review_ready -> running for follow-up prompts", () => {
       expect(canTransition("review_ready", "running")).toBe(true);
     });
 
@@ -59,8 +63,6 @@ describe("state-machine", () => {
       const allStates: SessionStatus[] = [
         "created",
         "provisioning",
-        "runner_connecting",
-        "ready",
         "running",
         "needs_approval",
         "review_ready",
@@ -137,6 +139,10 @@ describe("state-machine", () => {
   describe("isActive", () => {
     it("returns true for running", () => {
       expect(isActive("running")).toBe(true);
+    });
+
+    it("returns true for provisioning", () => {
+      expect(isActive("provisioning")).toBe(true);
     });
 
     it("returns false for completed", () => {

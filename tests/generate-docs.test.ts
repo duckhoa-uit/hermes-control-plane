@@ -17,7 +17,6 @@ describe("auto-generated docs", () => {
     const s = readFileSync(p, "utf8");
     expect(s).toContain("## Worker (Cloudflare)");
     expect(s).toContain("## Launcher (Bun sidecar)");
-    // At least one expected route should appear (drives the extractor).
     expect(s).toMatch(/\/health/);
     expect(s).toMatch(/\/sessions/);
     expect(s).toMatch(/\/webhooks\/github/);
@@ -28,11 +27,8 @@ describe("auto-generated docs", () => {
     expect(existsSync(p)).toBe(true);
     const s = readFileSync(p, "utf8");
     expect(s).toContain("## `SessionStatus`");
-    expect(s).toContain("## `HermesEventType`");
-    expect(s).toContain("## `RunnerMessageType`");
-    expect(s).toContain("`session.created`");
-    expect(s).toContain("`runner.connected`");
     expect(s).toContain("`provisioning`");
+    expect(s).toContain("`running`");
   });
 
   it("docs/state-machine.mmd is a valid Mermaid stateDiagram-v2", () => {
@@ -41,7 +37,6 @@ describe("auto-generated docs", () => {
     const s = readFileSync(p, "utf8");
     expect(s.startsWith("%%{init")).toBe(true);
     expect(s).toContain("stateDiagram-v2");
-    // Canonical edges we hard-code in the generator.
     expect(s).toContain("[*] --> created");
     expect(s).toContain("created --> provisioning");
     expect(s).toContain("review_ready --> creating_pr");
