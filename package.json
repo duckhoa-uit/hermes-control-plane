@@ -52,8 +52,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@opencode-ai/sdk": "1.17.10",
-    "e2b": "^2.30.5",
+    "@opencode-ai/sdk": "1.17.11",
+    "e2b": "^2.30.6",
     "posthog-node": "^5.38.6",
     "ws": "^8.21.0",
     "zod": "^4.4.3"
