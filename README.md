@@ -10,6 +10,10 @@ AI coding agent for automated PR reviews and fixes, powered by Flue + Cloudflare
 - **z.ai (glm-5.2)** — LLM provider
 - **GitHub webhooks** — triggers via `/channels/github/webhook`
 
+## For AI agents
+
+This project includes an [AGENTS.md](./AGENTS.md) file with detailed instructions for autonomous coding agents. If you're an AI agent, read that first.
+
 ## Quick start
 
 ```bash
