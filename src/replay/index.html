@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Session Replay — Hermes</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0d1117; color: #c9d1d9; min-height: 100vh; }
+  .container { max-width: 960px; margin: 0 auto; padding: 24px; }
+  .header { border-bottom: 1px solid #21262d; padding-bottom: 16px; margin-bottom: 24px; }
+  .header h1 { font-size: 20px; color: #f0f6fc; }
+  .header .meta { font-size: 13px; color: #8b949e; margin-top: 4px; }
+  .status-badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+  .status-badge.running { background: #1f6feb33; color: #58a6ff; border: 1px solid #1f6feb; }
+  .status-badge.completed { background: #23863633; color: #3fb950; border: 1px solid #238636; }
+  .status-badge.failed { background: #da363333; color: #f85149; border: 1px solid #da3633; }
+  .status-badge.needs_approval { background: #d2992233; color: #d29922; border: 1px solid #d29922; }
+  .status-badge.connecting { background: #8b949e33; color: #8b949e; border: 1px solid #8b949e; }
+  .timeline { position: relative; padding-left: 24px; }
+  .timeline::before { content: ''; position: absolute; left: 8px; top: 0; bottom: 0; width: 2px; background: #21262d; }
+  .event { position: relative; margin-bottom: 16px; }
+  .event::before { content: ''; position: absolute; left: -20px; top: 12px; width: 10px; height: 10px; border-radius: 50%; background: #30363d; border: 2px solid #21262d; }
+  .event.turn::before { background: #58a6ff; border-color: #1f6feb; }
+  .event.tool::before { background: #7ee787; border-color: #238636; }
+  .event.approval::before { background: #d29922; border-color: #9e6a03; }
+  .event.error::before { background: #f85149; border-color: #da3633; }
+  .event.data-event::before { background: #bc8cff; border-color: #8957e5; }
+  .card { background: #161b22; border: 1px solid #21262d; border-radius: 6px; padding: 12px 16px; }
+  .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .card-type { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+  .card-type.turn { color: #58a6ff; }
+  .card-type.tool { color: #7ee787; }
+  .card-type.approval { color: #d29922; }
+  .card-type.error { color: #f85149; }
+  .card-type.data-event { color: #bc8cff; }
+  .card-time { font-size: 11px; color: #484f58; }
+  .card-body { font-size: 13px; line-height: 1.5; }
+  .card-body pre { background: #0d1117; border: 1px solid #21262d; border-radius: 4px; padding: 8px 12px; overflow-x: auto; margin: 8px 0; font-size: 12px; }
+  .card-body code { background: #0d1117; border-radius: 3px; padding: 1px 4px; font-size: 12px; }
+  .tool-duration { font-size: 11px; color: #8b949e; }
+  .tool-result { margin-top: 8px; }
+  .tool-result summary { cursor: pointer; font-size: 12px; color: #8b949e; }
+  .tool-result pre { max-height: 200px; overflow-y: auto; margin-top: 4px; }
+  .approval-card { border-color: #9e6a03; }
+  .approval-card .card-body { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .btn { padding: 6px 14px; border: 1px solid; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s; }
+  .btn-approve-once { background: #238636; color: #fff; border-color: #238636; }
+  .btn-approve-once:hover { background: #2ea043; }
+  .btn-approve-session { background: #1f6feb; color: #fff; border-color: #1f6feb; }
+  .btn-approve-session:hover { background: #388bfd; }
+  .btn-approve-always { background: #6e7681; color: #fff; border-color: #6e7681; }
+  .btn-approve-always:hover { background: #848d97; }
+  .btn-deny { background: #da3633; color: #fff; border-color: #da3633; }
+  .btn-deny:hover { background: #f85149; }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .resolved-badge { font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 4px; }
+  .resolved-badge.approved { background: #23863633; color: #3fb950; }
+  .resolved-badge.denied { background: #da363333; color: #f85149; }
+  .empty-state { text-align: center; padding: 48px 0; color: #8b949e; }
+  .loading-spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #30363d; border-top-color: #58a6ff; border-radius: 50%; animation: spin 0.8s linear infinite; margin-right: 8px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .text-delta-stream { white-space: pre-wrap; word-break: break-word; }
+  .thinking-block { background: #1c2128; border-left: 3px solid #8b949e; padding: 8px 12px; margin: 8px 0; border-radius: 0 4px 4px 0; color: #8b949e; font-style: italic; font-size: 12px; }
+  .thinking-block summary { cursor: pointer; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>Session Replay</h1>
+    <div class="meta">
+      <span>Session: <strong id="session-id">—</strong></span>
+      <span style="margin-left: 16px">Status: <span id="status-badge" class="status-badge connecting">connecting</span></span>
+      <span style="margin-left: 16px" id="event-count">0 events</span>
+    </div>
+  </div>
+  <div id="timeline" class="timeline">
+    <div class="empty-state"><span class="loading-spinner"></span> Connecting to event stream...</div>
+  </div>
+</div>
+<script>
+// === Parse URL params ===
+const params = new URLSearchParams(window.location.search);
+const SESSION_ID = params.get('id') || '';
+const TOKEN = params.get('token') || '';
+
+if (!SESSION_ID) {
+  document.getElementById('timeline').innerHTML = '<div class="empty-state" style="color:#f85149">Missing session id in URL.</div>';
+}
+document.getElementById('session-id').textContent = SESSION_ID;
+
+// === Approval decision POST ===
+async function postApproval(approvalId, decision) {
+  const resp = await fetch('/approvals/' + approvalId, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ decision, token: TOKEN, actor: 'web' }),
+  });
+  if (!resp.ok) throw new Error('Approval POST failed: ' + resp.status);
+  return resp.json();
+}
+
+// === Timeline state ===
+const timeline = document.getElementById('timeline');
+let firstEvent = true;
+let eventCount = 0;
+const turnMap = new Map();   // turnId -> { el, deltaEl, toolResults, startEl }
+const approvalMap = new Map(); // approvalId -> { el, pending }
+
+// === SSE connection ===
+const streamUrl = '/sessions/' + SESSION_ID + '/stream?token=' + encodeURIComponent(TOKEN);
+let eventSource;
+
+function connect() {
+  eventSource = new EventSource(streamUrl);
+
+  eventSource.addEventListener('data', (e) => {
+    try {
+      const events = JSON.parse(e.data);
+      if (!Array.isArray(events)) return;
+      for (const ev of events) {
+        handleEvent(ev);
+      }
+    } catch (err) {
+      console.error('Parse error:', err);
+    }
+  });
+
+  eventSource.addEventListener('control', (e) => {
+    try {
+      const ctrl = JSON.parse(e.data);
+      if (ctrl.streamClosed) {
+        document.getElementById('status-badge').textContent = 'closed';
+        document.getElementById('status-badge').className = 'status-badge completed';
+        eventSource.close();
+      }
+    } catch {}
+  });
+
+  eventSource.onerror = () => {
+    document.getElementById('status-badge').textContent = 'disconnected';
+    document.getElementById('status-badge').className = 'status-badge failed';
+    // auto-reconnect after 3s
+    setTimeout(() => {
+      if (eventSource.readyState === EventSource.CLOSED) connect();
+    }, 3000);
+  };
+}
+
+function handleEvent(ev) {
+  eventCount++;
+  document.getElementById('event-count').textContent = eventCount + ' events';
+
+  if (firstEvent) {
+    timeline.innerHTML = '';
+    firstEvent = false;
+  }
+
+  switch (ev.eventType || ev.type) {
+    case 'agent_start':
+      renderEvent('turn', 'Agent started', '', ev.timestamp);
+      document.getElementById('status-badge').textContent = 'running';
+      document.getElementById('status-badge').className = 'status-badge running';
+      break;
+
+    case 'agent_end':
+      renderEvent('turn', 'Agent ended', (ev.messages?.length || ev.result?.summary) ?? '', ev.timestamp);
+      document.getElementById('status-badge').textContent = 'completed';
+      document.getElementById('status-badge').className = 'status-badge completed';
+      break;
+
+    case 'turn_start':
+      renderTurnStart(ev);
+      break;
+
+    case 'turn': {
+      const tEl = turnMap.get(ev.turnId);
+      if (tEl && tEl.card) {
+        const dur = ev.durationMs ? (ev.durationMs / 1000).toFixed(1) + 's' : '';
+        const usage = ev.request?.usage ? ` (${ev.request.usage.inputTokens}+${ev.request.usage.outputTokens} tok)` : '';
+        const header = tEl.card.querySelector('.card-header');
+        if (header) header.innerHTML += `<span class="tool-duration">${dur}${usage}</span>`;
+      }
+      break;
+    }
+
+    case 'tool_start':
+      renderToolStart(ev);
+      break;
+
+    case 'tool':
+      renderToolEnd(ev);
+      break;
+
+    case 'message_end': {
+      if (ev.message?.role === 'assistant' && ev.message.content) {
+        const turnId = ev.turnId;
+        if (turnMap.has(turnId)) {
+          const tEl = turnMap.get(turnId);
+          if (tEl && tEl.card) {
+            const body = tEl.card.querySelector('.card-body');
+            const text = extractText(ev.message.content);
+            if (text && body && !body.querySelector('.turn-output')) {
+              const div = document.createElement('div');
+              div.className = 'turn-output';
+              div.style.marginTop = '8px';
+              div.style.padding = '8px 12px';
+              div.style.background = '#0d1117';
+              div.style.borderRadius = '4px';
+              div.style.fontSize = '13px';
+              div.style.whiteSpace = 'pre-wrap';
+              div.style.maxHeight = '300px';
+              div.style.overflowY = 'auto';
+              div.textContent = text.slice(0, 4000);
+              body.appendChild(div);
+            }
+          }
+        }
+      }
+      break;
+    }
+
+    case 'text_delta':
+      renderTextDelta(ev);
+      break;
+
+    case 'thinking_delta':
+    case 'thinking_start':
+    case 'thinking_end':
+      renderThinking(ev);
+      break;
+
+    case 'data':
+      handleDataEvent(ev);
+      break;
+
+    case 'log':
+      renderEvent('data-event', 'Log: ' + (ev.attributes?.message || ev.level), '', ev.timestamp);
+      break;
+
+    case 'idle':
+      // no render
+      break;
+
+    case 'operation':
+    case 'operation_start':
+      // too granular for replay, skip
+      break;
+
+    default:
+      // unknown events: render as generic
+      if (ev.eventType) {
+        const summary = ev.error ? 'Error: ' + ev.error : (ev.result ? JSON.stringify(ev.result).slice(0, 200) : '');
+        const cls = ev.error ? 'error' : 'data-event';
+        renderEvent(cls, ev.eventType, summary, ev.timestamp);
+      }
+  }
+}
+
+function extractText(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter(c => c.type === 'text')
+      .map(c => c.text || '')
+      .join('\n');
+  }
+  return '';
+}
+
+function renderTurnStart(ev) {
+  const id = 'turn-' + (ev.turnId || eventCount);
+  const el = createEvent('turn');
+  el.innerHTML = `
+    <div class="card">
+      <div class="card-header">
+        <span class="card-type turn">TURN</span>
+        <span class="card-time">${formatTime(ev.timestamp)}</span>
+      </div>
+      <div class="card-body">
+        <strong>${ev.purpose || 'agent'}</strong> turn started
+        ${ev.request?.model ? `<span style="color:#8b949e"> · model: ${ev.request.model}</span>` : ''}
+        <div class="turn-deltas" style="margin-top:6px"></div>
+      </div>
+    </div>`;
+  timeline.appendChild(el);
+  if (ev.turnId) {
+    turnMap.set(ev.turnId, { el, card: el.querySelector('.card'), deltaEl: el.querySelector('.turn-deltas') });
+  }
+}
+
+function renderToolStart(ev) {
+  const el = createEvent('tool');
+  const toolName = ev.toolName || 'unknown';
+  el.id = 'tool-' + (ev.toolCallId || eventCount);
+  el.innerHTML = `
+    <div class="card">
+      <div class="card-header">
+        <span class="card-type tool">TOOL: ${escapeHtml(toolName)}</span>
+        <span class="card-time">${formatTime(ev.timestamp)}</span>
+      </div>
+      <div class="card-body">
+        <div class="tool-input" style="color:#8b949e;font-size:12px">args: ${escapeHtml(truncate(JSON.stringify(ev.args), 300))}</div>
+        <div class="tool-output" style="margin-top:8px"></div>
+      </div>
+    </div>`;
+  timeline.appendChild(el);
+}
+
+function renderToolEnd(ev) {
+  const el = document.getElementById('tool-' + (ev.toolCallId || ''));
+  if (!el) {
+    // render standalone
+    const cardEl = createEvent('tool');
+    const isErr = ev.isError;
+    cardEl.innerHTML = `
+      <div class="card">
+        <div class="card-header">
+          <span class="card-type ${isErr ? 'error' : 'tool'}">TOOL: ${escapeHtml(ev.toolName || '?')} ${isErr ? '(error)' : ''}</span>
+          <span class="card-time">${formatTime(ev.timestamp)}</span>
+        </div>
+        <div class="card-body">
+          ${isErr ? `<div style="color:#f85149">${escapeHtml(String(ev.error || 'unknown error'))}</div>` : ''}
+        </div>
+      </div>`;
+    timeline.appendChild(cardEl);
+    return;
+  }
+  const duration = ev.durationMs ? (ev.durationMs / 1000).toFixed(1) + 's' : '';
+  const header = el.querySelector('.card-header');
+  const isErr = ev.isError;
+  if (header) {
+    header.innerHTML += `<span class="tool-duration">${duration}</span>`;
+    const typeSpan = header.querySelector('.card-type');
+    if (isErr && typeSpan) typeSpan.className = 'card-type error';
+  }
+  const outputDiv = el.querySelector('.tool-output');
+  if (outputDiv && ev.result !== undefined) {
+    const resultStr = typeof ev.result === 'string' ? ev.result : JSON.stringify(ev.result);
+    if (resultStr.length > 0) {
+      outputDiv.innerHTML = `
+        <details class="tool-result">
+          <summary>${isErr ? 'Error output' : 'Result'} (${resultStr.length} chars)</summary>
+          <pre>${escapeHtml(truncate(resultStr, 2000))}</pre>
+        </details>`;
+    }
+  }
+  if (isErr && ev.error) {
+    const body = el.querySelector('.card-body');
+    if (body) {
+      body.innerHTML += `<div style="color:#f85149;margin-top:4px">Error: ${escapeHtml(String(ev.error))}</div>`;
+    }
+  }
+}
+
+function renderTextDelta(ev) {
+  if (!ev.turnId || !ev.text) return;
+  const tEl = turnMap.get(ev.turnId);
+  if (!tEl || !tEl.deltaEl) return;
+  let streamEl = tEl.deltaEl.querySelector('.text-delta-stream');
+  if (!streamEl) {
+    streamEl = document.createElement('div');
+    streamEl.className = 'text-delta-stream';
+    tEl.deltaEl.appendChild(streamEl);
+  }
+  streamEl.textContent += ev.text;
+}
+
+function renderThinking(ev) {
+  if (!ev.turnId) return;
+  const tEl = turnMap.get(ev.turnId);
+  if (!tEl || !tEl.deltaEl) return;
+  const contentIdx = ev.contentIndex ?? 0;
+  let thinkEl = tEl.deltaEl.querySelector('.thinking-block-' + contentIdx);
+  if (!thinkEl) {
+    thinkEl = document.createElement('details');
+    thinkEl.className = 'thinking-block thinking-block-' + contentIdx;
+    thinkEl.innerHTML = '<summary>Thinking...</summary><div class="think-content"></div>';
+    tEl.deltaEl.appendChild(thinkEl);
+  }
+  const contentDiv = thinkEl.querySelector('.think-content');
+  if (contentDiv) {
+    if (ev.eventType === 'thinking_delta' || ev.type === 'thinking_delta') {
+      contentDiv.textContent += ev.text || '';
+    } else if (ev.eventType === 'thinking_start' || ev.type === 'thinking_start') {
+      contentDiv.textContent = '';
+    }
+  }
+}
+
+function handleDataEvent(ev) {
+  const name = ev.name || ev.data?.name || '';
+  const data = ev.data?.data ?? ev.data ?? {};
+
+  if (name === 'approval_requested' || name === 'approval_request') {
+    const payload = typeof data === 'object' ? data : { id: data };
+    const approvalId = payload.id || ('approval-' + eventCount);
+    renderApprovalRequest(approvalId, payload);
+    document.getElementById('status-badge').textContent = 'needs_approval';
+    document.getElementById('status-badge').className = 'status-badge needs_approval';
+    return;
+  }
+
+  if (name === 'approval_resolved' || name === 'approval_resolved') {
+    const payload = typeof data === 'object' ? data : {};
+    const approvalId = payload.id;
+    if (approvalId) resolveApprovalUI(approvalId, payload.decision || 'unknown');
+    return;
+  }
+
+  // generic data event
+  const id = data?.id;
+  const existing = id ? document.getElementById('data-' + id) : null;
+  if (existing) {
+    existing.querySelector('.card-body').textContent = JSON.stringify(data, null, 2);
+    return;
+  }
+  const el = createEvent('data-event');
+  el.id = 'data-' + (id || 'ev-' + eventCount);
+  el.innerHTML = `
+    <div class="card">
+      <div class="card-header">
+        <span class="card-type data-event">DATA: ${escapeHtml(name)}</span>
+        <span class="card-time">${formatTime(ev.timestamp)}</span>
+      </div>
+      <div class="card-body"><pre>${escapeHtml(truncate(JSON.stringify(data, null, 2), 1000))}</pre></div>
+    </div>`;
+  timeline.appendChild(el);
+}
+
+function renderApprovalRequest(id, payload) {
+  const el = createEvent('approval');
+  el.id = 'approval-' + id;
+  const type = payload.type || 'command';
+  const title = payload.title || 'Unknown action';
+  const pattern = payload.pattern || '';
+  const cmd = payload.command || payload.cmd || '';
+  const diff = payload.diff || '';
+  el.innerHTML = `
+    <div class="card approval-card">
+      <div class="card-header">
+        <span class="card-type approval">APPROVAL REQUIRED</span>
+        <span class="card-time">${new Date().toISOString()}</span>
+      </div>
+      <div class="card-body">
+        <div style="margin-bottom:8px">
+          <strong>${escapeHtml(type.toUpperCase())}:</strong> ${escapeHtml(title)}
+          ${pattern ? `<code style="color:#d29922">${escapeHtml(pattern)}</code>` : ''}
+        </div>
+        ${cmd ? `<pre>${escapeHtml(truncate(cmd, 500))}</pre>` : ''}
+        ${diff ? `<pre>${escapeHtml(truncate(diff, 2000))}</pre>` : ''}
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-approve-once" onclick="decide('${id}','once')">Allow once</button>
+          <button class="btn btn-approve-session" onclick="decide('${id}','session')">Allow session</button>
+          <button class="btn btn-approve-always" onclick="decide('${id}','always')">Allow always</button>
+          <button class="btn btn-deny" onclick="decide('${id}','deny')">Deny</button>
+        </div>
+        <div class="decision-status" style="margin-top:8px;font-size:12px;color:#8b949e"></div>
+      </div>
+    </div>`;
+  timeline.appendChild(el);
+  approvalMap.set(id, { el, pending: true });
+}
+
+async function decide(approvalId, decision) {
+  const entry = approvalMap.get(approvalId);
+  if (!entry || !entry.pending) return;
+  // Disable buttons
+  const card = entry.el.querySelector('.card');
+  if (card) card.querySelectorAll('.btn').forEach(b => b.disabled = true);
+  const statusDiv = entry.el.querySelector('.decision-status');
+  if (statusDiv) statusDiv.textContent = 'Submitting...';
+  try {
+    await postApproval(approvalId, decision);
+    resolveApprovalUI(approvalId, decision);
+  } catch (err) {
+    if (statusDiv) statusDiv.innerHTML = `<span style="color:#f85149">Error: ${escapeHtml(err.message)}</span>`;
+    if (card) card.querySelectorAll('.btn').forEach(b => b.disabled = false);
+  }
+}
+
+function resolveApprovalUI(approvalId, decision) {
+  const entry = approvalMap.get(approvalId);
+  if (!entry) {
+    // Find by id
+    const el = document.getElementById('approval-' + approvalId);
+    if (el) {
+      const card = el.querySelector('.card');
+      if (card) {
+        card.querySelectorAll('.btn').forEach(b => b.disabled = true);
+        const statusDiv = card.querySelector('.decision-status');
+        if (statusDiv) {
+          statusDiv.innerHTML = `<span class="resolved-badge ${decision === 'deny' ? 'denied' : 'approved'}">${decision.toUpperCase()}</span>`;
+        }
+      }
+    }
+    return;
+  }
+  entry.pending = false;
+  const card = entry.el.querySelector('.card');
+  if (card) card.querySelectorAll('.btn').forEach(b => b.disabled = true);
+  const statusDiv = entry.el.querySelector('.decision-status');
+  if (statusDiv) {
+    const isApprove = decision !== 'deny' && decision !== 'timeout' && decision !== 'expired';
+    statusDiv.innerHTML = `<span class="resolved-badge ${isApprove ? 'approved' : 'denied'}">${decision.toUpperCase()}</span>`;
+  }
+  document.getElementById('status-badge').textContent = 'running';
+  document.getElementById('status-badge').className = 'status-badge running';
+}
+
+function renderEvent(cls, type, body, ts) {
+  const el = createEvent(cls);
+  el.innerHTML = `
+    <div class="card">
+      <div class="card-header">
+        <span class="card-type ${cls}">${escapeHtml(type)}</span>
+        <span class="card-time">${formatTime(ts)}</span>
+      </div>
+      ${body ? `<div class="card-body">${escapeHtml(String(body))}</div>` : ''}
+    </div>`;
+  timeline.appendChild(el);
+}
+
+function createEvent(cls) {
+  const div = document.createElement('div');
+  div.className = 'event ' + cls;
+  return div;
+}
+
+function formatTime(ts) {
+  if (!ts) return '';
+  try { return new Date(ts).toLocaleTimeString(); } catch { return String(ts); }
+}
+
+function escapeHtml(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function truncate(s, n) {
+  return s.length > n ? s.slice(0, n) + '...' : s;
+}
+
+// Start
+if (SESSION_ID) connect();
+</script>
+</body>
+</html>

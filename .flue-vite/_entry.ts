@@ -35,12 +35,12 @@ import {
 } from "@flue/runtime/cloudflare/internal";
 import { registerApiProvider, registerProvider } from "@flue/runtime";
 
-import * as handler_hermes_0 from "../src/agents/hermes.ts";
+import * as handler_hermes_0 from "/Users/macbook/.codex/worktrees/fe72/hermes-control-plan/src/agents/hermes.ts";
 
-import * as channel_github_0 from "../src/channels/github.ts";
-import userApp from "../src/app.ts";
-import * as userCloudflareModule from "../src/cloudflare.ts";
-export * from "../src/cloudflare.ts";
+import * as channel_github_0 from "/Users/macbook/.codex/worktrees/fe72/hermes-control-plan/src/channels/github.ts";
+import userApp from "/Users/macbook/.codex/worktrees/fe72/hermes-control-plan/src/app.ts";
+import * as userCloudflareModule from "/Users/macbook/.codex/worktrees/fe72/hermes-control-plan/src/cloudflare.ts";
+export * from "/Users/macbook/.codex/worktrees/fe72/hermes-control-plan/src/cloudflare.ts";
 
 // ─── Internal provider registrations ────────────────────────────────────────
 // User `app.ts` imports are hoisted above this body, so a user-supplied

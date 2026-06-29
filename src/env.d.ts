@@ -1,7 +1,8 @@
 interface Env {
   // Application DO bindings (from wrangler.jsonc)
   Sandbox: DurableObjectNamespace<import("@cloudflare/sandbox").Sandbox>;
-  PR_INDEX_DO: DurableObjectNamespace<import("./do/pr-index-do").PrIndexDurableObject>;
+  PR_INDEX_DO: DurableObjectNamespace<import("./do/pr-index-do.js").PrIndexDurableObject>;
+  APPROVAL_DO: DurableObjectNamespace<import("./do/approval-do.js").ApprovalDurableObject>;
 
   // Flue-generated DO bindings
   FLUE_HERMES_AGENT: DurableObjectNamespace;
@@ -18,6 +19,7 @@ interface Env {
   GITHUB_OWNER: string;
   GITHUB_REPO: string;
   LLM_MODEL: string;
+  APPROVAL_MODE: string;
   POSTHOG_HOST: string;
   POSTHOG_PROJECT_TOKEN: string;
   AUTOFIX_CAP_PER_PR: string;
