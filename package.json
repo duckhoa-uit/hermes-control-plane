@@ -22,19 +22,19 @@
     "dupes": "jscpd"
   },
   "dependencies": {
-    "@cloudflare/sandbox": "^0.7.0",
+    "@cloudflare/sandbox": "^0.12.2",
     "@flue/github": "1.0.0-beta.1",
     "@flue/runtime": "1.0.0-beta.7",
     "@flue/sdk": "1.0.0-beta.7",
-    "@octokit/rest": "^22.0.0",
-    "agents": "^0.14.0",
-    "hono": "^4.7.0",
-    "valibot": "^1.0.0"
+    "@octokit/rest": "^22.0.1",
+    "agents": "^0.16.2",
+    "hono": "^4.12.27",
+    "valibot": "^1.4.1"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.1",
     "@cloudflare/workers-types": "^4.20250620.0",
-    "@types/node": "^26.0.0",
+    "@types/node": "^26.0.1",
     "@vitest/coverage-v8": "3.2.6",
     "husky": "^9.1.7",
     "lint-staged": "^17.0.8",
