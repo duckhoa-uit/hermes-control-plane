@@ -27,6 +27,10 @@
         "class_name": "PrIndexDurableObject"
       },
       {
+        "name": "APPROVAL_DO",
+        "class_name": "ApprovalDurableObject"
+      },
+      {
         "name": "FlueRegistry",
         "class_name": "FlueRegistry"
       },
@@ -44,6 +48,10 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["Sandbox", "PrIndexDurableObject", "FlueRegistry", "FlueHermesAgent"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["ApprovalDurableObject"]
     }
   ],
   "ai": {
@@ -55,6 +63,6 @@
     "AUTOFIX_CAP_PER_PR": "3",
     "MAX_CONCURRENT_SESSIONS": "10",
     "AUTO_CREATE_PR": "1",
-    "WORKER_URL": "http://localhost:8787"
+    "WORKER_URL": "http://localhost:8799"
   }
 }

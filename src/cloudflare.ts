@@ -16,3 +16,4 @@ import { Sandbox } from "@cloudflare/sandbox";
 export { Sandbox };
 
 export { PrIndexDurableObject } from "./do/pr-index-do";
+export { ApprovalDurableObject } from "./do/approval-do";
