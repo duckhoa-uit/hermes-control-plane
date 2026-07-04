@@ -42,7 +42,6 @@ function generateApprovalId(): string {
 
 interface ApprovalContext {
   signal?: AbortSignal;
-  emitData?: (name: string, data: unknown, options?: { id?: string }) => void;
 }
 
 const APPROVAL_TIMEOUT_MS = 3600_000; // 1h server-side wait
@@ -103,29 +102,11 @@ export async function requireApproval(
     payload.pattern = classification.pattern;
   }
 
-  // Manual or smart-flagged: create pending approval
+  // Manual or smart-flagged: create pending approval.
+  // ApprovalDO is the single source of truth for approval state — the replay
+  // UI polls /sessions/:id/approvals/open instead of listening for stream
+  // data events (Flue's emitData()/data-* parts are removed in beta.8).
   const id = generateApprovalId();
-
-  // Emit durable data event to session stream
-  if (ctx.emitData) {
-    try {
-      ctx.emitData(
-        "approval_requested",
-        {
-          id,
-          type: payload.type,
-          title: payload.title,
-          pattern: payload.pattern ?? null,
-          command: payload.command ?? null,
-          diff: payload.diff ?? null,
-          metadata: payload.metadata ?? {},
-        },
-        { id },
-      );
-    } catch (err) {
-      console.error("[approval] emitData failed:", err);
-    }
-  }
 
   trackApproval({
     event: "approval_requested",

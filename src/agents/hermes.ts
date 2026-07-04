@@ -90,7 +90,7 @@ export default defineAgent<Env>(({ id, env }) => {
 
       // ── 2. Request approval (container free to sleep during wait) ───────
       const decision = await requireApproval(
-        { signal: ctx.signal, emitData: ctx.emitData },
+        { signal: ctx.signal },
         {
           type: "git_push",
           title: `Push to branch ${branch}`,
@@ -230,7 +230,7 @@ export default defineAgent<Env>(({ id, env }) => {
       const { title, body, branch, baseBranch } = ctx.input;
 
       const decision = await requireApproval(
-        { signal: ctx.signal, emitData: ctx.emitData },
+        { signal: ctx.signal },
         {
           type: "create_pr",
           title: `Create PR: "${title}"`,

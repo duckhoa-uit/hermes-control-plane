@@ -100,6 +100,12 @@ app.get("/replay/:id", async (c) => {
 });
 
 // ─── Session Stream proxy ──────────────────────────────────────────────────
+// FLUE-STREAM-SEAM: this route + the long-poll client in REPLAY_HTML are the
+// ONLY places coupled to Flue's stream wire format (?offset=&live= +
+// Stream-Next-Offset). When upgrading to beta.10, port this seam to
+// history()/observe() and keep the browser-facing contract unchanged.
+// See docs/FLUE-BETA10-MIGRATION.md.
+//
 // Auth-gated SSE proxy that forwards to Flue's agent stream.
 // The replay HTML connects here instead of directly to /agents/hermes/:id
 // so we can enforce token access. Uses raw ReadableStream to avoid buffering.
@@ -357,7 +363,47 @@ const REPLAY_HTML = (() => {
     document.getElementById('status-badge').className = 'status-badge needs_approval';
   }
 
+  // ── Approval poller ─────────────────────────────────────────────────
+  // ApprovalDO is the source of truth for approvals. We poll the open list
+  // instead of relying on stream data events (Flue removes emitData()/data-*
+  // parts in beta.8). handleData() below stays only as a legacy fallback.
+  function pollApprovals() {
+    fetch('/sessions/' + SID + '/approvals/open?token=' + encodeURIComponent(TOKEN))
+      .then(function(r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(function(res) {
+        var open = (res && res.approvals) || [];
+        var openIds = {};
+        for (var i = 0; i < open.length; i++) {
+          var a = open[i];
+          openIds[a.id] = true;
+          if (!approvalMap[a.id]) {
+            if (firstEvent) { timeline.innerHTML = ''; firstEvent = false; }
+            var p = a.payload || {};
+            renderApproval(a.id, { type: a.type, title: a.title, command: p.command, diff: p.diff, metadata: p.metadata });
+          }
+        }
+        // Locally-pending approval no longer open → resolved elsewhere; fetch decision
+        for (var aid in approvalMap) {
+          if (approvalMap[aid].pending && !openIds[aid]) fetchDecision(aid);
+        }
+      })
+      .catch(function() { /* transient; retry next tick */ })
+      .then(function() { setTimeout(pollApprovals, 4000); });
+  }
+
+  function fetchDecision(aid) {
+    fetch('/approvals/' + aid)
+      .then(function(r) { return r.json(); })
+      .then(function(row) {
+        if (row && row.status && row.status !== 'pending') {
+          resolveUI(aid, row.decision || row.status);
+        }
+      })
+      .catch(function() { /* retry on next poll */ });
+  }
+
   function handleData(ev) {
+    // Legacy fallback (pre-beta.8 data events); approvals now come from pollApprovals()
     // Flue data event shape: { type:'data', name:'X', id:'...', data:{...payload}, timestamp, ... }
     var name = ev.name || 'unknown';
     var data = ev.data || {};
@@ -500,6 +546,7 @@ const REPLAY_HTML = (() => {
   function setBadge(s) { document.getElementById('status-badge').textContent = s; }
 
   // Connect via long-poll
+  // FLUE-STREAM-SEAM: offset/Stream-Next-Offset protocol — changes with beta.10
   var offset = '-1';
   var dbg = document.getElementById('timeline');
 
@@ -534,6 +581,7 @@ const REPLAY_HTML = (() => {
   }
   log('starting poll...');
   pollEvents();
+  pollApprovals();
 })();
 </script>
 </body>
