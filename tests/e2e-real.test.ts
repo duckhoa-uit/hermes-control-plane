@@ -28,7 +28,7 @@ if (RUN_E2E) {
         body: JSON.stringify({ branch: "test", headSha: "abc123" }),
       });
       const body = (await res.json()) as any;
-      expect(body.success).toBe(false);
+      expect(res.status).toBe(400);
       expect(body.error).toBeDefined();
     });
 

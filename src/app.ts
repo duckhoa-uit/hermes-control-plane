@@ -21,6 +21,7 @@ import { flue } from "@flue/runtime/routing";
 import { Hono } from "hono";
 import { Octokit } from "@octokit/rest";
 import { verifyToken, signToken } from "./core/auth";
+import { isPushManifest, pushManifestWithGitHubApi } from "./agent/github-api-push";
 
 type AppEnv = { Bindings: Env };
 const app = new Hono<AppEnv>();
@@ -37,22 +38,15 @@ app.route("/", flue());
 
 app.post("/proxy/git-push", async (c) => {
   const body = await c.req.json().catch(() => ({}));
-  const { branch, headSha, force } = body as Record<string, unknown>;
-  if (!branch || !headSha) return c.json({ error: "branch and headSha required" }, 400);
+  if (!isPushManifest(body)) return c.json({ error: "valid push manifest required" }, 400);
   const token = c.env.GITHUB_WRITE_TOKEN;
   const owner = c.env.GITHUB_OWNER;
   const repo = c.env.GITHUB_REPO;
   if (!token || !owner || !repo) return c.json({ error: "GitHub not configured" }, 500);
   try {
     const octokit = new Octokit({ auth: token });
-    await octokit.rest.git.updateRef({
-      owner,
-      repo,
-      ref: `heads/${branch}`,
-      sha: headSha as string,
-      force: Boolean(force),
-    });
-    return c.json({ success: true, branch, sha: headSha });
+    const result = await pushManifestWithGitHubApi(octokit, owner, repo, body);
+    return c.json({ success: true, ...result });
   } catch (err) {
     return c.json({ success: false, error: String(err) }, 502);
   }

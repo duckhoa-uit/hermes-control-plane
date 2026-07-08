@@ -7,6 +7,10 @@ import type { DurableObjectNamespace } from "@cloudflare/workers-types";
 
 export const route: AgentRouteHandler = async (_c, next) => next();
 
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 const INSTRUCTIONS = `
 You are Hermes, a PR coding agent. You work autonomously to complete coding tasks and open pull requests.
 
@@ -50,12 +54,8 @@ export default defineAgent<Env>(({ id, env }) => {
     }),
     async run(ctx) {
       const { branch, force } = ctx.input;
-      const token = env.GITHUB_WRITE_TOKEN;
-      const owner = env.GITHUB_OWNER;
-      const repo = env.GITHUB_REPO;
-      const authUrl = `https://${env.GITHUB_USER_LOGIN}:${token}@github.com/${owner}/${repo}.git`;
 
-      // ── 1. Snapshot the commit as a patch BEFORE asking for approval ────
+      // ── 1. Snapshot the commit as a manifest BEFORE asking for approval ─
       // This way the container can sleep during the wait without losing work.
       const preSandbox = getSandbox(env.Sandbox, `hermes-${id}`, { sleepAfter: "5m" });
       const preFind = await preSandbox.exec(
@@ -64,28 +64,86 @@ export default defineAgent<Env>(({ id, env }) => {
       const preCwd = (preFind.stdout || "").trim();
       if (!preCwd) throw new Error("No git repo found under /workspace. Did you clone?");
 
-      // Capture: HEAD sha, base sha (where branch diverged from origin), patch bytes
-      const shaRes = await preSandbox.exec(`bash -c "cd ${preCwd} && git rev-parse HEAD"`);
+      // Capture HEAD/base metadata and the final changed-file contents.
+      const shaRes = await preSandbox.exec(
+        `bash -c "cd ${shellQuote(preCwd)} && git rev-parse HEAD"`,
+      );
       const headSha = (shaRes.stdout || "").trim();
       const baseRes = await preSandbox.exec(
-        `bash -c "cd ${preCwd} && git rev-parse origin/HEAD 2>/dev/null || git rev-parse origin/main 2>/dev/null || git rev-parse origin/master 2>/dev/null"`,
+        `bash -c "cd ${shellQuote(preCwd)} && git rev-parse origin/HEAD 2>/dev/null || git rev-parse origin/main 2>/dev/null || git rev-parse origin/master 2>/dev/null"`,
       );
       const baseSha = (baseRes.stdout || "").trim();
-      // Build a patch from base..HEAD (covers all commits on this branch)
-      const patchRange = baseSha ? `${baseSha}..HEAD` : "HEAD~1..HEAD";
-      const patchRes = await preSandbox.exec(
-        `bash -c "cd ${preCwd} && git format-patch ${patchRange} --stdout | base64 -w 0"`,
+      if (!baseSha) throw new Error("Could not determine base commit from origin/HEAD/main/master");
+
+      const baseTreeRes = await preSandbox.exec(
+        `bash -c "cd ${shellQuote(preCwd)} && git rev-parse ${baseSha}^{tree}"`,
       );
-      const patchBase64 = (patchRes.stdout || "").trim();
-      const patchKB = Math.round(patchBase64.length / 1024);
+      const baseTreeSha = (baseTreeRes.stdout || "").trim();
+      const messageRes = await preSandbox.exec(
+        `bash -c ${shellQuote(`cd ${shellQuote(preCwd)} && if [ "$(git rev-list --count ${baseSha}..HEAD)" = "1" ]; then git log -1 --format=%B HEAD; else echo "Hermes changes"; echo; git log --reverse --format="- %s" ${baseSha}..HEAD; fi`)}`,
+      );
+      const commitMessage = (messageRes.stdout || "").trim() || `Hermes changes for ${branch}`;
+      const manifestRes = await preSandbox.exec(
+        `bash -c ${shellQuote(`cd ${shellQuote(preCwd)} && node - ${baseSha} <<'NODE'
+const { execFileSync } = require("node:child_process");
+const fs = require("node:fs");
+const base = process.argv[2];
+const diff = execFileSync("git", ["diff", "--name-status", "-z", base + "..HEAD"]);
+const parts = diff.toString("utf8").split("\\0").filter(Boolean);
+const changes = [];
+function modeFor(path) {
+  const out = execFileSync("git", ["ls-files", "-s", "--", path], { encoding: "utf8" });
+  const mode = out.split(/\\s+/, 1)[0];
+  if (mode === "100755" || mode === "120000") return mode;
+  return "100644";
+}
+function contentFor(path, mode) {
+  if (mode === "120000") return Buffer.from(fs.readlinkSync(path), "utf8").toString("base64");
+  return fs.readFileSync(path).toString("base64");
+}
+for (let i = 0; i < parts.length; i++) {
+  const status = parts[i];
+  if (status.startsWith("R")) {
+    const oldPath = parts[++i];
+    const newPath = parts[++i];
+    changes.push({ action: "delete", path: oldPath });
+    const mode = modeFor(newPath);
+    changes.push({ action: "upsert", path: newPath, mode, contentBase64: contentFor(newPath, mode) });
+    continue;
+  }
+  if (status.startsWith("C")) {
+    i++;
+    const newPath = parts[++i];
+    const mode = modeFor(newPath);
+    changes.push({ action: "upsert", path: newPath, mode, contentBase64: contentFor(newPath, mode) });
+    continue;
+  }
+  const path = parts[++i];
+  if (status === "D") {
+    changes.push({ action: "delete", path });
+    continue;
+  }
+  const mode = modeFor(path);
+  changes.push({ action: "upsert", path, mode, contentBase64: contentFor(path, mode) });
+}
+process.stdout.write(JSON.stringify(changes));
+NODE`)}`,
+      );
+      if (manifestRes.exitCode !== 0) {
+        throw new Error(`Failed to build push manifest: ${manifestRes.stdout || ""}`);
+      }
+      const changes = JSON.parse((manifestRes.stdout || "").trim()) as unknown[];
+      if (changes.length === 0) throw new Error(`No changes found between ${baseSha} and HEAD`);
+      const manifestKB = Math.round(JSON.stringify(changes).length / 1024);
 
       const snapshot = {
-        cwd: preCwd,
         headSha,
         baseSha,
+        baseTreeSha,
         branch,
-        patchBase64,
-        patchKB,
+        commitMessage,
+        changes,
+        force,
       };
 
       // ── 2. Request approval (container free to sleep during wait) ───────
@@ -94,9 +152,9 @@ export default defineAgent<Env>(({ id, env }) => {
         {
           type: "git_push",
           title: `Push to branch ${branch}`,
-          command: `git push origin ${branch}${force ? " --force" : ""}`,
+          command: `Publish ${changes.length} file change(s) to ${branch}${force ? " with force" : ""}`,
           pattern: "git.push",
-          metadata: { headSha, baseSha, patchKB },
+          metadata: { headSha, baseSha, baseTreeSha, changes: changes.length, manifestKB },
         },
         {
           mode: (env.APPROVAL_MODE || "manual") as "manual" | "smart" | "off",
@@ -117,102 +175,17 @@ export default defineAgent<Env>(({ id, env }) => {
         );
       }
 
-      // ── 3. After approval: resume container, restore work if needed ────
-      const sandbox = getSandbox(env.Sandbox, `hermes-${id}`, { sleepAfter: "5m" });
-      const findRepo = await sandbox.exec(
-        `bash -c "ls -d /workspace/*/.git 2>/dev/null | head -1 | xargs -r dirname"`,
-      );
-      let cwd = (findRepo.stdout || "").trim();
-
-      if (!cwd) {
-        // Container died during wait — restore from patch snapshot
-        console.log(
-          `[git_push] Container restarted, restoring from patch (${snapshot.patchKB} KB)`,
-        );
-        const restoreCmd = [
-          `set -e`,
-          `mkdir -p /workspace`,
-          `cd /workspace`,
-          `git config --global http.postBuffer 524288000`,
-          `git config --global http.postBuffer 524288000`,
-          `git clone '${authUrl}' ${repo}`,
-          `cd ${repo}`,
-          `git config user.email "hermes@agent.local"`,
-          `git config user.name "Hermes"`,
-          // Reset to the base where branch was forked, then apply patch
-          snapshot.baseSha ? `git checkout ${snapshot.baseSha}` : `git checkout origin/main`,
-          `git checkout -b ${branch}`,
-          `echo '${snapshot.patchBase64}' | base64 -d | git am --3way`,
-          `git remote set-url origin https://github.com/${owner}/${repo}.git`,
-        ].join(" && ");
-
-        const restore = await sandbox.exec(`bash -c "${restoreCmd.replace(/"/g, '\\"')}"`);
-        if (restore.exitCode !== 0) {
-          const out = (restore.stdout || "").replace(token, "***");
-          throw new Error(
-            `Container died during wait. Patch restore failed (exit ${restore.exitCode}): ${out}`,
-          );
-        }
-        cwd = `/workspace/${repo}`;
-      }
-
-      // ── 4. Push with retry on TLS errors ───────────────────────────────
-      let pushResult: { exitCode: number; stdout: string } = { exitCode: -1, stdout: "" };
-      let lastErr = "";
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        const r = await sandbox.exec(
-          `bash -c "cd ${cwd} && git config --global http.postBuffer 524288000 && git config --global http.lowSpeedLimit 1000 && git config --global http.lowSpeedTime 60 && git remote set-url origin '${authUrl}' && git -c http.version=HTTP/1.1 push ${force ? "--force " : ""}origin ${branch} 2>&1; EC=$?; git remote set-url origin https://github.com/${owner}/${repo}.git; exit $EC"`,
-        );
-        pushResult = r;
-        if (r.exitCode === 0) break;
-        const out = (r.stdout || "").replace(token, "***");
-        lastErr = out;
-        if (!/gnutls|handshake|TLS|connection|Could not resolve|HTTP\/2 stream/i.test(out)) break;
-        await new Promise((res) => setTimeout(res, 2000 * attempt));
-      }
-
-      if (pushResult.exitCode !== 0) {
-        throw new Error(`Push failed (exit ${pushResult.exitCode}) after retries: ${lastErr}`);
-      }
-
-      // Capture push output for diagnostics + verify branch actually exists on remote
-      const pushOutput = (pushResult.stdout || "").replace(token, "***");
-
-      // Verify the push actually reached GitHub by querying the API
-      const head = await sandbox.exec(`bash -c "cd ${cwd} && git rev-parse HEAD"`);
-      const localSha = (head.stdout || "").trim();
-
-      // Fetch remote ref via GitHub API to confirm push really worked
-      const verify = await fetch(
-        `https://api.github.com/repos/${owner}/${repo}/git/refs/heads/${encodeURIComponent(branch)}`,
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            Accept: "application/vnd.github+json",
-            "User-Agent": "hermes-agent",
-          },
-        },
-      );
-      if (verify.status === 404) {
-        throw new Error(
-          `Push reported exit 0 but branch ${branch} not found on GitHub. ` +
-            `Likely a silent TLS/network failure inside the container. ` +
-            `Push output: ${pushOutput.slice(0, 500)}`,
-        );
-      }
-      if (!verify.ok) {
-        throw new Error(`Push verification failed: GitHub API ${verify.status}`);
-      }
-      const refData = (await verify.json()) as { object?: { sha?: string } };
-      const remoteSha = refData.object?.sha;
-      if (remoteSha !== localSha) {
-        throw new Error(
-          `Push reported success but remote SHA (${remoteSha}) != local SHA (${localSha}). ` +
-            `Push output: ${pushOutput.slice(0, 500)}`,
-        );
-      }
-
-      return { success: true, branch, sha: localSha, restored: !findRepo.stdout?.trim() };
+      // ── 3. Publish through the control plane; sandbox never receives the token.
+      const resp = await fetch(`${baseUrl}/proxy/git-push`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(snapshot),
+        signal: ctx.signal,
+      });
+      if (!resp.ok) throw new Error(`Push failed: ${resp.status} ${await resp.text()}`);
+      const result = (await resp.json()) as { success?: boolean; error?: string };
+      if (!result.success) throw new Error(`Push failed: ${result.error || "unknown error"}`);
+      return result;
     },
   });
 
