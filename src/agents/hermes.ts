@@ -83,13 +83,12 @@ export default defineAgent<Env>(({ id, env }) => {
         `bash -c ${shellQuote(`cd ${shellQuote(preCwd)} && if [ "$(git rev-list --count ${baseSha}..HEAD)" = "1" ]; then git log -1 --format=%B HEAD; else echo "Hermes changes"; echo; git log --reverse --format="- %s" ${baseSha}..HEAD; fi`)}`,
       );
       const commitMessage = (messageRes.stdout || "").trim() || `Hermes changes for ${branch}`;
-      const manifestRes = await preSandbox.exec(
-        `bash -c ${shellQuote(`cd ${shellQuote(preCwd)} && node - ${baseSha} <<'NODE'
+      const manifestScript = `
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
-const base = process.argv[2];
+const base = process.argv[1];
 const diff = execFileSync("git", ["diff", "--name-status", "-z", base + "..HEAD"]);
-const parts = diff.toString("utf8").split("\\0").filter(Boolean);
+const parts = diff.toString("utf8").split(String.fromCharCode(0)).filter(Boolean);
 const changes = [];
 function modeFor(path) {
   const out = execFileSync("git", ["ls-files", "-s", "--", path], { encoding: "utf8" });
@@ -98,6 +97,7 @@ function modeFor(path) {
   return "100644";
 }
 function contentFor(path, mode) {
+  if (!path) throw new Error("Missing path while building push manifest");
   if (mode === "120000") return Buffer.from(fs.readlinkSync(path), "utf8").toString("base64");
   return fs.readFileSync(path).toString("base64");
 }
@@ -127,10 +127,13 @@ for (let i = 0; i < parts.length; i++) {
   changes.push({ action: "upsert", path, mode, contentBase64: contentFor(path, mode) });
 }
 process.stdout.write(JSON.stringify(changes));
-NODE`)}`,
+`;
+      const manifestRes = await preSandbox.exec(
+        `bash -c ${shellQuote(`cd ${shellQuote(preCwd)} && node -e ${shellQuote(manifestScript)} ${shellQuote(baseSha)}`)}`,
       );
       if (manifestRes.exitCode !== 0) {
-        throw new Error(`Failed to build push manifest: ${manifestRes.stdout || ""}`);
+        const out = [manifestRes.stdout, manifestRes.stderr].filter(Boolean).join("\n");
+        throw new Error(`Failed to build push manifest: ${out}`);
       }
       const changes = JSON.parse((manifestRes.stdout || "").trim()) as unknown[];
       if (changes.length === 0) throw new Error(`No changes found between ${baseSha} and HEAD`);
