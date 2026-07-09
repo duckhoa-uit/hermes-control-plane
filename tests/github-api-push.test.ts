@@ -80,10 +80,10 @@ describe("pushManifestWithGitHubApi", () => {
       verified: true,
     });
     expect(fake.calls.map((call) => call.name)).toEqual([
+      "getRef",
       "createBlob",
       "createTree",
       "createCommit",
-      "getRef",
       "createRef",
       "getRef",
     ]);
@@ -126,6 +126,9 @@ describe("pushManifestWithGitHubApi", () => {
       ref: "heads/codex/existing",
       sha: "commit-1",
       force: false,
+    });
+    expect(fake.calls.find((call) => call.name === "createCommit")?.args).toMatchObject({
+      parents: ["old-ref"],
     });
   });
 });

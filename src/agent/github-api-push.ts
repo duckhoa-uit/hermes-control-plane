@@ -93,6 +93,9 @@ export async function pushManifestWithGitHubApi(
   repo: string,
   manifest: PushManifest,
 ): Promise<{ branch: string; sha: string; created: boolean; verified: true }> {
+  const ref = `heads/${manifest.branch}`;
+  const branchHeadSha = await getRefSha(octokit, owner, repo, ref);
+
   const tree = [];
   for (const change of manifest.changes) {
     if (change.action === "delete") {
@@ -126,18 +129,27 @@ export async function pushManifestWithGitHubApi(
     repo,
     message: manifest.commitMessage,
     tree: newTree.data.sha,
-    parents: [manifest.baseSha],
+    parents: [branchHeadSha ?? manifest.baseSha],
   });
 
-  const ref = `heads/${manifest.branch}`;
-  const created = await upsertRef(
-    octokit,
-    owner,
-    repo,
-    ref,
-    commit.data.sha,
-    Boolean(manifest.force),
-  );
+  const created = branchHeadSha === null;
+  if (created) {
+    await octokit.rest.git.createRef({
+      owner,
+      repo,
+      ref: `refs/${ref}`,
+      sha: commit.data.sha,
+    });
+  } else {
+    await octokit.rest.git.updateRef({
+      owner,
+      repo,
+      ref,
+      sha: commit.data.sha,
+      force: Boolean(manifest.force),
+    });
+  }
+
   const verify = await octokit.rest.git.getRef({ owner, repo, ref });
   if (verify.data.object.sha !== commit.data.sha) {
     throw new Error(
@@ -148,26 +160,19 @@ export async function pushManifestWithGitHubApi(
   return { branch: manifest.branch, sha: commit.data.sha, created, verified: true };
 }
 
-async function upsertRef(
+async function getRefSha(
   octokit: GitApiClient,
   owner: string,
   repo: string,
   ref: string,
-  sha: string,
-  force: boolean,
-): Promise<boolean> {
+): Promise<string | null> {
   try {
-    await octokit.rest.git.getRef({ owner, repo, ref });
+    const current = await octokit.rest.git.getRef({ owner, repo, ref });
+    return current.data.object.sha;
   } catch (err) {
-    if (isHttpStatus(err, 404)) {
-      await octokit.rest.git.createRef({ owner, repo, ref: `refs/${ref}`, sha });
-      return true;
-    }
+    if (isHttpStatus(err, 404)) return null;
     throw err;
   }
-
-  await octokit.rest.git.updateRef({ owner, repo, ref, sha, force });
-  return false;
 }
 
 function isHttpStatus(err: unknown, status: number): boolean {

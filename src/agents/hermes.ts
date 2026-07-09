@@ -80,7 +80,7 @@ export default defineAgent<Env>(({ id, env }) => {
       );
       const baseTreeSha = (baseTreeRes.stdout || "").trim();
       const messageRes = await preSandbox.exec(
-        `bash -c ${shellQuote(`cd ${shellQuote(preCwd)} && if [ "$(git rev-list --count ${baseSha}..HEAD)" = "1" ]; then git log -1 --format=%B HEAD; else echo "Hermes changes"; echo; git log --reverse --format="- %s" ${baseSha}..HEAD; fi`)}`,
+        `bash -c ${shellQuote(`cd ${shellQuote(preCwd)} && git log -1 --format=%B HEAD`)}`,
       );
       const commitMessage = (messageRes.stdout || "").trim() || `Hermes changes for ${branch}`;
       const manifestScript = `
