@@ -21,26 +21,26 @@ if (RUN_E2E) {
       expect(body.status).toBe("ok");
     });
 
-    it("2. Proxy: git-push validates", async () => {
+    it("2. Proxy: git-push rejects unsigned callers", async () => {
       const res = await fetch(`${BASE}/proxy/git-push`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ branch: "test", headSha: "abc123" }),
       });
       const body = (await res.json()) as any;
-      expect(res.status).toBe(400);
-      expect(body.error).toBeDefined();
+      expect(res.status).toBe(401);
+      expect(body.error).toBe("unauthorized");
     });
 
-    it("3. Proxy: create-pr validates", async () => {
+    it("3. Proxy: create-pr rejects unsigned callers", async () => {
       const res = await fetch(`${BASE}/proxy/create-pr`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title: "test", branch: "test", body: "" }),
       });
       const body = (await res.json()) as any;
-      expect(body.success).toBe(false);
-      expect(body.error).toBeDefined();
+      expect(res.status).toBe(401);
+      expect(body.error).toBe("unauthorized");
     });
 
     it("4. Agent dispatch via /agents/hermes/:sessionId", async () => {

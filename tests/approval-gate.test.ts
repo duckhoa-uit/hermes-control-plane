@@ -70,6 +70,27 @@ describe("requireApproval gate", () => {
     expect(req.payload.metadata).toEqual({ branch: "hermes/dock" });
   });
 
+  it("uses persisted DO state when the WebSocket wake-up is unavailable", async () => {
+    const { doBinding, requests, stub } = mockApprovalDO({
+      status: "approved",
+      decision: "once",
+      decided_by: "controller",
+    });
+    const result = await requireApproval(
+      {},
+      { type: "git_push", title: "Push", diff: "+1" },
+      { mode: "manual", sessionId: "s4", approvalDOBinding: doBinding },
+    );
+
+    expect(requests).toHaveLength(1);
+    expect(stub.fetch).toHaveBeenCalledTimes(3);
+    expect(result).toMatchObject({
+      decision: "once",
+      actor: "controller",
+      denied: false,
+    });
+  });
+
   it("manual mode without DO binding falls back to auto-approve (dev only)", async () => {
     const result = await requireApproval(
       {},
@@ -104,7 +125,7 @@ describe("requireApproval gate", () => {
  * Mock ApprovalDO binding that records /request bodies and rejects the
  * ws-wait upgrade (so the gate resolves as timeout instead of hanging).
  */
-function mockApprovalDO() {
+function mockApprovalDO(resolvedState?: Record<string, unknown>) {
   const requests: any[] = [];
   const stub = {
     fetch: vi.fn(async (url: URL | string, init?: { body?: string }) => {
@@ -112,6 +133,9 @@ function mockApprovalDO() {
       if (path === "/request") {
         requests.push(JSON.parse(init?.body ?? "{}"));
         return new Response("{}", { status: 200 });
+      }
+      if (path === "/get" && resolvedState) {
+        return Response.json(resolvedState);
       }
       // /ws-wait: no webSocket on the response → treated as upgrade failure
       return new Response(null, { status: 400 });

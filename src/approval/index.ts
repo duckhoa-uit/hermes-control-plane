@@ -136,7 +136,11 @@ export async function requireApproval(
         type: payload.type,
         title: payload.title,
         pattern: payload.pattern,
-        payload: { command: payload.command, diff: payload.diff, metadata: payload.metadata },
+        payload: {
+          command: payload.command,
+          diff: payload.diff,
+          metadata: payload.metadata,
+        },
         timeoutMs: APPROVAL_TIMEOUT_MS,
       }),
     });
@@ -145,7 +149,8 @@ export async function requireApproval(
     return { id, decision: "timeout", denied: true };
   }
 
-  // Open hibernatable WebSocket to DO and wait for resolution
+  // Open a hibernatable WebSocket for the fast path, while polling the
+  // persisted DO state as a fallback for missed wake-up messages.
   const decision = await waitForResolutionViaWs(stub, id, ctx.signal);
 
   trackApproval({
@@ -162,67 +167,118 @@ export async function requireApproval(
 }
 
 /**
- * Open a WebSocket to the ApprovalDurableObject and await a message
- * containing the decision. DO will hibernate while we wait.
+ * Open a WebSocket to the ApprovalDurableObject and await a decision.
+ * The persisted approval row is polled as a fallback because a WebSocket
+ * wake-up can be missed across local runtime or Durable Object restarts.
  */
 async function waitForResolutionViaWs(
   stub: any,
   id: string,
   signal?: AbortSignal,
 ): Promise<ApprovalDecision> {
-  try {
-    const wsResp = await stub.fetch(
-      new URL(`/ws-wait?id=${encodeURIComponent(id)}`, "http://localhost"),
-      { headers: { Upgrade: "websocket" } },
+  return await new Promise<ApprovalDecision>((resolve) => {
+    let settled = false;
+    let ws: WebSocket | undefined;
+    let wsAvailable = false;
+    let pollingAvailable = false;
+
+    const finish = (decision: ApprovalDecision) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(pollTimer);
+      clearTimeout(deadlineTimer);
+      signal?.removeEventListener("abort", onAbort);
+      try {
+        ws?.close();
+      } catch {
+        /* ignore */
+      }
+      resolve(decision);
+    };
+
+    const resolvePayload = (data: any) => {
+      const decision = data.decision || (data.status === "denied" ? "deny" : data.status);
+      if (!decision || decision === "pending") return false;
+      const denied =
+        decision === "deny" || decision === "timeout" || decision === "hardline_blocked";
+      finish({
+        id,
+        decision,
+        actor: data.actor || data.decided_by,
+        denied,
+      });
+      return true;
+    };
+
+    const pollOnce = async () => {
+      try {
+        const response = await stub.fetch(
+          new URL(`/get?id=${encodeURIComponent(id)}`, "http://localhost"),
+        );
+        if (!response.ok) {
+          pollingAvailable = false;
+          return;
+        }
+        pollingAvailable = true;
+        resolvePayload(await response.json());
+      } catch (err) {
+        pollingAvailable = false;
+        console.error("[approval] state poll failed:", err);
+      }
+    };
+
+    const onAbort = () => finish({ id, decision: "timeout", actor: "abort", denied: true });
+    const pollTimer = setInterval(() => void pollOnce(), 1000);
+    const deadlineTimer = setTimeout(
+      () => finish({ id, decision: "timeout", actor: "deadline", denied: true }),
+      APPROVAL_TIMEOUT_MS,
     );
-    if (wsResp.status !== 101 || !wsResp.webSocket) {
-      console.error("[approval] WS upgrade failed", wsResp.status);
-      return { id, decision: "timeout", denied: true };
+
+    if (signal?.aborted) {
+      onAbort();
+      return;
     }
-    const ws = wsResp.webSocket as WebSocket;
-    ws.accept();
+    signal?.addEventListener("abort", onAbort, { once: true });
 
-    return await new Promise<ApprovalDecision>((resolve) => {
-      let settled = false;
-      const finish = (d: ApprovalDecision) => {
-        if (settled) return;
-        settled = true;
-        try {
-          ws.close();
-        } catch {
-          /* ignore */
+    void (async () => {
+      try {
+        const wsResp = await stub.fetch(
+          new URL(`/ws-wait?id=${encodeURIComponent(id)}`, "http://localhost"),
+          { headers: { Upgrade: "websocket" } },
+        );
+        if (wsResp.status === 101 && wsResp.webSocket) {
+          wsAvailable = true;
+          ws = wsResp.webSocket as WebSocket;
+          ws.accept();
+          ws.addEventListener("message", (event: MessageEvent) => {
+            try {
+              const data = typeof event.data === "string" ? JSON.parse(event.data) : null;
+              if (data) resolvePayload(data);
+            } catch (err) {
+              console.error("[approval] WS message parse error:", err);
+            }
+          });
+          ws.addEventListener("close", () => {
+            wsAvailable = false;
+            void pollOnce();
+          });
+          ws.addEventListener("error", () => {
+            wsAvailable = false;
+            void pollOnce();
+          });
+        } else {
+          console.error("[approval] WS upgrade failed", wsResp.status);
         }
-        resolve(d);
-      };
+      } catch (err) {
+        console.error("[approval] WS wait failed:", err);
+      }
 
-      const onAbort = () => finish({ id, decision: "timeout", actor: "abort", denied: true });
-      if (signal) signal.addEventListener("abort", onAbort, { once: true });
-
-      ws.addEventListener("message", (event: MessageEvent) => {
-        try {
-          const data = typeof event.data === "string" ? JSON.parse(event.data) : null;
-          if (!data) return;
-          const dec = data.decision || "timeout";
-          const denied = dec === "deny" || dec === "timeout" || dec === "hardline_blocked";
-          finish({ id, decision: dec, actor: data.actor || data.decided_by, denied });
-        } catch (err) {
-          console.error("[approval] WS message parse error:", err);
-        }
-      });
-
-      ws.addEventListener("close", () => {
-        // If closed without a decision, treat as timeout
+      await pollOnce();
+      if (!settled && !wsAvailable && !pollingAvailable) {
         finish({ id, decision: "timeout", denied: true });
-      });
-
-      ws.addEventListener("error", () => {
-        finish({ id, decision: "timeout", denied: true });
-      });
-    });
-  } catch (err) {
-    console.error("[approval] WS wait failed:", err);
-    return { id, decision: "timeout", denied: true };
-  }
+      }
+    })();
+  });
 }
 
 function sleep(ms: number): Promise<void> {

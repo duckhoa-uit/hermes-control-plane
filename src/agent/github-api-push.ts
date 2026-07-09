@@ -53,6 +53,11 @@ type GitApiClient = {
         repo: string;
         ref: string;
       }) => Promise<{ data: { object: { sha: string } } }>;
+      getCommit: (args: {
+        owner: string;
+        repo: string;
+        commit_sha: string;
+      }) => Promise<{ data: { message: string; tree: { sha: string } } }>;
       createRef: (args: {
         owner: string;
         repo: string;
@@ -92,7 +97,13 @@ export async function pushManifestWithGitHubApi(
   owner: string,
   repo: string,
   manifest: PushManifest,
-): Promise<{ branch: string; sha: string; created: boolean; verified: true }> {
+): Promise<{
+  branch: string;
+  sha: string;
+  created: boolean;
+  verified: true;
+  idempotent: boolean;
+}> {
   const ref = `heads/${manifest.branch}`;
   const branchHeadSha = await getRefSha(octokit, owner, repo, ref);
 
@@ -124,6 +135,26 @@ export async function pushManifestWithGitHubApi(
     tree,
   });
 
+  if (
+    branchHeadSha &&
+    (await isEquivalentCommit(
+      octokit,
+      owner,
+      repo,
+      branchHeadSha,
+      newTree.data.sha,
+      manifest.commitMessage,
+    ))
+  ) {
+    return {
+      branch: manifest.branch,
+      sha: branchHeadSha,
+      created: false,
+      verified: true,
+      idempotent: true,
+    };
+  }
+
   const commit = await octokit.rest.git.createCommit({
     owner,
     repo,
@@ -141,13 +172,37 @@ export async function pushManifestWithGitHubApi(
       sha: commit.data.sha,
     });
   } else {
-    await octokit.rest.git.updateRef({
-      owner,
-      repo,
-      ref,
-      sha: commit.data.sha,
-      force: Boolean(manifest.force),
-    });
+    try {
+      await octokit.rest.git.updateRef({
+        owner,
+        repo,
+        ref,
+        sha: commit.data.sha,
+        force: Boolean(manifest.force),
+      });
+    } catch (err) {
+      const latest = await getRefSha(octokit, owner, repo, ref);
+      if (
+        !latest ||
+        !(await isEquivalentCommit(
+          octokit,
+          owner,
+          repo,
+          latest,
+          newTree.data.sha,
+          manifest.commitMessage,
+        ))
+      ) {
+        throw err;
+      }
+      return {
+        branch: manifest.branch,
+        sha: latest,
+        created: false,
+        verified: true,
+        idempotent: true,
+      };
+    }
   }
 
   const verify = await octokit.rest.git.getRef({ owner, repo, ref });
@@ -157,7 +212,29 @@ export async function pushManifestWithGitHubApi(
     );
   }
 
-  return { branch: manifest.branch, sha: commit.data.sha, created, verified: true };
+  return {
+    branch: manifest.branch,
+    sha: commit.data.sha,
+    created,
+    verified: true,
+    idempotent: false,
+  };
+}
+
+async function isEquivalentCommit(
+  octokit: GitApiClient,
+  owner: string,
+  repo: string,
+  sha: string,
+  treeSha: string,
+  message: string,
+): Promise<boolean> {
+  const commit = await octokit.rest.git.getCommit({
+    owner,
+    repo,
+    commit_sha: sha,
+  });
+  return commit.data.tree.sha === treeSha && commit.data.message === message;
 }
 
 async function getRefSha(

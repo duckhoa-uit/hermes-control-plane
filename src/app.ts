@@ -22,9 +22,12 @@ import { Hono } from "hono";
 import { Octokit } from "@octokit/rest";
 import { verifyToken, signToken } from "./core/auth";
 import { isPushManifest, pushManifestWithGitHubApi } from "./agent/github-api-push";
+import { installModelProgressWatchdog } from "./agent/runtime-watchdog";
 
 type AppEnv = { Bindings: Env };
 const app = new Hono<AppEnv>();
+
+installModelProgressWatchdog();
 
 // ─── Health ────────────────────────────────────────────────────────────────
 
@@ -37,6 +40,9 @@ app.route("/", flue());
 // ─── Proxy: Git Push ───────────────────────────────────────────────────────
 
 app.post("/proxy/git-push", async (c) => {
+  if (!(await isAuthorizedProxyRequest(c.req.raw, c.env))) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
   const body = await c.req.json().catch(() => ({}));
   if (!isPushManifest(body)) return c.json({ error: "valid push manifest required" }, 400);
   const token = c.env.GITHUB_WRITE_TOKEN;
@@ -55,6 +61,9 @@ app.post("/proxy/git-push", async (c) => {
 // ─── Proxy: Create PR ──────────────────────────────────────────────────────
 
 app.post("/proxy/create-pr", async (c) => {
+  if (!(await isAuthorizedProxyRequest(c.req.raw, c.env))) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
   const body = await c.req.json().catch(() => ({}));
   const { title, body: prBody, branch, baseBranch } = body as Record<string, unknown>;
   if (!title || !branch) return c.json({ error: "title and branch required" }, 400);
@@ -64,6 +73,23 @@ app.post("/proxy/create-pr", async (c) => {
   if (!token || !owner || !repo) return c.json({ error: "GitHub not configured" }, 500);
   try {
     const octokit = new Octokit({ auth: token });
+    const existing = await octokit.rest.pulls.list({
+      owner,
+      repo,
+      head: `${owner}:${branch as string}`,
+      base: (baseBranch as string) ?? "main",
+      state: "open",
+      per_page: 1,
+    });
+    if (existing.data[0]) {
+      return c.json({
+        success: true,
+        prUrl: existing.data[0].html_url,
+        prNumber: existing.data[0].number,
+        existing: true,
+      });
+    }
+
     const pr = await octokit.rest.pulls.create({
       owner,
       repo,
@@ -72,7 +98,12 @@ app.post("/proxy/create-pr", async (c) => {
       head: branch as string,
       base: (baseBranch as string) ?? "main",
     });
-    return c.json({ success: true, prUrl: pr.data.html_url, prNumber: pr.data.number });
+    return c.json({
+      success: true,
+      prUrl: pr.data.html_url,
+      prNumber: pr.data.number,
+      existing: false,
+    });
   } catch (err) {
     return c.json({ success: false, error: String(err) }, 502);
   }
@@ -188,6 +219,13 @@ export async function generateReplayUrl(env: Env, sessionId: string): Promise<st
   const token = await signToken(secret, sessionId);
   const base = env.WORKER_URL || "";
   return `${base}/replay/${sessionId}?token=${token}`;
+}
+
+async function isAuthorizedProxyRequest(request: Request, env: Env): Promise<boolean> {
+  const sessionId = request.headers.get("X-Hermes-Session-Id") || "";
+  const authorization = request.headers.get("Authorization") || "";
+  const token = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
+  return verifyToken(env.GITHUB_WEBHOOK_SECRET, sessionId, token);
 }
 
 // ─── Inlined Replay HTML ──────────────────────────────────────────────────

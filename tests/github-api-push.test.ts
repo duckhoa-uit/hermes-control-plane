@@ -10,7 +10,7 @@ import {
 const BASE_SHA = "a".repeat(40);
 const BASE_TREE_SHA = "b".repeat(40);
 
-function createFakeOctokit(options: { refExists?: boolean } = {}) {
+function createFakeOctokit(options: { refExists?: boolean; equivalent?: boolean } = {}) {
   const calls: Array<{ name: string; args: any }> = [];
   let refSha = options.refExists ? "old-ref" : "";
 
@@ -35,6 +35,15 @@ function createFakeOctokit(options: { refExists?: boolean } = {}) {
             calls.push({ name: "getRef", args });
             if (!refSha) throw { status: 404 };
             return { data: { object: { sha: refSha } } };
+          },
+          getCommit: async (args: any) => {
+            calls.push({ name: "getCommit", args });
+            return {
+              data: {
+                message: options.equivalent ? "fix: update" : "previous commit",
+                tree: { sha: options.equivalent ? "tree-1" : "old-tree" },
+              },
+            };
           },
           createRef: async (args: any) => {
             calls.push({ name: "createRef", args });
@@ -78,6 +87,7 @@ describe("pushManifestWithGitHubApi", () => {
       sha: "commit-1",
       created: true,
       verified: true,
+      idempotent: false,
     });
     expect(fake.calls.map((call) => call.name)).toEqual([
       "getRef",
@@ -130,6 +140,35 @@ describe("pushManifestWithGitHubApi", () => {
     expect(fake.calls.find((call) => call.name === "createCommit")?.args).toMatchObject({
       parents: ["old-ref"],
     });
+  });
+
+  it("returns the existing branch head when a retry has the same tree and message", async () => {
+    const fake = createFakeOctokit({ refExists: true, equivalent: true });
+
+    const result = await pushManifestWithGitHubApi(fake.client, "owner", "repo", {
+      branch: "codex/existing",
+      baseSha: BASE_SHA,
+      baseTreeSha: BASE_TREE_SHA,
+      commitMessage: "fix: update",
+      changes: [
+        {
+          action: "upsert",
+          path: "README.md",
+          mode: "100644",
+          contentBase64: Buffer.from("updated").toString("base64"),
+        },
+      ],
+    });
+
+    expect(result).toEqual({
+      branch: "codex/existing",
+      sha: "old-ref",
+      created: false,
+      verified: true,
+      idempotent: true,
+    });
+    expect(fake.calls.some((call) => call.name === "createCommit")).toBe(false);
+    expect(fake.calls.some((call) => call.name === "updateRef")).toBe(false);
   });
 });
 

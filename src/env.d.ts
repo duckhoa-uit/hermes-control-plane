@@ -16,6 +16,8 @@ interface Env {
   GITHUB_READ_TOKEN: string;
   GITHUB_WEBHOOK_SECRET: string;
   GITHUB_USER_LOGIN: string;
+  GITHUB_USER_EMAIL?: string;
+  MODEL_PROGRESS_TIMEOUT_MS?: string;
   GITHUB_OWNER: string;
   GITHUB_REPO: string;
   LLM_MODEL: string;
