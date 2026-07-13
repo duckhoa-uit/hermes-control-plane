@@ -78,7 +78,9 @@ npx wrangler secret delete GITHUB_WRITE_TOKEN --name "$WORKER_NAME"
 
 These are non-secret deployment inputs. Keep them in the shell/CI environment
 and inject them with `--var`; do not hard-code a production URL or repository
-list in the repository.
+list in the Worker configuration. The GitHub Actions deploy workflow reads
+`WORKER_URL` from a repository Actions variable and fails closed if it is
+missing or if any required Worker secret is absent.
 
 | Var | Default | Purpose |
 |---|---|---|
@@ -119,6 +121,15 @@ Only after the dry run passes, deploy with the same vars:
 npx wrangler deploy \
   --name "$WORKER_NAME" \
   --var "WORKER_URL:${WORKER_URL}"
+```
+
+For the automatic `main` deployment, configure the non-secret repository
+variable once:
+
+```bash
+gh variable set WORKER_URL \
+  --repo duckhoa-uit/hermes-control-plane \
+  --body "https://control-plan.khoa.lol"
 ```
 
 `wrangler.jsonc` declares `control-plan.khoa.lol` as a Cloudflare Custom
