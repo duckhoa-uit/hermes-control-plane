@@ -1,4 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ElicitResultSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { signScopedToken } from "../core/auth";
 import { GitHubApp, GitHubAppError } from "../agent/github-app";
@@ -161,14 +162,15 @@ export async function createControlPlanMcpHandler(options: ControlPlanMcpOptions
   server.registerTool(
     "respond_coding_approval",
     {
-      description: "Record an explicit operator decision for a pending Control Plan approval.",
+      description:
+        "Complete native Hermes approval for a pending Control Plan publication. The decision argument is only a hint; non-deny requests invoke MCP elicitation/create and record the gateway's accept or decline result.",
       inputSchema: z.object({
         taskId: z.string().regex(/^task_[a-f0-9]{32}$/),
         approvalId: z.string().min(1).max(255),
         decision: z.enum(["once", "session", "always", "deny"]),
       }),
     },
-    async ({ taskId, approvalId, decision }) => {
+    async ({ taskId, approvalId, decision }, extra) => {
       const task = await taskStub(options.env, taskId).get();
       if (!task) return toolError(`Coding task ${taskId} was not found.`);
 
@@ -176,7 +178,39 @@ export async function createControlPlanMcpHandler(options: ControlPlanMcpOptions
       if (!approval || approval.session_id !== task.sessionId || approval.status !== "pending") {
         return toolError(`Approval ${approvalId} is not pending for coding task ${taskId}.`);
       }
-      const resolved = await resolveApproval(approvalId, decision, options);
+      let resolvedDecision = decision;
+      if (decision !== "deny") {
+        let elicitation;
+        try {
+          elicitation = await extra.sendRequest(
+            {
+              method: "elicitation/create",
+              params: {
+                mode: "form",
+                message: approvalMessage(approval),
+                requestedSchema: {
+                  type: "object",
+                  properties: {
+                    confirm: {
+                      type: "boolean",
+                      title: "Approve this operation",
+                      description: "The Control Plan will perform the described GitHub publication.",
+                    },
+                  },
+                  required: ["confirm"],
+                },
+              },
+            },
+            ElicitResultSchema,
+          );
+        } catch (error) {
+          return toolError(
+            `Hermes gateway did not complete native approval elicitation: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        resolvedDecision = elicitation.action === "accept" ? "once" : "deny";
+      }
+      const resolved = await resolveApproval(approvalId, resolvedDecision, options);
       return toolResult({ taskId, approval: resolved });
     },
   );
@@ -216,7 +250,27 @@ export async function createControlPlanMcpHandler(options: ControlPlanMcpOptions
     },
   );
 
-  return createMcpHandler(server, { route: "/mcp", enableJsonResponse: true });
+  // Native Hermes elicitation is a server-initiated request nested inside the
+  // tool call. It requires the MCP SSE response to remain bidirectional;
+  // JSON-only responses cannot carry that nested request.
+  return createMcpHandler(server, { route: "/mcp", enableJsonResponse: false });
+}
+
+function approvalMessage(approval: any): string {
+  const payload = approval.payload && typeof approval.payload === "object" ? approval.payload : {};
+  const metadata = payload.metadata && typeof payload.metadata === "object" ? payload.metadata : {};
+  const details = [
+    `type=${approval.type}`,
+    approval.title,
+    metadata.repository ? `repository=${metadata.repository}` : "",
+    metadata.branch ? `branch=${metadata.branch}` : "",
+    metadata.changes ? `files=${metadata.changes}` : "",
+    Array.isArray(metadata.paths) && metadata.paths.length > 0
+      ? `paths=${metadata.paths.join(", ")}`
+      : "",
+    metadata.manifestHash ? `manifest=${String(metadata.manifestHash).slice(0, 12)}` : "",
+  ].filter(Boolean);
+  return `Control Plan approval required: ${details.join("; ")}. Review the task and approve only if this publication is expected.`;
 }
 
 function taskStub(env: Env, taskId: string) {

@@ -10,11 +10,14 @@
 - [x] Bind GitHub publication to each task's repository/base branch and deterministic branch.
 - [x] Add scoped private-repository clone access and durable concurrency admission.
 - [x] Verify MCP tasks against both `duckhoa-uit/lawn` and `NousResearch/hermes-agent` locally.
+- [x] Route exceptional publication approvals through native Hermes MCP elicitation and fail closed when ApprovalDO is unavailable.
+- [x] Add policy-mode publication boundaries: task-branch commits and draft PRs may run autonomously; force/sensitive/non-draft operations require approval.
 
 ## Next
 
 - [ ] Configure and smoke-test a real Hermes host against the deployed MCP URL.
 - [ ] Stage the Worker rename/state-preserving Durable Object migration.
-- [ ] Run a staged approval, GitHub push, and PR smoke test with production secrets.
+- [ ] Run a staged policy-mode draft publication plus exceptional native-approval smoke test with production secrets.
 - [x] Keep GitHub webhook events acknowledgement-only; Hermes owns triage and task creation.
 - [x] Use GitHub App installation access for dynamic multi-repository policy and short-lived tokens.
+- [ ] Bind exceptional approval grants to a one-use manifest hash at the proxy boundary for defense in depth beyond the current task/session capability checks.

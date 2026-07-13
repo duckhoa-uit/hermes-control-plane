@@ -28,6 +28,7 @@ export type FinalizeRequest = {
   baseBranch: string;
   createPr: boolean;
   force: boolean;
+  draft?: boolean;
 };
 
 export type FinalizeCheckpoint = {
@@ -42,13 +43,14 @@ export type FinalizeDependencies = {
   loadCheckpoint(): Promise<FinalizeCheckpoint | null>;
   saveCheckpoint(checkpoint: FinalizeCheckpoint): Promise<void>;
   prepare(): Promise<FinalizeSnapshot>;
-  approvePush(snapshot: FinalizeSnapshot): Promise<void>;
+  approvePush(snapshot: FinalizeSnapshot): Promise<unknown>;
   push(snapshot: FinalizeSnapshot): Promise<JsonValue>;
   createPr(input: {
     title: string;
     body: string;
     branch: string;
     baseBranch: string;
+    draft?: boolean;
   }): Promise<JsonValue>;
 };
 
@@ -133,6 +135,7 @@ export async function runDeterministicFinalize(
           body: request.prBody || `Automated Control Plan changes for ${request.branch}.`,
           branch: request.branch,
           baseBranch: request.baseBranch,
+          draft: request.draft ?? false,
         })
       : null;
     checkpoint = { ...checkpoint, phase: "completed", pr };
@@ -156,7 +159,8 @@ function sameFinalizeRequest(left: FinalizeRequest, right: FinalizeRequest): boo
     left.prBody === right.prBody &&
     left.baseBranch === right.baseBranch &&
     left.createPr === right.createPr &&
-    left.force === right.force
+    left.force === right.force &&
+    left.draft === right.draft
   );
 }
 

@@ -86,7 +86,7 @@ missing or if any required Worker secret is absent.
 |---|---|---|
 | `LLM_MODEL` | `zai/glm-5.2` | Model name |
 | `WORKER_URL` | unset | Public HTTPS Worker origin used by callbacks and replay links; production is `https://control-plan.khoa.lol` |
-| `APPROVAL_MODE` | `manual` | Production GitHub-write approval mode |
+| `APPROVAL_MODE` | `policy` | `policy` auto-publishes task-branch commits and draft PRs; `manual` approves every publication; `off` is unsafe development-only mode |
 
 ## Prerequisites
 
@@ -145,12 +145,16 @@ curl -i "$WORKER_URL/mcp"  # must return 401 without Authorization
 ```
 
 Configure Hermes with the production `/mcp` URL and the dedicated
-`CONTROL_PLAN_MCP_TOKEN`. Use the four-tool allowlist from
+`CONTROL_PLAN_MCP_TOKEN`. Control Plan exposes the four-tool MCP surface in
 [`HERMES-AGENT-INTEGRATION.md`](./HERMES-AGENT-INTEGRATION.md); do not point
 Hermes at the localhost URL.
 
 Run one read-only task first, followed by a disposable-branch smoke test that
-covers approval, denial, and idempotent PR reuse.
+covers a policy-mode draft publication, an exceptional approval/denial, and
+idempotent PR reuse. To test the native approval path, call
+`respond_coding_approval` from the connected Hermes gateway and confirm that
+the gateway renders `elicitation/create`; do not treat the tool's `decision`
+argument as approval.
 
 The release artifact pins `@flue/cli`, `@flue/runtime`, and `@flue/sdk` to
 `1.0.0-beta.9`; do not deploy with a globally installed older Flue CLI. The

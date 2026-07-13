@@ -20,6 +20,8 @@ export type ApprovalDecision = {
   denied: boolean;
 };
 
+export type ApprovalMode = "manual" | "smart" | "policy" | "off";
+
 export interface ApprovalPayload {
   type: string;
   title: string;
@@ -50,7 +52,7 @@ export async function requireApproval(
   ctx: ApprovalContext,
   payload: ApprovalPayload,
   options?: {
-    mode?: "manual" | "smart" | "off";
+    mode?: ApprovalMode;
     sessionId?: string;
     workerUrl?: string;
     approvalDOBinding?: any;
@@ -117,10 +119,11 @@ export async function requireApproval(
 
   const doBinding = options?.approvalDOBinding;
 
-  // Fallback if no DO binding: sleep + auto-approve (dev only)
+  // Missing durable approval state is a safety failure. A production worker
+  // must never turn an unavailable approval store into an implicit approval.
   if (!doBinding) {
-    await sleep(2000);
-    return { id, decision: "auto_approved", denied: false };
+    console.error("[approval] ApprovalDO binding is missing; failing closed");
+    return { id, decision: "timeout", actor: "missing_approval_store", denied: true };
   }
 
   const doId = doBinding.idFromName("approvals");
@@ -279,8 +282,4 @@ async function waitForResolutionViaWs(
       }
     })();
   });
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

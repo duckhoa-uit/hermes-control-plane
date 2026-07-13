@@ -56,6 +56,6 @@
     "MAX_CONCURRENT_SESSIONS": "10",
     "AUTO_CREATE_PR": "1",
     "SANDBOX_TRANSPORT": "rpc",
-    "APPROVAL_MODE": "manual"
+    "APPROVAL_MODE": "policy"
   }
 }

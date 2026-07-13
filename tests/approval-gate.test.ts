@@ -91,14 +91,14 @@ describe("requireApproval gate", () => {
     });
   });
 
-  it("manual mode without DO binding falls back to auto-approve (dev only)", async () => {
+  it("manual mode without DO binding fails closed", async () => {
     const result = await requireApproval(
       {},
       { type: "exec", title: "x", command: "echo hi" },
       { mode: "manual", sessionId: "s5" },
     );
-    expect(result.decision).toBe("auto_approved");
-    expect(result.denied).toBe(false);
+    expect(result.decision).toBe("timeout");
+    expect(result.denied).toBe(true);
   });
 
   it("returns timeout decision when DO binding throws on /request", async () => {

@@ -53,12 +53,14 @@ Sandbox logs.
 1. Call `get_coding_task` with the task ID and record its `state`,
    `streamOffset`, and replay URL.
 2. Open the replay URL and inspect the Flue event stream around the first
-   failed command or approval request.
+   failed command or approval request. For an exceptional publication, also
+   inspect the Hermes gateway log for the matching MCP `elicitation/create`.
 3. Check the `Sandbox` Durable Object and container logs for startup, RPC, or
    command timeout errors. The current runtime uses RPC transport and disables
    the default Sandbox session.
 4. If the task is still running, use `respond_coding_approval` for a real
-   pending ApprovalDO record. `cancel_coding_task` records a request but does
+   pending ApprovalDO record; a non-deny call must complete native Hermes
+   elicitation. `cancel_coding_task` records a request but does
    requests the Flue abort endpoint and independently blocks publication for the
    task, so a cancellation race cannot create a GitHub write.
 

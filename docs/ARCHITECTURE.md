@@ -65,12 +65,18 @@ class, not two independent classes.
    loop in its Durable Object.
 4. `clone_repository` mints a short-lived GitHub App installation token scoped
    to the task repository and performs a task-bound clone into Sandbox.
-5. The agent prepares a validated file manifest and requests approval.
-6. The Worker resolves the task's repository and branch before publishing the
+5. The agent prepares a validated file manifest. `APPROVAL_MODE=policy` allows
+   normal `control-plan/*` pushes and draft PRs after checks; force pushes,
+   sensitive paths, non-task branches, and non-draft PRs pause for native
+   Hermes MCP elicitation. `manual` pauses every publication.
+6. When approval is required, the Hermes gateway receives the server-initiated
+   `elicitation/create` request. Control Plan records only the gateway result,
+   never a model-supplied approval hint.
+7. The Worker resolves the task's repository and branch before publishing the
    commit through GitHub's Git Database API.
-7. The Worker creates or reuses the pull request and persists commit/PR result
+8. The Worker creates or reuses the draft pull request and persists commit/PR result
    metadata for Hermes polling.
-8. GitHub webhooks remain acknowledgement-only; they do not bypass Hermes.
+9. GitHub webhooks remain acknowledgement-only; they do not bypass Hermes.
 
 ## Security boundary
 
@@ -78,8 +84,11 @@ Sandbox code is untrusted. It receives only a short-lived, repository-scoped
 GitHub App read token for the clone command and never receives a write token.
 Privileged GitHub writes happen only in the Worker after a purpose-bound,
 short-lived proxy capability, task binding, installation authorization,
-base-branch validation, and manifest limits are validated. Replay and internal
-Flue capabilities use different secrets and cannot be exchanged.
+base-branch validation, and manifest limits are validated. Approval is an
+additional policy gate for exceptional publication; normal policy-mode draft
+publication is intentionally autonomous but remains restricted to the task
+branch. Replay and internal Flue capabilities use different secrets and cannot
+be exchanged.
 
 The replay and approval UI uses signed session URLs. This is sufficient for the
 current single-operator model, but it is not a multi-user authorization model.
@@ -124,7 +133,7 @@ rollout gates are in
 |---|---|
 | `spawn_coding_task` | Verify GitHub App repository access, create a Control Plan task ID, and dispatch a Flue coding session |
 | `get_coding_task` | Read durable task status, replay URL, and pending approval summary |
-| `respond_coding_approval` | Forward an explicit Hermes/user approval decision to ApprovalDO |
+| `respond_coding_approval` | Require native Hermes elicitation for non-deny decisions, then resolve the ApprovalDO record |
 | `cancel_coding_task` | Abort the Flue submission and block publication for the task |
 
 The task ID is the stable correlation key across Hermes, Flue, ApprovalDO, and

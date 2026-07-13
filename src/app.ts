@@ -125,7 +125,7 @@ app.post("/proxy/create-pr", async (c) => {
     return c.json({ error: "unauthorized" }, 401);
   }
   const body = await c.req.json().catch(() => ({}));
-  const { title, body: prBody, branch, baseBranch } = body as Record<string, unknown>;
+  const { title, body: prBody, branch, baseBranch, draft } = body as Record<string, unknown>;
   if (typeof title !== "string" || typeof branch !== "string") {
     return c.json({ error: "title and branch required" }, 400);
   }
@@ -134,6 +134,9 @@ app.post("/proxy/create-pr", async (c) => {
   }
   if (prBody !== undefined && typeof prBody !== "string") {
     return c.json({ error: "body must be a string" }, 400);
+  }
+  if (draft !== undefined && typeof draft !== "boolean") {
+    return c.json({ error: "draft must be a boolean" }, 400);
   }
   const sessionId = proxySessionId(c.req.raw);
   const task = await taskForProxy(c.env, sessionId);
@@ -183,6 +186,7 @@ app.post("/proxy/create-pr", async (c) => {
       body: prBody ?? "",
       head: branch,
       base: resolvedBaseBranch,
+      draft: draft !== false,
     });
     return c.json({
       success: true,

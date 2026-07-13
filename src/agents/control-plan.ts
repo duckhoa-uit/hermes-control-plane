@@ -9,6 +9,8 @@ import { cloudflareSandbox } from "@flue/runtime/cloudflare";
 import { getSandbox } from "@cloudflare/sandbox";
 import * as v from "valibot";
 import { requireApproval } from "../approval";
+import type { ApprovalDecision, ApprovalMode } from "../approval";
+import { requiresPublicationApproval } from "../agent/publication-policy";
 import { signScopedToken } from "../core/auth";
 import type { DurableObjectNamespace } from "@cloudflare/workers-types";
 import {
@@ -49,7 +51,7 @@ You are the Control Plan PR coding agent. You work autonomously to complete codi
 - For follow-up work on an existing PR, call mark_ready_to_finalize with createPr=false so the same branch is updated without creating a second PR.
 
 ## APPROVAL
-Some powerful operations (mark_ready_to_finalize, git_push, create_pr) may require human approval.
+Production uses policy mode: normal task-branch pushes and draft PRs are autonomous after checks pass. Force pushes, non-task branches, sensitive paths, and non-draft PR publication require approval. Manual mode requires approval for every GitHub publication. Approval is surfaced through the Hermes gateway's native MCP elicitation; never treat a tool argument as proof that a human approved.
 - If error says "denied by operator": user explicitly denied. DO NOT retry. Stop and explain.
 - If error says "blocked by hardline policy": never allowed. DO NOT retry under any circumstance.
 - If error says "no approval received within 1 hour" (timeout): user may have been AFK. Stop, report the issue, mention that the user can re-run when ready. DO NOT retry automatically.
@@ -129,7 +131,15 @@ export default defineAgent<Env>(({ id, env }) => {
       changes: unknown[];
       manifestKB: number;
     },
-  ) {
+  ): Promise<ApprovalDecision | null> {
+    const mode = approvalMode(env.APPROVAL_MODE);
+    if (
+      !requiresPublicationApproval(mode, "git_push", {
+        ...snapshot,
+        changes: snapshot.changes as Array<{ path?: string }>,
+      })
+    )
+      return null;
     const decision = await requireApproval(
       { signal: ctx.signal },
       {
@@ -141,12 +151,17 @@ export default defineAgent<Env>(({ id, env }) => {
           headSha: snapshot.headSha,
           baseSha: snapshot.baseSha,
           baseTreeSha: snapshot.baseTreeSha,
+          branch: snapshot.branch,
           changes: snapshot.changes.length,
+          paths: snapshot.changes
+            .slice(0, 20)
+            .map((change) => (change && typeof change === "object" ? (change as { path?: string }).path : undefined))
+            .filter((path): path is string => Boolean(path)),
           manifestKB: snapshot.manifestKB,
         },
       },
       {
-        mode: (env.APPROVAL_MODE || "manual") as "manual" | "smart" | "off",
+        mode,
         sessionId: id,
         workerUrl: baseUrl,
         approvalDOBinding: approvalDO,
@@ -159,6 +174,7 @@ export default defineAgent<Env>(({ id, env }) => {
           `Operator can approve at ${baseUrl}/replay/${id}.`,
       );
     }
+    return decision;
   }
 
   async function pushSnapshot(
@@ -184,36 +200,40 @@ export default defineAgent<Env>(({ id, env }) => {
       body: string;
       branch: string;
       baseBranch: string;
+      draft?: boolean;
     },
   ): Promise<JsonValue> {
-    const decision = await requireApproval(
-      { signal: ctx.signal },
-      {
-        type: "create_pr",
-        title: `Create PR: "${input.title}"`,
-        command: `Create PR from ${input.branch} to ${input.baseBranch}`,
-        diff: input.body?.slice(0, 2000),
-        pattern: "pr.create",
-      },
-      {
-        mode: (env.APPROVAL_MODE || "manual") as "manual" | "smart" | "off",
-        sessionId: id,
-        workerUrl: baseUrl,
-        approvalDOBinding: approvalDO,
-      },
-    );
-
-    if (decision.denied) {
-      throw new Error(
-        `PR creation was ${approvalDeniedReason(decision.decision)}. ` +
-          `Operator can approve at ${baseUrl}/replay/${id}.`,
+    const mode = approvalMode(env.APPROVAL_MODE);
+    if (requiresPublicationApproval(mode, "create_pr", input)) {
+      const decision = await requireApproval(
+        { signal: ctx.signal },
+        {
+          type: "create_pr",
+          title: `Create PR: "${input.title}"`,
+          command: `Create PR from ${input.branch} to ${input.baseBranch}`,
+          diff: input.body?.slice(0, 2000),
+          pattern: "pr.create",
+        },
+        {
+          mode,
+          sessionId: id,
+          workerUrl: baseUrl,
+          approvalDOBinding: approvalDO,
+        },
       );
+
+      if (decision.denied) {
+        throw new Error(
+          `PR creation was ${approvalDeniedReason(decision.decision)}. ` +
+            `Operator can approve at ${baseUrl}/replay/${id}.`,
+        );
+      }
     }
 
     const resp = await fetch(`${baseUrl}/proxy/create-pr`, {
       method: "POST",
       headers: await proxyHeaders(),
-      body: JSON.stringify(input),
+      body: JSON.stringify({ ...input, draft: input.draft !== false }),
       signal: ctx.signal,
     });
     if (!resp.ok) throw new Error(`PR creation failed: ${resp.status} ${await resp.text()}`);
@@ -300,7 +320,7 @@ export default defineAgent<Env>(({ id, env }) => {
   const gitPush = defineTool({
     name: "git_push",
     description:
-      "Push local commits to GitHub. REQUIRES HUMAN APPROVAL before executing. Call after git add + git commit.",
+      "Push local commits to GitHub. Publication policy may allow a task-branch push autonomously; exceptional pushes use Hermes native approval. Call after git add + git commit.",
     input: v.object({
       branch: v.string(),
       force: v.optional(v.boolean(), false),
@@ -339,15 +359,16 @@ export default defineAgent<Env>(({ id, env }) => {
   const createPR = defineTool({
     name: "create_pr",
     description:
-      "Create a GitHub Pull Request. REQUIRES HUMAN APPROVAL before executing. Only call after git_push succeeded.",
+      "Create a GitHub Pull Request. Draft PRs may be automatic in policy mode; non-draft publication uses Hermes native approval. Only call after git_push succeeded.",
     input: v.object({
       title: v.string(),
       body: v.string(),
       branch: v.string(),
       baseBranch: v.optional(v.string()),
+      draft: v.optional(v.boolean()),
     }),
     async run(ctx) {
-      const { title, body, branch, baseBranch } = ctx.input;
+      const { title, body, branch, baseBranch, draft } = ctx.input;
       const task = await taskRecord();
       const resolvedBaseBranch = task?.baseBranch || baseBranch || "main";
       if (task?.state === "cancellation_requested") {
@@ -363,6 +384,7 @@ export default defineAgent<Env>(({ id, env }) => {
         body,
         branch,
         baseBranch: resolvedBaseBranch,
+        draft: draft ?? approvalMode(env.APPROVAL_MODE) === "policy",
       });
     },
   });
@@ -379,9 +401,10 @@ export default defineAgent<Env>(({ id, env }) => {
       baseBranch: v.optional(v.string()),
       createPr: v.optional(v.boolean(), true),
       force: v.optional(v.boolean(), false),
+      draft: v.optional(v.boolean()),
     }),
     async run(ctx) {
-      const { branch, commitMessage, prTitle, prBody, baseBranch, createPr, force } = ctx.input;
+      const { branch, commitMessage, prTitle, prBody, baseBranch, createPr, force, draft } = ctx.input;
       const task = await taskRecord();
       const resolvedBaseBranch = task?.baseBranch || baseBranch || "main";
       if (task?.state === "cancellation_requested") {
@@ -401,6 +424,7 @@ export default defineAgent<Env>(({ id, env }) => {
         baseBranch: resolvedBaseBranch,
         createPr: createPr ?? true,
         force: force ?? false,
+        draft: draft ?? approvalMode(env.APPROVAL_MODE) === "policy",
       };
 
       const result = await runDeterministicFinalize(request, {
@@ -448,6 +472,11 @@ function approvalDeniedReason(decision: string): string {
   if (decision === "hardline_blocked") return "blocked by hardline policy (never allowed)";
   if (decision === "timeout") return "no approval received within 1 hour";
   return "denied by operator";
+}
+
+function approvalMode(value: string | undefined): ApprovalMode {
+  if (value === "policy" || value === "smart" || value === "off") return value;
+  return "manual";
 }
 
 function asRecord(value: JsonValue | null | undefined): Record<string, JsonValue> | null {

@@ -14,13 +14,15 @@ with a service token and calls a small, allowlisted tool surface:
 |---|---|---|
 | `spawn_coding_task` | repository, task, optional base branch, idempotency key | Control Plan task ID, state, replay URL |
 | `get_coding_task` | task ID | state, current summary, pending approval, PR/result when available |
-| `respond_coding_approval` | task ID, approval ID, decision | recorded decision and resulting task state |
+| `respond_coding_approval` | task ID, approval ID, decision hint | starts a native Hermes elicitation; only the gateway's accept/decline result is recorded |
 | `cancel_coding_task` | task ID | cancellation-requested state plus Flue abort request |
 
 Hermes presents these as MCP tools (for example,
-`mcp_control_plan_spawn_coding_task`). It remains responsible for asking the
-user for clarification or approval; Control Plan remains responsible for
-enforcing the recorded approval before privileged GitHub writes occur.
+`mcp_control_plan_spawn_coding_task`). Hermes remains responsible for task
+interpretation and clarification. For privileged publication, Control Plan
+issues MCP `elicitation/create`; the Hermes gateway renders that request in
+its native approval surface and returns the operator's accept/decline result.
+The model's `decision` argument is never treated as proof of human approval.
 
 Do **not** use the Hermes HTTP Runs API for this boundary. It lets an external
 client start and monitor Hermes runs, which reverses the desired ownership. ACP
@@ -54,15 +56,12 @@ mcp_servers:
     url: "https://control-plan.khoa.lol/mcp"
     headers:
       Authorization: "Bearer <Control Plan MCP service token>"
-    tools:
-      include:
-        - spawn_coding_task
-        - get_coding_task
-        - respond_coding_approval
-        - cancel_coding_task
-      resources: false
-      prompts: false
 ```
+
+The current Hermes config schema does not support `tools.include`,
+`resources`, or `prompts` nested under an `mcp_servers` entry. Hermes discovers
+the four tools and prefixes them as `mcp_control_plan_*`; filter/disable tools
+at the Hermes tool-policy layer if needed.
 
 Use a dedicated `CONTROL_PLAN_MCP_TOKEN` secret. Do not reuse the GitHub
 webhook secret, signed replay tokens, or a GitHub token for this boundary.
@@ -74,7 +73,7 @@ Hermes receives a coding request
   -> Hermes calls spawn_coding_task
   -> Control Plan validates GitHub App access and dispatches Flue
   -> Flue works in its per-task Cloudflare Sandbox
-  -> Control Plan records and enforces an approval if GitHub publication is needed
+  -> Control Plan applies publication policy and, when required, sends native MCP elicitation
   -> Control Plan writes the commit/PR through its GitHub API boundary
   -> Hermes polls get_coding_task and reports the result to the user
 ```
@@ -94,10 +93,16 @@ diagnostic and operator interface, not the only record of task completion.
    Flue session ID, repository, base branch, deterministic publication branch,
    and lifecycle state. The task branch is enforced at both the agent tool and
    GitHub proxy boundaries, so profiles cannot cross-publish repositories.
-4. Require `respond_coding_approval` to identify a still-open ApprovalDO record;
-   never let Hermes bypass the existing GitHub-write approval boundary.
-5. Test the MCP protocol and tool schemas against a pinned Hermes Agent release.
-6. Run one real Docker-backed task against `duckhoa-uit/lawn` before staging or
+4. Require `respond_coding_approval` to identify a still-open ApprovalDO record.
+   Any non-deny decision must complete native MCP elicitation; a model-supplied
+   `once`, `session`, or `always` value alone cannot authorize a write.
+5. Use `APPROVAL_MODE=policy` in production. Normal task-branch pushes and
+   draft PRs run autonomously after checks pass. Force pushes, non-task
+   branches, sensitive paths, and non-draft PRs require the native approval.
+   `manual` remains available for an all-publications approval gate; `off` is
+   an explicit unsafe development mode.
+6. Test the MCP protocol and tool schemas against a pinned Hermes Agent release.
+7. Run one real Docker-backed task against `duckhoa-uit/lawn` before staging or
    production deployment. The task must clone the repository, make a narrow
    change, run its repository checks, request/receive any needed approval, and
    return a verifiable result.
