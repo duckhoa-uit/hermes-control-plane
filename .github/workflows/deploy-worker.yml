@@ -65,12 +65,17 @@ jobs:
             CONTROL_PLAN_PROXY_SECRET
             CONTROL_PLAN_INTERNAL_SECRET
           )
+          missing_secrets=()
           for secret in "${required_secrets[@]}"; do
             if ! jq -e --arg secret "$secret" '.[] | select(.name == $secret)' /tmp/control-plan-secrets.json >/dev/null; then
-              echo "Missing production Worker secret: $secret" >&2
-              exit 1
+              missing_secrets+=("$secret")
             fi
           done
+          if ((${#missing_secrets[@]})); then
+            echo "Missing production Worker secrets:" >&2
+            printf ' - %s\n' "${missing_secrets[@]}" >&2
+            exit 1
+          fi
 
       - run: bun run lint
 
