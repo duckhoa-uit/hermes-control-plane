@@ -1,4 +1,5 @@
 import type { PushManifest } from "./github-api-push";
+import { MAX_PUSH_MANIFEST_BYTES } from "./github-api-push";
 import type { JsonValue } from "@flue/runtime";
 import { withTimeout } from "./watchdog";
 
@@ -19,6 +20,7 @@ export type FinalizeSnapshot = PushManifest & {
 };
 
 export type FinalizeRequest = {
+  repository: string;
   branch: string;
   commitMessage: string;
   prTitle?: string;
@@ -128,7 +130,7 @@ export async function runDeterministicFinalize(
     const pr = request.createPr
       ? await dependencies.createPr({
           title: request.prTitle || request.commitMessage,
-          body: request.prBody || `Automated Hermes changes for ${request.branch}.`,
+          body: request.prBody || `Automated Control Plan changes for ${request.branch}.`,
           branch: request.branch,
           baseBranch: request.baseBranch,
         })
@@ -147,6 +149,7 @@ export async function runDeterministicFinalize(
 
 function sameFinalizeRequest(left: FinalizeRequest, right: FinalizeRequest): boolean {
   return (
+    left.repository === right.repository &&
     left.branch === right.branch &&
     left.commitMessage === right.commitMessage &&
     left.prTitle === right.prTitle &&
@@ -155,6 +158,29 @@ function sameFinalizeRequest(left: FinalizeRequest, right: FinalizeRequest): boo
     left.createPr === right.createPr &&
     left.force === right.force
   );
+}
+
+export async function assertWorkspaceRepository(
+  sandbox: SandboxLike,
+  repoPath: string,
+  expectedRepository: string,
+): Promise<void> {
+  const result = await execSandboxChecked(
+    sandbox,
+    `bash -c ${shellQuote(`cd ${shellQuote(repoPath)} && git remote get-url origin`)}`,
+    "read repository remote",
+  );
+  const remote = (result.stdout || "").trim();
+  const normalized = remote
+    .replace(/^https?:\/\/(?:[^@]+@)?github\.com\//, "")
+    .replace(/^git@github\.com:/, "")
+    .replace(/\.git$/, "")
+    .replace(/\/$/, "");
+  if (normalized !== expectedRepository) {
+    throw new Error(
+      `Workspace remote ${normalized || "<missing>"} does not match task repository ${expectedRepository}`,
+    );
+  }
 }
 
 export async function findWorkspaceRepo(sandbox: SandboxLike): Promise<string> {
@@ -187,6 +213,7 @@ export async function buildPushSnapshot(
   repoPath: string,
   branch: string,
   force = false,
+  baseBranch = "main",
 ): Promise<FinalizeSnapshot> {
   const shaRes = await execSandboxChecked(
     sandbox,
@@ -197,7 +224,7 @@ export async function buildPushSnapshot(
 
   const baseRes = await execSandboxChecked(
     sandbox,
-    `bash -c "cd ${shellQuote(repoPath)} && git rev-parse origin/HEAD 2>/dev/null || git rev-parse origin/main 2>/dev/null || git rev-parse origin/master 2>/dev/null"`,
+    `bash -c ${shellQuote(`cd ${shellQuote(repoPath)} && git rev-parse ${shellQuote(`origin/${baseBranch}`)} 2>/dev/null || git rev-parse origin/HEAD 2>/dev/null || git rev-parse origin/main 2>/dev/null || git rev-parse origin/master 2>/dev/null`)}`,
     "read base sha",
   );
   const baseSha = (baseRes.stdout || "").trim();
@@ -215,7 +242,7 @@ export async function buildPushSnapshot(
     `bash -c ${shellQuote(`cd ${shellQuote(repoPath)} && git log -1 --format=%B HEAD`)}`,
     "read commit message",
   );
-  const commitMessage = (messageRes.stdout || "").trim() || `Hermes changes for ${branch}`;
+  const commitMessage = (messageRes.stdout || "").trim() || `Control Plan changes for ${branch}`;
 
   const manifestScript = `
 const { execFileSync } = require("node:child_process");
@@ -270,11 +297,15 @@ process.stdout.write(JSON.stringify(changes));
   const changes = JSON.parse((manifestRes.stdout || "").trim()) as PushManifest["changes"];
   if (changes.length === 0) throw new Error(`No changes found between ${baseSha} and HEAD`);
   const manifestKB = Math.round(JSON.stringify(changes).length / 1024);
+  if (manifestKB * 1024 > MAX_PUSH_MANIFEST_BYTES) {
+    throw new Error(`Push manifest exceeds the ${MAX_PUSH_MANIFEST_BYTES} byte safety limit`);
+  }
 
   return {
     repoPath,
     headSha,
     branch,
+    baseBranch,
     baseSha,
     baseTreeSha,
     commitMessage,

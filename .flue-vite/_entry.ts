@@ -10,7 +10,7 @@ import {
   createSqlRunStore,
   CLOUDFLARE_AGENT_INTERNAL_DISPATCH_PATH,
   createCloudflareAgentRuntime,
-  createSqlSessionStore,
+  createSqlConversationStores,
   SqliteEventStreamStore,
   bashFactoryToSessionEnv,
   resolveModel,
@@ -35,12 +35,12 @@ import {
 } from "@flue/runtime/cloudflare/internal";
 import { registerApiProvider, registerProvider } from "@flue/runtime";
 
-import * as handler_hermes_0 from "../src/agents/hermes.ts";
+import * as handler_control_plan_0 from "/Users/macbook/Documents/repos/personal/hermes-control-plan/src/agents/control-plan.ts";
 
-import * as channel_github_0 from "../src/channels/github.ts";
-import userApp from "../src/app.ts";
-import * as userCloudflareModule from "../src/cloudflare.ts";
-export * from "../src/cloudflare.ts";
+import * as channel_github_0 from "/Users/macbook/Documents/repos/personal/hermes-control-plan/src/channels/github.ts";
+import userApp from "/Users/macbook/Documents/repos/personal/hermes-control-plan/src/app.ts";
+import * as userCloudflareModule from "/Users/macbook/Documents/repos/personal/hermes-control-plan/src/cloudflare.ts";
+export * from "/Users/macbook/Documents/repos/personal/hermes-control-plan/src/cloudflare.ts";
 
 // ─── Internal provider registrations ────────────────────────────────────────
 // User `app.ts` imports are hoisted above this body, so a user-supplied
@@ -74,6 +74,10 @@ function normalizeBuiltModules(agentModules, workflowModules, channelModules = {
       throw new Error(
         '[flue] Agent "' + name + '" route export must be a callable Hono middleware value.',
       );
+    if (mod.attachments !== undefined && typeof mod.attachments !== "function")
+      throw new Error(
+        '[flue] Agent "' + name + '" attachments export must be a callable Hono middleware value.',
+      );
     if (
       mod.description !== undefined &&
       (typeof mod.description !== "string" || mod.description.trim().length === 0)
@@ -91,6 +95,7 @@ function normalizeBuiltModules(agentModules, workflowModules, channelModules = {
     const agent = { name, definition: mod.default };
     if (mod.description !== undefined) agent.description = mod.description;
     if (typeof mod.route === "function") agent.route = mod.route;
+    if (typeof mod.attachments === "function") agent.attachments = mod.attachments;
     agents.push(agent);
   }
 
@@ -169,7 +174,7 @@ function normalizeBuiltModules(agentModules, workflowModules, channelModules = {
 }
 
 const agentModules = {
-  hermes: handler_hermes_0,
+  "control-plan": handler_control_plan_0,
 };
 const workflowModules = {};
 const channelModules = {
@@ -181,12 +186,12 @@ const { agents, workflows, channelHandlers } = normalizeBuiltModules(
   channelModules,
 );
 const agentIdentities = {
-  hermes: { bindingName: "FLUE_HERMES_AGENT", className: "FlueHermesAgent" },
+  "control-plan": { bindingName: "FLUE_CONTROL_PLAN_AGENT", className: "FlueControlPlanAgent" },
 };
 const workflowIdentities = {};
 
 const userCloudflare = userCloudflareModule;
-const reservedCloudflareExportNames = new Set(["FlueHermesAgent", "FlueRegistry"]);
+const reservedCloudflareExportNames = new Set(["FlueControlPlanAgent", "FlueRegistry"]);
 for (const name of Object.keys(userCloudflare)) {
   if (name === "default") continue;
   if (reservedCloudflareExportNames.has(name)) {
@@ -279,7 +284,6 @@ function createAgentContextForRequest({
     dispatchId,
     agentConfig: { resolveModel },
     createDefaultEnv,
-    defaultStore: executionStore.sessions,
     submissionStore: executionStore.submissions,
   });
 }
@@ -293,7 +297,6 @@ function createWorkflowContextForRequest({ runId, request, initialEventIndex }, 
     initialEventIndex,
     agentConfig: { resolveModel },
     createDefaultEnv,
-    defaultStore: createSqlSessionStore(doInstance.ctx.storage),
   });
 }
 
@@ -340,6 +343,15 @@ function createDurableObjectIdentity(doInstance, identity) {
 }
 
 const eventStreamStores = new WeakMap();
+const conversationStores = new WeakMap();
+
+function createConversationStoresForInstance(doInstance) {
+  const existing = conversationStores.get(doInstance);
+  if (existing) return existing;
+  const stores = createSqlConversationStores(doInstance?.ctx?.storage);
+  conversationStores.set(doInstance, stores);
+  return stores;
+}
 
 function createEventStreamStoreForInstance(doInstance) {
   const existing = eventStreamStores.get(doInstance);
@@ -361,7 +373,6 @@ const cloudflareAgents = createCloudflareAgentRuntime({
   createContext: createAgentContextForRequest,
   runWithInstanceContext: (instance, agentName, fn) =>
     runWithInstanceContext(instance, agentRuntimeIdentity(agentName), fn),
-  createEventStreamStore: (instance) => createEventStreamStoreForInstance(instance),
   onInteractionStart: devLifecycle?.onAgentInteractionStart,
 });
 
@@ -513,13 +524,17 @@ function parseRunRoute(request) {
 
 // ─── Per-Agent / Per-Workflow Durable Object Classes ──────────────────────
 
-const agentExtension0 = resolveCloudflareExtension(agentModules["hermes"], "hermes", "Agent");
-const FlueHermesAgent = class FlueHermesAgent extends agentExtension0.base(Agent) {
+const agentExtension0 = resolveCloudflareExtension(
+  agentModules["control-plan"],
+  "control-plan",
+  "Agent",
+);
+const FlueControlPlanAgent = class FlueControlPlanAgent extends agentExtension0.base(Agent) {
   constructor(ctx, env) {
     const prepared = cloudflareAgents.prepare({
       storage: ctx.storage,
-      className: "FlueHermesAgent",
-      agentName: "hermes",
+      className: "FlueControlPlanAgent",
+      agentName: "control-plan",
     });
     super(ctx, env);
     cloudflareAgents.attach(this, prepared);
@@ -545,8 +560,8 @@ const FlueHermesAgent = class FlueHermesAgent extends agentExtension0.base(Agent
     );
   }
 };
-const WrappedFlueHermesAgent = agentExtension0.wrap(FlueHermesAgent);
-export { WrappedFlueHermesAgent as FlueHermesAgent };
+const WrappedFlueControlPlanAgent = agentExtension0.wrap(FlueControlPlanAgent);
+export { WrappedFlueControlPlanAgent as FlueControlPlanAgent };
 
 export { FlueRegistry };
 

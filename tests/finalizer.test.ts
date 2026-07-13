@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   buildCommitCommand,
+  assertWorkspaceRepository,
   runDeterministicFinalize,
   type FinalizeCheckpoint,
   type FinalizeRequest,
@@ -13,8 +14,8 @@ describe("deterministic finalizer", () => {
     const command = buildCommitCommand(
       "/workspace/repo",
       "Preserve focus and selection during clipboard fallback",
-      "Hermes",
-      "hermes-bot@users.noreply.github.com",
+      "Control Plan",
+      "control-plan-bot@users.noreply.github.com",
     );
 
     expect(command).toContain("git add -A");
@@ -30,11 +31,31 @@ describe("deterministic finalizer", () => {
     const command = buildCommitCommand(
       "/workspace/repo",
       "fix user's clipboard",
-      "Hermes",
-      "hermes-bot@users.noreply.github.com",
+      "Control Plan",
+      "control-plan-bot@users.noreply.github.com",
     );
 
     expect(command).toContain("git commit -m 'fix user'\\''s clipboard'");
+  });
+
+  it("rejects a workspace whose origin does not match the task repository", async () => {
+    const exec = vi.fn(async () => ({
+      stdout: "https://github.com/other/repo.git\n",
+      exitCode: 0,
+    }));
+    await expect(
+      assertWorkspaceRepository({ exec }, "/workspace/repo", "owner/repo"),
+    ).rejects.toThrow("does not match task repository owner/repo");
+  });
+
+  it("normalizes a token-authenticated GitHub remote", async () => {
+    const exec = vi.fn(async () => ({
+      stdout: "https://x-access-token@github.com/owner/repo.git\n",
+      exitCode: 0,
+    }));
+    await expect(
+      assertWorkspaceRepository({ exec }, "/workspace/repo", "owner/repo"),
+    ).resolves.toBeUndefined();
   });
 });
 
@@ -63,6 +84,7 @@ describe("watchdog timeout", () => {
 });
 
 const request: FinalizeRequest = {
+  repository: "owner/repo",
   branch: "codex/test",
   commitMessage: "fix: clipboard fallback",
   prTitle: "Fix clipboard fallback",

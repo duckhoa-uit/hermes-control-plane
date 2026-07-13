@@ -14,7 +14,7 @@
 
 - File names: `kebab-case.ts`. Test files: `<name>.test.ts`.
 - Identifiers: `camelCase` for vars/functions, `PascalCase` for types.
-- Event types: FlueEvent from DS protocol (no custom HermesEvent).
+- Event types: FlueEvent from DS protocol (no custom Control Plan event type).
 - State machine states: `snake_case` (11 states).
 - Branches: `codex/<description>` for agent sessions, `chore/`, `fix/` otherwise.
 - Commits: Conventional Commits.
@@ -46,4 +46,5 @@
 This project uses Flue + Cloudflare Workers. No E2B, no OpenCode, no Bun
 Launcher, no VPS, no event-mapper, no SessionDurableObject.
 
-See `docs/FLUE-MIGRATION-SPEC.md` for migration history.
+See `docs/ARCHITECTURE.md` for the current runtime boundary and
+`docs/DEPLOYMENT.md` for the current release procedure.

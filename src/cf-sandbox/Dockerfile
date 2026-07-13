@@ -1,5 +1,5 @@
-# Hermes Control Plane — CF Sandbox container image
-FROM docker.io/cloudflare/sandbox:0.7.0
+# Control Plan — CF Sandbox container image
+FROM docker.io/cloudflare/sandbox:0.12.3
 
 # Default image: Ubuntu 22.04, Node.js 20, npm, Bun, curl, wget, git, jq, zip, unzip
 # git in this base uses libcurl-gnutls. We update CA certs and set conservative

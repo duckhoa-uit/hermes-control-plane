@@ -1,5 +1,5 @@
 // ============================================================
-// requireApproval — Hermes-compatible approval gate (WS hibernation)
+// requireApproval — Hermes Agent-compatible approval gate (WS hibernation)
 // ============================================================
 
 import { classifyCommand } from "./classifier";
@@ -105,7 +105,7 @@ export async function requireApproval(
   // Manual or smart-flagged: create pending approval.
   // ApprovalDO is the single source of truth for approval state — the replay
   // UI polls /sessions/:id/approvals/open instead of listening for stream
-  // data events (Flue's emitData()/data-* parts are removed in beta.8).
+  // data events; ApprovalDO remains the durable source of truth.
   const id = generateApprovalId();
 
   trackApproval({

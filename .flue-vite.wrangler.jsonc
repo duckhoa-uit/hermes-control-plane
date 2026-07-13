@@ -31,12 +31,20 @@
         "class_name": "ApprovalDurableObject"
       },
       {
+        "name": "CONTROL_PLAN_TASK_DO",
+        "class_name": "ControlPlanTaskDurableObject"
+      },
+      {
+        "name": "CONTROL_PLAN_ADMISSION_DO",
+        "class_name": "ControlPlanAdmissionDurableObject"
+      },
+      {
         "name": "FlueRegistry",
         "class_name": "FlueRegistry"
       },
       {
-        "name": "FLUE_HERMES_AGENT",
-        "class_name": "FlueHermesAgent"
+        "name": "FLUE_CONTROL_PLAN_AGENT",
+        "class_name": "FlueControlPlanAgent"
       },
       {
         "name": "FLUE_REGISTRY",
@@ -52,6 +60,23 @@
     {
       "tag": "v2",
       "new_sqlite_classes": ["ApprovalDurableObject"]
+    },
+    {
+      "tag": "v3-control-plan-agent-rename",
+      "renamed_classes": [
+        {
+          "from": "FlueHermesAgent",
+          "to": "FlueControlPlanAgent"
+        }
+      ]
+    },
+    {
+      "tag": "v4-control-plan-task-do",
+      "new_sqlite_classes": ["ControlPlanTaskDurableObject"]
+    },
+    {
+      "tag": "v5-control-plan-admission-do",
+      "new_sqlite_classes": ["ControlPlanAdmissionDurableObject"]
     }
   ],
   "ai": {
@@ -63,6 +88,7 @@
     "AUTOFIX_CAP_PER_PR": "3",
     "MAX_CONCURRENT_SESSIONS": "10",
     "AUTO_CREATE_PR": "1",
-    "WORKER_URL": "http://localhost:8799"
+    "SANDBOX_TRANSPORT": "rpc",
+    "APPROVAL_MODE": "manual"
   }
 }

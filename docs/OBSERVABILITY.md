@@ -1,178 +1,99 @@
 # Observability runbook
 
-How to see what the control plane is doing in production, and what to do
-when it goes wrong. Aimed at an on-call engineer (or an autonomous
-agent) responding to a page, not at a developer reading docs cold.
+This runbook covers the current Control Plan runtime: one Cloudflare Worker,
+Flue Durable Objects, Cloudflare Sandbox containers, the Hermes MCP boundary,
+and the GitHub webhook acknowledgement path. There is no VPS launcher or E2B
+runner in the active architecture.
 
-For the structured logger + redaction + request-id contract, see
+For the structured logger and redaction contract, see
 [`CONTRIBUTING.md` §Observability](../CONTRIBUTING.md#observability). For the
-HTTP API + event-type vocabulary referenced below, see
-[`docs/api-reference.md`](api-reference.md) and
-[`docs/events-reference.md`](events-reference.md).
+route contract, see [`api-reference.md`](api-reference.md).
 
----
+## 1. Dashboards and signals
 
-## 1. Dashboards
-
-| Service | URL | What it shows |
+| Service | Where | What it shows |
 |---|---|---|
-| Cloudflare Workers | https://dash.cloudflare.com/?to=workers — pick `hermes-control-plane` → **Metrics** | Request rate, CPU time p50/p99, error rate (4xx + 5xx), bytes egressed. The default panels are sufficient for the "is the Worker up" question. |
-| Cloudflare Worker Logs (live) | https://dash.cloudflare.com/?to=workers — pick the Worker → **Logs** → **Live** | Tail of NDJSON log lines from `src/core/logger.ts`. Filter by `service`, `requestId`, `sessionId`. |
-| Cloudflare Worker Logpush | https://dash.cloudflare.com/?to=workers → **Logs** → **Logpush** | Optional sink to S3 / R2 / GCS / Datadog / Splunk / New Relic / Sumo for long-term retention. Today we sample 10 % (`head_sampling_rate: 0.1` in `wrangler.jsonc`); bump that to 1.0 in production if you need full-fidelity tracing. |
-| Durable Object storage usage | Same Worker → **Settings** → **Durable Objects** | Per-class storage bytes; spot a runaway session that's pinning event log rows. |
-| Launcher VPS — systemd | `ssh launcher && journalctl -u hermes-launcher -f -o cat \| jq` | NDJSON from the Bun sidecar. Same `service`/`requestId` fields as the Worker, so an `X-Request-Id` from a Worker log line can be grepped here. |
-| GitHub Actions | https://github.com/duckhoa-uit/hermes-control-plane/actions | Build/deploy history, deploy markers, the auto-doc-refresh + flag-audit cron runs. |
-| GitHub webhook deliveries | Repo → **Settings** → **Webhooks** → click the row → **Recent Deliveries** | When auto-amend doesn't fire, this is the first place to look. Each delivery shows the `X-GitHub-Event`, `X-Hub-Signature-256`, and the Worker's response body. |
-
-If you're using an external sink (Datadog / Axiom / Better Stack), add
-its URL into this table in the same PR that wires up the Logpush
-destination — agents read this table first.
-
----
+| Cloudflare Worker | Cloudflare dashboard → Workers → `hermes-control-plane` → Metrics | Request rate, CPU time, error rate, and egress. |
+| Worker logs | Cloudflare dashboard → Worker → Logs → Live | Structured logs from `src/core/logger.ts`; filter by `service`, `requestId`, `sessionId`, and task ID. |
+| Durable Objects | Cloudflare dashboard → Worker → Settings → Durable Objects | Storage and activity for `FlueControlPlanAgent`, `ControlPlanTaskDurableObject`, `ApprovalDurableObject`, and `Sandbox`. |
+| Hermes MCP calls | Worker logs for `/mcp` plus Hermes MCP client logs | Authentication failures, tool latency, dispatch errors, and task IDs. |
+| GitHub Actions | Repository Actions | Typecheck, tests, Flue build, and deployment history. |
+| GitHub webhook deliveries | Repository Settings → Webhooks → Recent Deliveries | HMAC-verified acknowledgement. The current handler acknowledges events only; it does not start a coding task. |
 
 ## 2. Alerts
 
-The repo ships a single configurable notification channel — Discord —
-driven by the deploy workflow + the alert-rules file:
+At minimum, alert on:
 
-| Channel | Secret | Used by |
-|---|---|---|
-| Discord webhook | `DISCORD_DEPLOY_WEBHOOK` | `.github/workflows/deploy-worker.yml` posts on deploy start / success / failure. Failures include `@here` so channel members get a mobile push. |
+- sustained Worker 5xx responses;
+- repeated `/mcp` 401 responses or dispatch failures;
+- task records stuck in `dispatched` beyond the expected task duration;
+- Sandbox/container startup or command failures;
+- failed deployment checks.
 
-The actual alert thresholds live in
-[`infra/observability/alerts.yaml`](../infra/observability/alerts.yaml) so
-they're version-controlled, code-reviewable, and inspectable by an agent
-that doesn't have console access. The file declares what should page
-and at what threshold; an operator wires it into Cloudflare
-Notifications (workers-rule sources) with the same Discord webhook URL.
-
-### Configuring Discord
-
-1. Create a Discord server (or use an existing one) and a channel —
-   `#hermes-deploys` is the convention.
-2. Channel settings → **Integrations** → **Webhooks** → **New Webhook**.
-   Rename to "hermes-deploys", optionally set an avatar, copy the
-   webhook URL.
-3. `gh secret set DISCORD_DEPLOY_WEBHOOK --body 'https://discord.com/api/webhooks/...'`.
-4. Trigger a `workflow_dispatch` run of `deploy-worker.yml` to confirm.
-5. Turn on **mobile push notifications** for the channel so failure
-   alerts wake you up (Discord settings → Notifications →
-   `#hermes-deploys` → All Messages, or Mentions only with `@here`).
-
-For Cloudflare alert rules (Notifications → Rules), use the same
-webhook URL as the destination.
-
-When the secret is unset, the deploy workflow still runs — the
-notification steps no-op via `if: env.X != ''` guards. Useful for
-forks and local PR testing.
-
-### Why Discord (and not Slack / PagerDuty)?
-
-For a solo or small-team project, Discord's webhook gives the same
-on-call coverage as PagerDuty + Slack combined: free, mobile push,
-`@here` mention for critical, message history, no per-seat cost. If
-the project later grows past one on-call rotation, replace the
-Discord step with PagerDuty Events API V2 — the alerts.yaml schema
-already supports the channel swap.
-
----
+Keep the alert payloads correlated with `requestId`, `sessionId`, and the
+Control Plan task ID so an operator can follow a task across MCP, Flue, and
+Sandbox logs.
 
 ## 3. Runbooks
 
-### Deploy failed
+### Worker error rate is high
 
-1. Open the GH Actions run linked in the Discord payload.
-2. Look at the failing step: `bunx wrangler deploy`, `bun run lint`,
-   `bun run typecheck`, or `bun run bundle:size`. Each fails with a
-   distinct payload — typecheck dumps the `tsc` errors inline.
-3. If the cause is a runtime regression caught by `wrangler deploy`
-   (e.g. an invalid binding), revert with
-   `git revert -m 1 <merge-sha> && git push`. The next push triggers
-   a redeploy.
-4. If the cause is `wrangler` rate-limiting or a transient CF outage,
-   re-run the job (`Actions → Re-run failed jobs`). Don't touch code.
-5. After resolution: add a postmortem note to `docs/ROADMAP.md` if the
-   failure mode is novel.
+1. Open Worker Logs → Live and filter `level:error`.
+2. Follow the `requestId` and task/session ID through the failing request.
+3. For GitHub `401`/`403`, verify `GITHUB_READ_TOKEN`,
+   `GITHUB_WRITE_TOKEN`, and the configured repository bindings.
+4. For `/mcp` `401`, verify the Hermes `Authorization` header matches
+   `CONTROL_PLAN_MCP_TOKEN`; do not reuse the GitHub webhook secret.
+5. For a deployment or binding error, rerun the CI deploy checks after fixing
+   configuration rather than changing task data in the Durable Object.
 
-### Worker error rate > 5 % over 5 min
+### A task is stuck or Sandbox commands fail
 
-1. Open the **Logs → Live** view in Cloudflare; filter by `level: error`.
-2. The `requestId` on each line gives you a stable correlation key.
-   Grep the launcher's `journalctl` for the same id to follow the
-   request across the boundary.
-3. Common causes by error class:
-   - `request.failed` with `error: HTTP 401|503` from GitHub → check
-     the PAT secret has not been rotated. Rotate it via the launcher's
-     systemd unit env (`infra/launcher/`) and `wrangler secret put`.
-   - `request.failed` with `error: HTTP 5xx` from E2B → check
-     https://status.e2b.dev. The launcher's circuit breaker
-     (`src/core/resilience.ts`) will already be failing fast — wait for
-     it to half-open.
-   - `request.failed` with `error: webhook unauthorized` → GitHub
-     webhook secret mismatch (likely from a stale `GITHUB_WEBHOOK_SECRET`
-     vs the repo's webhook config).
+1. Call `get_coding_task` with the task ID and record its `state`,
+   `streamOffset`, and replay URL.
+2. Open the replay URL and inspect the Flue event stream around the first
+   failed command or approval request.
+3. Check the `Sandbox` Durable Object and container logs for startup, RPC, or
+   command timeout errors. The current runtime uses RPC transport and disables
+   the default Sandbox session.
+4. If the task is still running, use `respond_coding_approval` for a real
+   pending ApprovalDO record. `cancel_coding_task` records a request but does
+   requests the Flue abort endpoint and independently blocks publication for the
+   task, so a cancellation race cannot create a GitHub write.
 
-### Launcher down
+### Hermes cannot call the MCP server
 
-1. SSH to the VPS; `systemctl status hermes-launcher`.
-2. `journalctl -u hermes-launcher -n 200 -o cat | jq` for the last
-   batch of NDJSON.
-3. Restart with `systemctl restart hermes-launcher`. The DO will
-   re-resume any paused sessions on the next prompt.
-4. If `systemctl status` says "active (running)" but the Worker still
-   gets connection-refused on `LAUNCHER_URL`, check the Cloudflare
-   Tunnel — `cloudflared tunnel list` on the VPS.
+1. Verify the public HTTPS URL ends in `/mcp` and accepts both
+   `application/json` and `text/event-stream` in the `Accept` header.
+2. Verify `CONTROL_PLAN_MCP_TOKEN` is present on the Worker and configured in
+   Hermes as a secret header.
+3. Confirm the repository and base branch are present in the Control Plan
+   allowlists.
+4. Check that the Hermes tool filter includes the four tools documented in
+   [`HERMES-AGENT-INTEGRATION.md`](HERMES-AGENT-INTEGRATION.md).
 
-### Sandbox sweeper killing too aggressively
+### GitHub webhook is not starting work
 
-1. Symptom: PRs failing intermittently because the sandbox vanished
-   mid-publish.
-2. Read the launcher logs for `e2b.list` retries + breaker trips. A
-   stale Worker that's returning 404 on `/sessions/:id` causes the
-   sweeper to kill anything tied to that id — verify the Worker is
-   reachable.
-3. Mitigation: set `FF_SWEEPER_DISABLED=1` on the launcher (kill
-   switch wired through `src/core/feature-flags.ts`) and restart.
-   Investigate while the killer is off.
+That is expected in the current Hermes-driven mode. The webhook verifies and
+acknowledges the event only. Hermes must receive or otherwise decide on the
+coding request and call `spawn_coding_task`; do not add a direct dispatch path
+without updating the architecture and security contract.
 
-### Auto-amend session not spawning
+### Deployment failed
 
-1. Open **Repo Settings → Webhooks → hermes-control-plane** → click
-   the most recent `pull_request_review` delivery.
-2. Verify the response was `200`. If `401` → HMAC mismatch (see
-   §"Worker error rate" #c above). If `2xx` but no session appeared,
-   check the Worker logs for `[webhook]` lines — a `skip` decision
-   (e.g. `cap_exceeded`, `single_flight_locked`) tells you what
-   blocked it.
-3. Cap raised by `AUTOFIX_CAP_PER_PR` (default 3 amend sessions per
-   PR). Bump in `wrangler.jsonc` `vars` if necessary.
+1. Run `bun run typecheck`, `bun run test`, `bun run lint`, and
+   `npx flue build --target cloudflare` locally.
+2. Run `npx wrangler deploy --dry-run` to validate Worker bindings and the
+   Sandbox image without publishing traffic.
+3. Inspect the failed CI step and rerun only after correcting the source or
+   configuration issue.
 
----
+## 4. Source of truth
 
-## 4. Where the signals come from (source of truth)
-
-- HTTP-level logs/metrics → `src/core/logger.ts` + Worker entrypoint at
-  `src/worker/index.ts:fetch`.
-- Session-state-machine events → `src/core/state-machine.ts` (allowed
-  transitions) + `src/core/event-log.ts` (per-event storage). Vocabulary
-  in `docs/events-reference.md`.
-- External call failures → wrapped via `src/core/resilience.ts`
-  (circuit breaker + retry). Breaker trips emit `breaker.open` log
-  lines tagged with `name`.
-- Deploy markers → `.github/workflows/deploy-worker.yml`.
-- Webhook deliveries → `src/worker/github-webhook.ts` + GitHub UI.
-
----
-
-## 5. Adding a new alert
-
-1. Append the rule to
-   [`infra/observability/alerts.yaml`](../infra/observability/alerts.yaml).
-   Include the metric / log selector, the threshold, and a one-line
-   runbook pointer that links back to this file.
-2. Mirror it into Cloudflare Notifications or PagerDuty in the same PR.
-3. Open a PR; the lint workflow has no schema for alerts.yaml today —
-   if it tightens later, document the new gate here.
-
-Keep alerts boring: if it doesn't have a runbook entry above, it should
-not page. Pages without runbooks turn into noise.
+- HTTP routes and MCP boundary: `src/app.ts`, `src/mcp/control-plan.ts`.
+- Task persistence: `src/do/coding-task-do.ts`.
+- Agent state reconciliation: `src/mcp/task-utils.ts` and the Flue event stream.
+- Approval persistence: `src/do/approval-do.ts` and `src/approval/index.ts`.
+- GitHub writes: `src/agent/github-api-push.ts`, `src/agent/pr-lifecycle.ts`,
+  and the signed proxy routes in `src/app.ts`.
+- Structured logs and redaction: `src/core/logger.ts`.

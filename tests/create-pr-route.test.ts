@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { signToken } from "../src/core/auth";
+import { signScopedToken } from "../src/core/auth";
 
 const octokitState = vi.hoisted(() => ({
   list: vi.fn(),
@@ -18,6 +18,28 @@ vi.mock("@octokit/rest", () => ({
 }));
 
 describe("create-pr proxy", () => {
+  const taskId = `task_${"a".repeat(32)}`;
+  const sessionId = `control-plan-${taskId}`;
+
+  function taskBinding() {
+    const task = {
+      id: taskId,
+      sessionId,
+      repository: "owner/repo",
+      baseBranch: "main",
+      branch: "codex/test",
+      task: "test",
+      state: "dispatched",
+      createdAt: 0,
+      updatedAt: 0,
+      replayUrl: "",
+    };
+    return {
+      idFromName: () => "task-do",
+      get: () => ({ get: async () => task }),
+    };
+  }
+
   afterEach(() => {
     octokitState.list.mockReset();
     octokitState.create.mockReset();
@@ -26,7 +48,6 @@ describe("create-pr proxy", () => {
   it("returns an existing open PR for the same branch/base instead of creating a duplicate", async () => {
     const { default: app } = await import("../src/app");
     const secret = "test-secret";
-    const sessionId = "test-session";
     octokitState.list.mockResolvedValueOnce({
       data: [{ html_url: "https://github.com/o/r/pull/7", number: 7 }],
     });
@@ -35,8 +56,8 @@ describe("create-pr proxy", () => {
       new Request("http://localhost/proxy/create-pr", {
         method: "POST",
         headers: {
-          "X-Hermes-Session-Id": sessionId,
-          Authorization: `Bearer ${await signToken(secret, sessionId)}`,
+          "X-Control-Plan-Session-Id": sessionId,
+          Authorization: `Bearer ${await signScopedToken(secret, "proxy", sessionId, 60_000)}`,
         },
         body: JSON.stringify({
           title: "Test PR",
@@ -47,10 +68,10 @@ describe("create-pr proxy", () => {
       }),
       {
         GITHUB_WRITE_TOKEN: "token",
-        GITHUB_OWNER: "owner",
-        GITHUB_REPO: "repo",
         GITHUB_WEBHOOK_SECRET: secret,
-      } as Env,
+        CONTROL_PLAN_PROXY_SECRET: secret,
+        CONTROL_PLAN_TASK_DO: taskBinding(),
+      } as unknown as Env,
     );
 
     expect(res.status).toBe(200);
@@ -66,7 +87,6 @@ describe("create-pr proxy", () => {
   it("creates a PR when no existing open PR matches", async () => {
     const { default: app } = await import("../src/app");
     const secret = "test-secret";
-    const sessionId = "test-session";
     octokitState.list.mockResolvedValueOnce({ data: [] });
     octokitState.create.mockResolvedValueOnce({
       data: { html_url: "https://github.com/o/r/pull/8", number: 8 },
@@ -76,8 +96,8 @@ describe("create-pr proxy", () => {
       new Request("http://localhost/proxy/create-pr", {
         method: "POST",
         headers: {
-          "X-Hermes-Session-Id": sessionId,
-          Authorization: `Bearer ${await signToken(secret, sessionId)}`,
+          "X-Control-Plan-Session-Id": sessionId,
+          Authorization: `Bearer ${await signScopedToken(secret, "proxy", sessionId, 60_000)}`,
         },
         body: JSON.stringify({
           title: "Test PR",
@@ -88,10 +108,10 @@ describe("create-pr proxy", () => {
       }),
       {
         GITHUB_WRITE_TOKEN: "token",
-        GITHUB_OWNER: "owner",
-        GITHUB_REPO: "repo",
         GITHUB_WEBHOOK_SECRET: secret,
-      } as Env,
+        CONTROL_PLAN_PROXY_SECRET: secret,
+        CONTROL_PLAN_TASK_DO: taskBinding(),
+      } as unknown as Env,
     );
 
     expect(res.status).toBe(200);
@@ -115,6 +135,26 @@ describe("create-pr proxy", () => {
     );
 
     expect(res.status).toBe(401);
+    expect(octokitState.list).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when a signed session is not bound to a task", async () => {
+    const { default: app } = await import("../src/app");
+    const secret = "test-secret";
+    const unboundSession = `control-plan-task_${"b".repeat(32)}`;
+    const res = await app.fetch(
+      new Request("http://localhost/proxy/create-pr", {
+        method: "POST",
+        headers: {
+          "X-Control-Plan-Session-Id": unboundSession,
+          Authorization: `Bearer ${await signScopedToken(secret, "proxy", unboundSession, 60_000)}`,
+        },
+        body: JSON.stringify({ title: "Test PR", branch: "codex/test" }),
+      }),
+      { GITHUB_WEBHOOK_SECRET: secret, CONTROL_PLAN_PROXY_SECRET: secret } as unknown as Env,
+    );
+
+    expect(res.status).toBe(409);
     expect(octokitState.list).not.toHaveBeenCalled();
   });
 });

@@ -1,7 +1,7 @@
 // ============================================================
-// State Bridge: Hermes state machine ↔ Flue agent lifecycle
+// State Bridge: Control Plan state machine ↔ Flue agent lifecycle
 // ============================================================
-// Flue's Pi lifecycle maps directly to Hermes SessionStatus:
+// Flue's Pi lifecycle maps directly to Control Plan SessionStatus:
 //
 //   created    → created
 //   submitted  → provisioning
@@ -50,7 +50,7 @@ export function advanceStatus(current: SessionStatus, next: SessionStatus): Sess
 }
 
 /**
- * Apply a lifecycle event and compute resulting Hermes status.
+ * Apply a lifecycle event and compute resulting Control Plan status.
  * Flue's Pi lifecycle is simpler than the old architecture:
  * - provisioning → running is direct (no runner_connecting/ready)
  * - Follow-up submission while running stays running

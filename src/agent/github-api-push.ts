@@ -14,12 +14,17 @@ export type PushManifestChange =
 
 export type PushManifest = {
   branch: string;
+  baseBranch?: string;
   baseSha: string;
   baseTreeSha: string;
   commitMessage: string;
   changes: PushManifestChange[];
   force?: boolean;
 };
+
+export const MAX_PUSH_CHANGES = 1_000;
+export const MAX_PUSH_FILE_BYTES = 4 * 1024 * 1024;
+export const MAX_PUSH_MANIFEST_BYTES = 16 * 1024 * 1024;
 
 type GitApiClient = {
   rest: {
@@ -81,14 +86,29 @@ export function isPushManifest(value: unknown): value is PushManifest {
   if (!isNonEmptyString(manifest.branch)) return false;
   if (!isSha(manifest.baseSha) || !isSha(manifest.baseTreeSha)) return false;
   if (!isNonEmptyString(manifest.commitMessage)) return false;
-  if (!Array.isArray(manifest.changes) || manifest.changes.length === 0) return false;
+  if (
+    !Array.isArray(manifest.changes) ||
+    manifest.changes.length === 0 ||
+    manifest.changes.length > MAX_PUSH_CHANGES
+  )
+    return false;
+  if (JSON.stringify(manifest).length > MAX_PUSH_MANIFEST_BYTES) return false;
   return manifest.changes.every((change) => {
     if (!change || typeof change !== "object") return false;
-    if (!isNonEmptyString(change.path) || change.path.startsWith("/")) return false;
+    if (
+      !isNonEmptyString(change.path) ||
+      change.path.startsWith("/") ||
+      change.path.includes("\\") ||
+      change.path.split("/").includes("..")
+    )
+      return false;
     if (change.action === "delete") return true;
     if (change.action !== "upsert") return false;
     if (!["100644", "100755", "120000"].includes(change.mode)) return false;
-    return typeof change.contentBase64 === "string";
+    return (
+      typeof change.contentBase64 === "string" &&
+      Math.ceil((change.contentBase64.length * 3) / 4) <= MAX_PUSH_FILE_BYTES
+    );
   });
 }
 
@@ -106,6 +126,19 @@ export async function pushManifestWithGitHubApi(
 }> {
   const ref = `heads/${manifest.branch}`;
   const branchHeadSha = await getRefSha(octokit, owner, repo, ref);
+  const baseBranch = manifest.baseBranch || "main";
+  const baseRefSha = await getRefSha(octokit, owner, repo, `heads/${baseBranch}`);
+  if (!baseRefSha || baseRefSha !== manifest.baseSha) {
+    throw new Error(`base branch ${baseBranch} changed or does not match the approved snapshot`);
+  }
+  const baseCommit = await octokit.rest.git.getCommit({
+    owner,
+    repo,
+    commit_sha: baseRefSha,
+  });
+  if (baseCommit.data.tree.sha !== manifest.baseTreeSha) {
+    throw new Error(`base tree does not match the approved snapshot for ${baseBranch}`);
+  }
 
   const tree = [];
   for (const change of manifest.changes) {

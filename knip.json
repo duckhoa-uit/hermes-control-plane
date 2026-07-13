@@ -1,7 +1,7 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": [
-    "src/agents/hermes.ts",
+    "src/agents/control-plan.ts",
     "src/app.ts",
     "src/cloudflare.ts",
     "src/channels/github.ts",

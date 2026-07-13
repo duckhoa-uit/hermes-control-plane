@@ -1,5 +1,5 @@
 // ============================================================
-// ApprovalDurableObject — Hermes-compatible approval queue
+// ApprovalDurableObject — Hermes Agent-compatible approval queue
 // ============================================================
 // SQLite-backed approval queue with Hibernatable WebSockets for
 // long-wait notification. Tools open a WS to the DO and the DO

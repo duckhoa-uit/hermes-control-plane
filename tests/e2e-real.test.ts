@@ -43,26 +43,19 @@ if (RUN_E2E) {
       expect(body.error).toBe("unauthorized");
     });
 
-    it("4. Agent dispatch via /agents/hermes/:sessionId", async () => {
-      const res = await fetch(`${BASE}/agents/hermes/${TEST_SESSION}`, {
+    it("4. Raw Flue agent dispatch is not public", async () => {
+      const res = await fetch(`${BASE}/agents/control-plan/${TEST_SESSION}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: "Read README.md of duckhoa-uit/lawn" }),
       });
-      expect([200, 202]).toContain(res.status);
-      const body = (await res.json()) as any;
-      if (res.status === 202) expect(body.status).toBe("accepted");
+      expect(res.status).toBe(401);
     }, 30000);
 
-    it("5. Event stream via GET /agents/hermes/:sessionId", async () => {
+    it("5. Raw Flue event stream is not public", async () => {
       await new Promise((r) => setTimeout(r, 3000));
-      const res = await fetch(`${BASE}/agents/hermes/${TEST_SESSION}`);
-      expect([200, 404]).toContain(res.status);
-      if (res.status === 200) {
-        const body = (await res.json()) as any;
-        expect(body.events).toBeDefined();
-        expect(Array.isArray(body.events)).toBe(true);
-      }
+      const res = await fetch(`${BASE}/agents/control-plan/${TEST_SESSION}`);
+      expect(res.status).toBe(401);
     }, 15000);
   });
 } else {

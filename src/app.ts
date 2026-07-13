@@ -1,5 +1,5 @@
 // ============================================================
-// Hermes Control Plane — Hono app (Flue user app)
+// Control Plan — Hono app (Flue user app)
 // ============================================================
 //
 // Routes:
@@ -11,18 +11,26 @@
 //   GET  /approvals/:id              → pending approval payload
 //   POST /approvals/:id              → approve/deny decision
 //   GET  /sessions/:id/approvals/open → list open approvals
+//   ALL  /mcp                         → Hermes Agent remote MCP server
 //
 // Flue auto-mounts (via `flue()` + src/channels/github.ts):
 //   POST /channels/github/webhook    → GitHub webhook (HMAC verified)
-//   POST /agents/hermes/:id          → Agent dispatch
-//   GET  /agents/hermes/:id          → Agent event stream
+//   POST /agents/control-plan/:id    → Agent dispatch
+//   GET  /agents/control-plan/:id    → Agent event stream
 
 import { flue } from "@flue/runtime/routing";
 import { Hono } from "hono";
 import { Octokit } from "@octokit/rest";
-import { verifyToken, signToken } from "./core/auth";
-import { isPushManifest, pushManifestWithGitHubApi } from "./agent/github-api-push";
+import { signScopedToken, verifyScopedToken } from "./core/auth";
+import {
+  isPushManifest,
+  MAX_PUSH_MANIFEST_BYTES,
+  pushManifestWithGitHubApi,
+} from "./agent/github-api-push";
 import { installModelProgressWatchdog } from "./agent/runtime-watchdog";
+import { createControlPlanMcpHandler, isAuthorizedMcpRequest } from "./mcp/control-plan";
+import type { CodingTaskRecord } from "./do/coding-task-do";
+import { repositoryParts, taskIdFromSessionId } from "./mcp/task-utils";
 
 type AppEnv = { Bindings: Env };
 const app = new Hono<AppEnv>();
@@ -33,7 +41,37 @@ installModelProgressWatchdog();
 
 app.get("/health", (c) => c.json({ status: "ok", ts: Date.now() }));
 
+// ─── Hermes Agent MCP ─────────────────────────────────────────────────────
+
+app.all("/mcp", async (c) => {
+  if (!isAuthorizedMcpRequest(c.req.raw, c.env)) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const handler = await createControlPlanMcpHandler({
+    env: c.env,
+    origin: new URL(c.req.url).origin,
+    fetch: async (request) => app.fetch(request, c.env, c.executionCtx),
+  });
+  return handler(c.req.raw, c.env, c.executionCtx as never);
+});
+
 // ─── Flue routes ───────────────────────────────────────────────────────────
+
+// The coding agent is an internal implementation detail. MCP dispatch and the
+// replay stream proxy carry a short-lived internal capability; internet callers
+// must never prompt or inspect the raw Flue route directly.
+app.use("/agents/*", async (c, next) => {
+  const pathParts = new URL(c.req.url).pathname.split("/");
+  const sessionId = pathParts[3] || "";
+  const authorization = c.req.header("Authorization") || "";
+  const token = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
+  if (
+    !(await verifyScopedToken(c.env.CONTROL_PLAN_INTERNAL_SECRET || "", "agent", sessionId, token))
+  ) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  await next();
+});
 
 app.route("/", flue());
 
@@ -43,15 +81,38 @@ app.post("/proxy/git-push", async (c) => {
   if (!(await isAuthorizedProxyRequest(c.req.raw, c.env))) {
     return c.json({ error: "unauthorized" }, 401);
   }
+  if (Number(c.req.header("Content-Length") || 0) > MAX_PUSH_MANIFEST_BYTES) {
+    return c.json({ error: "push manifest too large" }, 413);
+  }
   const body = await c.req.json().catch(() => ({}));
   if (!isPushManifest(body)) return c.json({ error: "valid push manifest required" }, 400);
+  const sessionId = proxySessionId(c.req.raw);
+  const task = await taskForProxy(c.env, sessionId);
+  if (!task) return c.json({ error: "session is not bound to a coding task" }, 409);
+  if (
+    task.state === "cancellation_requested" ||
+    task.state === "completed" ||
+    task.state === "failed"
+  ) {
+    return c.json({ error: `coding task is ${task.state}` }, 409);
+  }
+  if (body.branch !== task.branch || (body.baseBranch ?? task.baseBranch) !== task.baseBranch) {
+    return c.json(
+      { error: `branch/baseBranch must be ${task.branch}/${task.baseBranch} for this coding task` },
+      409,
+    );
+  }
   const token = c.env.GITHUB_WRITE_TOKEN;
-  const owner = c.env.GITHUB_OWNER;
-  const repo = c.env.GITHUB_REPO;
+  const target = repositoryParts(task.repository);
+  const owner = target?.owner;
+  const repo = target?.repo;
   if (!token || !owner || !repo) return c.json({ error: "GitHub not configured" }, 500);
   try {
     const octokit = new Octokit({ auth: token });
-    const result = await pushManifestWithGitHubApi(octokit, owner, repo, body);
+    const result = await pushManifestWithGitHubApi(octokit, owner, repo, {
+      ...body,
+      baseBranch: task.baseBranch,
+    });
     return c.json({ success: true, ...result });
   } catch (err) {
     return c.json({ success: false, error: String(err) }, 502);
@@ -67,9 +128,26 @@ app.post("/proxy/create-pr", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const { title, body: prBody, branch, baseBranch } = body as Record<string, unknown>;
   if (!title || !branch) return c.json({ error: "title and branch required" }, 400);
+  const sessionId = proxySessionId(c.req.raw);
+  const task = await taskForProxy(c.env, sessionId);
+  if (!task) return c.json({ error: "session is not bound to a coding task" }, 409);
+  if (
+    task.state === "cancellation_requested" ||
+    task.state === "completed" ||
+    task.state === "failed"
+  ) {
+    return c.json({ error: `coding task is ${task.state}` }, 409);
+  }
+  if (branch !== task.branch || (baseBranch ?? "main") !== task.baseBranch) {
+    return c.json(
+      { error: `branch/baseBranch must be ${task.branch}/${task.baseBranch} for this coding task` },
+      409,
+    );
+  }
   const token = c.env.GITHUB_WRITE_TOKEN;
-  const owner = c.env.GITHUB_OWNER;
-  const repo = c.env.GITHUB_REPO;
+  const target = repositoryParts(task.repository);
+  const owner = target?.owner;
+  const repo = target?.repo;
   if (!token || !owner || !repo) return c.json({ error: "GitHub not configured" }, 500);
   try {
     const octokit = new Octokit({ auth: token });
@@ -114,9 +192,9 @@ app.post("/proxy/create-pr", async (c) => {
 app.get("/replay/:id", async (c) => {
   const sessionId = c.req.param("id");
   const token = c.req.query("token") || "";
-  const secret = c.env.GITHUB_WEBHOOK_SECRET;
+  const secret = c.env.CONTROL_PLAN_REPLAY_SECRET || "";
 
-  const valid = await verifyToken(secret, sessionId, token);
+  const valid = await verifyScopedToken(secret, "replay", sessionId, token);
   if (!valid) {
     return c.text("Unauthorized: invalid or missing token", 401);
   }
@@ -126,33 +204,40 @@ app.get("/replay/:id", async (c) => {
 
 // ─── Session Stream proxy ──────────────────────────────────────────────────
 // FLUE-STREAM-SEAM: this route + the long-poll client in REPLAY_HTML are the
-// ONLY places coupled to Flue's stream wire format (?offset=&live= +
-// Stream-Next-Offset). When upgrading to beta.10, port this seam to
-// history()/observe() and keep the browser-facing contract unchanged.
-// See docs/FLUE-BETA10-MIGRATION.md.
+// ONLY places coupled to Flue's current stream wire format (?offset=&live= +
+// Stream-Next-Offset). Keep the browser-facing replay contract stable when
+// the pinned Flue stream API changes. See docs/ARCHITECTURE.md.
 //
 // Auth-gated SSE proxy that forwards to Flue's agent stream.
-// The replay HTML connects here instead of directly to /agents/hermes/:id
+// The replay HTML connects here instead of directly to /agents/control-plan/:id
 // so we can enforce token access. Uses raw ReadableStream to avoid buffering.
 
 app.get("/sessions/:id/stream", async (c) => {
   const sessionId = c.req.param("id");
   const token = c.req.query("token") || "";
-  const secret = c.env.GITHUB_WEBHOOK_SECRET;
+  const secret = c.env.CONTROL_PLAN_REPLAY_SECRET || "";
 
-  const valid = await verifyToken(secret, sessionId, token);
+  const valid = await verifyScopedToken(secret, "replay", sessionId, token);
   if (!valid) return c.text("Unauthorized", 401);
 
   const offset = c.req.query("offset") || "-1";
   const live = c.req.query("live") || "sse";
   const tail = c.req.query("tail") || "";
 
-  let fluePath = `/agents/hermes/${sessionId}?offset=${encodeURIComponent(offset)}&live=${encodeURIComponent(live)}`;
+  let fluePath = `/agents/control-plan/${sessionId}?view=updates&offset=${encodeURIComponent(offset)}&live=${encodeURIComponent(live)}`;
   if (tail) fluePath += `&tail=${encodeURIComponent(tail)}`;
 
   // We use a raw fetch to the Flue route so Hono doesn't buffer SSE
   const req = new Request(new URL(fluePath, c.req.url), {
-    headers: { Accept: "text/event-stream, application/json" },
+    headers: {
+      Accept: "text/event-stream, application/json",
+      Authorization: `Bearer ${await signScopedToken(
+        c.env.CONTROL_PLAN_INTERNAL_SECRET || "",
+        "agent",
+        sessionId,
+        5 * 60 * 1000,
+      )}`,
+    },
   });
 
   try {
@@ -174,13 +259,21 @@ app.get("/approvals/:id", async (c) => {
   const stub = c.env.APPROVAL_DO.get(doId);
   const resp = await stub.fetch(new URL(`/get?id=${encodeURIComponent(id)}`, c.req.url));
   if (!resp.ok) return c.json({ error: "not found" }, 404);
-  return c.json(await resp.json());
+  const approval = (await resp.json()) as { session_id?: string };
+  if (!(await verifyReplayCapability(c, approval.session_id))) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  return c.json(approval);
 });
 
 app.post("/approvals/:id", async (c) => {
   const id = c.req.param("id");
   const body = await c.req.json().catch(() => ({}));
-  const { decision, actor } = body as { decision?: string; actor?: string };
+  const { decision, actor, token } = body as {
+    decision?: string;
+    actor?: string;
+    token?: string;
+  };
 
   if (!decision || !["once", "session", "always", "deny", "timeout"].includes(decision)) {
     return c.json({ error: "decision must be once|session|always|deny|timeout" }, 400);
@@ -188,6 +281,12 @@ app.post("/approvals/:id", async (c) => {
 
   const doId = c.env.APPROVAL_DO.idFromName("approvals");
   const stub = c.env.APPROVAL_DO.get(doId);
+  const existing = await stub.fetch(new URL(`/get?id=${encodeURIComponent(id)}`, c.req.url));
+  if (!existing.ok) return c.json({ error: "not found" }, 404);
+  const approval = (await existing.json()) as { session_id?: string };
+  if (!(await verifyReplayCapability(c, approval.session_id, token))) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
   const resp = await stub.fetch(new URL("/resolve", c.req.url), {
     method: "POST",
     body: JSON.stringify({ id, decision, actor: actor || "web" }),
@@ -198,9 +297,9 @@ app.post("/approvals/:id", async (c) => {
 app.get("/sessions/:id/approvals/open", async (c) => {
   const sessionId = c.req.param("id");
   const token = c.req.query("token") || "";
-  const secret = c.env.GITHUB_WEBHOOK_SECRET;
+  const secret = c.env.CONTROL_PLAN_REPLAY_SECRET || "";
 
-  if (!(await verifyToken(secret, sessionId, token))) {
+  if (!(await verifyScopedToken(secret, "replay", sessionId, token))) {
     return c.json({ error: "unauthorized" }, 401);
   }
 
@@ -215,17 +314,57 @@ app.get("/sessions/:id/approvals/open", async (c) => {
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 export async function generateReplayUrl(env: Env, sessionId: string): Promise<string> {
-  const secret = env.GITHUB_WEBHOOK_SECRET;
-  const token = await signToken(secret, sessionId);
+  const secret = env.CONTROL_PLAN_REPLAY_SECRET || "";
+  const token = await signScopedToken(secret, "replay", sessionId, 7 * 24 * 60 * 60 * 1000);
   const base = env.WORKER_URL || "";
   return `${base}/replay/${sessionId}?token=${token}`;
 }
 
 async function isAuthorizedProxyRequest(request: Request, env: Env): Promise<boolean> {
-  const sessionId = request.headers.get("X-Hermes-Session-Id") || "";
+  const sessionId = proxySessionId(request);
   const authorization = request.headers.get("Authorization") || "";
   const token = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
-  return verifyToken(env.GITHUB_WEBHOOK_SECRET, sessionId, token);
+  return verifyScopedToken(env.CONTROL_PLAN_PROXY_SECRET || "", "proxy", sessionId, token);
+}
+
+async function verifyReplayCapability(
+  c: {
+    env: Env;
+    req: {
+      query: (name: string) => string | undefined;
+      header: (name: string) => string | undefined;
+    };
+  },
+  sessionId: string | undefined,
+  bodyToken?: string,
+): Promise<boolean> {
+  const token =
+    bodyToken ||
+    c.req.query("token") ||
+    c.req.header("Authorization")?.replace(/^Bearer\s+/, "") ||
+    "";
+  return Boolean(
+    sessionId &&
+      (await verifyScopedToken(c.env.CONTROL_PLAN_REPLAY_SECRET || "", "replay", sessionId, token)),
+  );
+}
+
+function proxySessionId(request: Request): string {
+  return (
+    request.headers.get("X-Control-Plan-Session-Id") ||
+    request.headers.get("X-Hermes-Session-Id") ||
+    ""
+  );
+}
+
+async function taskForProxy(env: Env, sessionId: string): Promise<CodingTaskRecord | null> {
+  const taskId = taskIdFromSessionId(sessionId);
+  const binding = (env as Partial<Env>).CONTROL_PLAN_TASK_DO;
+  if (taskId && binding) {
+    return binding.get(binding.idFromName(taskId)).get();
+  }
+
+  return null;
 }
 
 // ─── Inlined Replay HTML ──────────────────────────────────────────────────
@@ -239,7 +378,7 @@ const REPLAY_HTML = (() => {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Session Replay — Hermes</title>
+<title>Session Replay — Control Plan</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0d1117; color: #c9d1d9; min-height: 100vh; }
@@ -397,8 +536,8 @@ const REPLAY_HTML = (() => {
 
   // ── Approval poller ─────────────────────────────────────────────────
   // ApprovalDO is the source of truth for approvals. We poll the open list
-  // instead of relying on stream data events (Flue removes emitData()/data-*
-  // parts in beta.8). handleData() below stays only as a legacy fallback.
+  // instead of relying on stream data events. handleData() below stays only
+  // as a compatibility fallback for older recorded sessions.
   function pollApprovals() {
     fetch('/sessions/' + SID + '/approvals/open?token=' + encodeURIComponent(TOKEN))
       .then(function(r) { if (!r.ok) throw new Error(r.status); return r.json(); })
@@ -424,7 +563,7 @@ const REPLAY_HTML = (() => {
   }
 
   function fetchDecision(aid) {
-    fetch('/approvals/' + aid)
+    fetch('/approvals/' + aid + '?token=' + encodeURIComponent(TOKEN))
       .then(function(r) { return r.json(); })
       .then(function(row) {
         if (row && row.status && row.status !== 'pending') {
@@ -435,7 +574,7 @@ const REPLAY_HTML = (() => {
   }
 
   function handleData(ev) {
-    // Legacy fallback (pre-beta.8 data events); approvals now come from pollApprovals()
+    // Compatibility fallback for recorded data events; approvals now come from pollApprovals().
     // Flue data event shape: { type:'data', name:'X', id:'...', data:{...payload}, timestamp, ... }
     var name = ev.name || 'unknown';
     var data = ev.data || {};

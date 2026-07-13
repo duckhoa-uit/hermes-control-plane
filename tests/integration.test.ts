@@ -11,7 +11,7 @@ function readAppSource(): string {
   return fs.readFileSync(path.join(__dirname, "..", "src", "app.ts"), "utf-8");
 }
 function readAgentSource(): string {
-  return fs.readFileSync(path.join(__dirname, "..", "src", "agents", "hermes.ts"), "utf-8");
+  return fs.readFileSync(path.join(__dirname, "..", "src", "agents", "control-plan.ts"), "utf-8");
 }
 function readCfSource(): string {
   return fs.readFileSync(path.join(__dirname, "..", "src", "cloudflare.ts"), "utf-8");
@@ -79,7 +79,7 @@ describe("Classifier and hardline", () => {
   });
 });
 
-describe("Approval event contract (Hermes-compat)", () => {
+describe("Approval event contract (Hermes Agent-compatible)", () => {
   it("approval_requested event shape", () => {
     const ev = {
       name: "approval_requested",
@@ -165,11 +165,18 @@ describe("Source audit: app.ts", () => {
   it("generateReplayUrl exported", () => {
     expect(src).toContain("export async function generateReplayUrl");
   });
-  it("verifyToken() used in auth gates", () => {
-    expect(src).toContain("verifyToken(");
+  it("scoped capability verification is used in auth gates", () => {
+    expect(src).toContain("verifyScopedToken(");
   });
-  it("signToken() used in generateReplayUrl", () => {
-    expect(src).toContain("signToken(secret");
+  it("scoped replay token is used in generateReplayUrl", () => {
+    expect(src).toContain('signScopedToken(secret, "replay"');
+  });
+  it("does not ship a localhost Worker callback URL", () => {
+    expect(readWranglerSource()).not.toContain('"WORKER_URL"');
+  });
+  it("protects the raw Flue agent mount", () => {
+    expect(src).toContain('app.use("/agents/*"');
+    expect(src).toContain("CONTROL_PLAN_INTERNAL_SECRET");
   });
   it("REPLAY_HTML inline", () => {
     expect(src).toContain("Session Replay");

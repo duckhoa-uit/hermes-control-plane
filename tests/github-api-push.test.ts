@@ -33,6 +33,7 @@ function createFakeOctokit(options: { refExists?: boolean; equivalent?: boolean 
           },
           getRef: async (args: any) => {
             calls.push({ name: "getRef", args });
+            if (args.ref === "heads/main") return { data: { object: { sha: BASE_SHA } } };
             if (!refSha) throw { status: 404 };
             return { data: { object: { sha: refSha } } };
           },
@@ -40,8 +41,20 @@ function createFakeOctokit(options: { refExists?: boolean; equivalent?: boolean 
             calls.push({ name: "getCommit", args });
             return {
               data: {
-                message: options.equivalent ? "fix: update" : "previous commit",
-                tree: { sha: options.equivalent ? "tree-1" : "old-tree" },
+                message:
+                  args.commit_sha === BASE_SHA
+                    ? "base"
+                    : options.equivalent
+                      ? "fix: update"
+                      : "previous commit",
+                tree: {
+                  sha:
+                    args.commit_sha === BASE_SHA
+                      ? BASE_TREE_SHA
+                      : options.equivalent
+                        ? "tree-1"
+                        : "old-tree",
+                },
               },
             };
           },
@@ -91,6 +104,8 @@ describe("pushManifestWithGitHubApi", () => {
     });
     expect(fake.calls.map((call) => call.name)).toEqual([
       "getRef",
+      "getRef",
+      "getCommit",
       "createBlob",
       "createTree",
       "createCommit",
@@ -188,11 +203,42 @@ describe("push manifest validation", () => {
   });
 
   it("keeps GitHub write credentials out of the agent sandbox path", () => {
-    const agent = fs.readFileSync(path.join(__dirname, "..", "src", "agents", "hermes.ts"), "utf8");
+    const agent = fs.readFileSync(
+      path.join(__dirname, "..", "src", "agents", "control-plan.ts"),
+      "utf8",
+    );
 
     expect(agent).not.toContain("GITHUB_WRITE_TOKEN");
     expect(agent).not.toContain("authUrl");
     expect(agent).not.toContain("git remote set-url origin");
     expect(agent).not.toContain("git -c http.version=HTTP/1.1 push");
+  });
+
+  it("rejects path traversal and oversized files", () => {
+    expect(
+      isPushManifest({
+        branch: "codex/test",
+        baseSha: BASE_SHA,
+        baseTreeSha: BASE_TREE_SHA,
+        commitMessage: "fix",
+        changes: [{ action: "delete", path: "../secret" }],
+      }),
+    ).toBe(false);
+    expect(
+      isPushManifest({
+        branch: "codex/test",
+        baseSha: BASE_SHA,
+        baseTreeSha: BASE_TREE_SHA,
+        commitMessage: "fix",
+        changes: [
+          {
+            action: "upsert",
+            path: "large.bin",
+            mode: "100644",
+            contentBase64: "A".repeat(6_000_000),
+          },
+        ],
+      }),
+    ).toBe(false);
   });
 });

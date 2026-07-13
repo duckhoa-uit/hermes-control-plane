@@ -10,22 +10,24 @@
   via Dockerfile in `src/cf-sandbox/`. Replaces E2B.
 - **Package manager:** Bun (1.3+). Lockfile is `bun.lock`.
 - **Language:** TypeScript strict mode. `tsconfig.json` paths: `@/*` → `src/*`.
-- **Tests:** Vitest (`tests/`). 140+ tests.
+- **Tests:** Vitest (`tests/`).
 
 ## Architecture
 
 ```
-GitHub Webhook → /channels/github/webhook → HMAC verify → Agent dispatch
-                                                              ↓
-Agent runs in Durable Object (FlueHermesAgent) ← model calls (zai/glm-5.2)
-                              ↓
-              ┌─── Pi harness loop ───┐
-              │ model → tools → model │  ← `defineAgent()` loop
-              └───────────────────────┘
-                              ↓
-                   CF Sandbox container
-                    (git clone, bash, read/write)
+Hermes Agent → /mcp → Control Plan task service → FlueControlPlanAgent DO
+                                                  ↓
+                                       Pi harness loop (model → tools → model)
+                                                  ↓
+                                       CF Sandbox container
+                                       (git clone, bash, read/write)
+
+GitHub Webhook → /channels/github/webhook → HMAC verify → log/ack (intentionally not a coding trigger)
 ```
+
+Hermes Agent is the upstream orchestrator. Control Plan is the coding-agent
+execution service: it exposes the remote MCP tools `spawn_coding_task`,
+`get_coding_task`, `respond_coding_approval`, and `cancel_coding_task`.
 
 No VPS, no E2B, no OpenCode, no Bun launcher. Single CF Worker.
 
@@ -33,13 +35,16 @@ No VPS, no E2B, no OpenCode, no Bun launcher. Single CF Worker.
 
 | File | Purpose |
 |---|---|
-| `src/agents/hermes.ts` | Agent definition (defineAgent, tools, sandbox) |
-| `src/app.ts` | Hono app with health + proxy routes + flue() mount |
-| `src/channels/github.ts` | GitHub webhook (Flue channel pattern) |
-| `src/cloudflare.ts` | Worker-level DO exports (Sandbox, PrIndexDurableObject) |
+| `src/agents/control-plan.ts` | Flue coding-agent definition (defineAgent, tools, sandbox) |
+| `src/app.ts` | Hono app with health, MCP, proxy routes, and flue() mount |
+| `src/mcp/control-plan.ts` | Hermes-facing MCP tools and Flue dispatch |
+| `src/do/coding-task-do.ts` | Per-task durable correlation and lifecycle record |
+| `src/do/admission-do.ts` | Global concurrent-task admission lease |
+| `src/channels/github.ts` | Verified GitHub webhook ingress; dispatch is not wired yet |
+| `src/cloudflare.ts` | Worker-level DO exports (Sandbox, task, approval, and PR index) |
 | `src/do/pr-index-do.ts` | PR Index DurableObject |
 | `src/agent/pr-lifecycle.ts` | GitHub push/PR via Octokit |
-| `src/agent/state-bridge.ts` | Flue lifecycle → Hermes state machine |
+| `src/agent/state-bridge.ts` | Flue lifecycle → Control Plan state machine |
 | `src/core/state-machine.ts` | Session state machine (11 states) |
 | `src/cf-sandbox/Dockerfile` | Container image for agent sandbox |
 
@@ -57,4 +62,5 @@ No VPS, no E2B, no OpenCode, no Bun launcher. Single CF Worker.
 ## No legacy
 
 This project uses Flue + Cloudflare Workers. No E2B, no OpenCode, no Bun
-Launcher, no VPS. See `docs/FLUE-MIGRATION-SPEC.md` for migration details.
+Launcher, no VPS. See `docs/ARCHITECTURE.md` for the current design and
+`docs/DEPLOYMENT.md` for the current release procedure.

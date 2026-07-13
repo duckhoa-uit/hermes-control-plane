@@ -9,31 +9,35 @@ import { cloudflareSandbox } from "@flue/runtime/cloudflare";
 import { getSandbox } from "@cloudflare/sandbox";
 import * as v from "valibot";
 import { requireApproval } from "../approval";
-import { signToken } from "../core/auth";
+import { signScopedToken } from "../core/auth";
 import type { DurableObjectNamespace } from "@cloudflare/workers-types";
 import {
   buildPushSnapshot,
+  assertWorkspaceRepository,
   ensureWorkspaceCommitted,
   findWorkspaceRepo,
   runDeterministicFinalize,
+  shellQuote,
   type FinalizeCheckpoint,
   type FinalizeRequest,
 } from "../agent/finalizer";
+import type { CodingTaskRecord, CodingTaskResult } from "../do/coding-task-do";
+import { taskIdFromSessionId } from "../mcp/task-utils";
 import { withDefaultExecTimeout } from "../agent/sandbox-timeout";
 
 const DEFAULT_SANDBOX_EXEC_TIMEOUT_MS = 15 * 60 * 1000;
 
 const INSTRUCTIONS = `
-You are Hermes, a PR coding agent. You work autonomously to complete coding tasks and open pull requests.
+You are the Control Plan PR coding agent. You work autonomously to complete coding tasks and open pull requests.
 
 1. Read the task and understand what needs to be done.
-2. Clone the repository: git clone <url>
+2. Call clone_repository with the task repository and base branch. Do not run git clone yourself; the tool keeps private-repository read credentials out of the model shell.
 3. Read relevant files, understand the codebase.
 4. Make changes using read, write, edit, and bash tools.
 5. Run install_deps after cloning (bash: cd repo && npm install).
 6. Run tests to verify (bash: cd repo && npm test).
 7. When satisfied, DO NOT commit or push manually.
-8. Call mark_ready_to_finalize with the branch, commit message, and PR title/body. The control plane will commit, push, and create or update the PR deterministically.
+8. Call mark_ready_to_finalize with the exact fixed branch from the task prompt, commit message, and PR title/body. The control plane will commit, push, and create or update the PR deterministically.
 
 ## RULES
 - Do NOT call mark_ready_to_finalize unless tests pass.
@@ -58,16 +62,58 @@ export default defineAgent<Env>(({ id, env }) => {
   const baseUrl = env.WORKER_URL || "";
   // Cast to handle generic variance issues
   const approvalDO = env.APPROVAL_DO as unknown as DurableObjectNamespace;
-  const authorName = env.GITHUB_USER_LOGIN || "Hermes";
+  const authorName = env.GITHUB_USER_LOGIN || "Control Plan";
   const authorEmail =
     (env as Env & { GITHUB_USER_EMAIL?: string }).GITHUB_USER_EMAIL ||
-    "hermes-bot@users.noreply.github.com";
+    "control-plan-bot@users.noreply.github.com";
+  const sandbox = () =>
+    getSandbox(env.Sandbox, `control-plan-${id}`, {
+      sleepAfter: "5m",
+      transport: "rpc",
+      enableDefaultSession: false,
+      normalizeId: true,
+    });
+
+  const taskId = taskIdFromSessionId(id);
+  const taskStub = taskId
+    ? env.CONTROL_PLAN_TASK_DO.get(env.CONTROL_PLAN_TASK_DO.idFromName(taskId))
+    : null;
+
+  async function taskRecord(): Promise<CodingTaskRecord | null> {
+    return taskStub ? taskStub.get() : null;
+  }
+
+  async function recordFinalizeResult(
+    result: {
+      push: JsonValue;
+      pr: JsonValue | null;
+    },
+    branch: string,
+  ): Promise<void> {
+    if (!taskStub) return;
+    const push = asRecord(result.push);
+    const pr = asRecord(result.pr);
+    const taskResult: CodingTaskResult = {
+      branch,
+      commitSha: asString(push?.sha),
+      prUrl: asString(pr?.prUrl),
+      prNumber: asNumber(pr?.prNumber),
+    };
+    await taskStub.markFinalized(taskResult);
+  }
 
   async function proxyHeaders(): Promise<Record<string, string>> {
+    if (!baseUrl) throw new Error("WORKER_URL must be configured for agent callbacks");
+    const token = await signScopedToken(
+      env.CONTROL_PLAN_PROXY_SECRET || "",
+      "proxy",
+      id,
+      5 * 60 * 1000,
+    );
     return {
       "Content-Type": "application/json",
-      "X-Hermes-Session-Id": id,
-      Authorization: `Bearer ${await signToken(env.GITHUB_WEBHOOK_SECRET, id)}`,
+      "X-Control-Plan-Session-Id": id,
+      Authorization: `Bearer ${token}`,
     };
   }
 
@@ -205,6 +251,52 @@ export default defineAgent<Env>(({ id, env }) => {
     }
   }
 
+  const cloneRepository = defineTool({
+    name: "clone_repository",
+    description:
+      "Clone the task-bound GitHub repository into /workspace. Uses a short-lived scoped read credential for private repositories without exposing it to the model shell.",
+    input: v.object({
+      repository: v.string(),
+      baseBranch: v.string(),
+    }),
+    async run(ctx) {
+      const task = await taskRecord();
+      if (!task) throw new Error("clone_repository is available only for MCP-created coding tasks");
+      if (ctx.input.repository !== task.repository || ctx.input.baseBranch !== task.baseBranch) {
+        throw new Error("clone_repository input does not match the task repository or base branch");
+      }
+
+      const [owner, repo] = task.repository.split("/");
+      const repoPath = `/workspace/${repo}`;
+      const askpassPath = `/tmp/control-plan-askpass-${task.id.slice(-12)}`;
+      const command = [
+        "set -eu",
+        `if [ -d ${shellQuote(`${repoPath}/.git`)} ]; then exit 0; fi`,
+        `rm -rf ${shellQuote(repoPath)}`,
+        `askpass=${shellQuote(askpassPath)}`,
+        `trap 'rm -f "$askpass"' EXIT`,
+        `printf '%s\\n' '#!/bin/sh' 'printf "%s\\n" "$CONTROL_PLAN_GITHUB_READ_TOKEN"' > "$askpass"`,
+        `chmod 700 "$askpass"`,
+        `if [ -n "\${CONTROL_PLAN_GITHUB_READ_TOKEN:-}" ]; then GIT_TERMINAL_PROMPT=0 GIT_ASKPASS="$askpass" git -c credential.helper= clone --branch ${shellQuote(task.baseBranch)} --single-branch https://x-access-token@github.com/${owner}/${repo}.git ${shellQuote(repoPath)}; else git -c credential.helper= clone --branch ${shellQuote(task.baseBranch)} --single-branch https://github.com/${owner}/${repo}.git ${shellQuote(repoPath)}; fi`,
+      ].join("\n");
+
+      const result = await sandbox().exec(command, {
+        timeout: DEFAULT_SANDBOX_EXEC_TIMEOUT_MS,
+        env: env.GITHUB_READ_TOKEN
+          ? { CONTROL_PLAN_GITHUB_READ_TOKEN: env.GITHUB_READ_TOKEN }
+          : undefined,
+      });
+      if (result.exitCode !== 0) {
+        throw new Error(`Repository clone failed: ${result.stderr || result.stdout}`);
+      }
+      return {
+        repository: task.repository,
+        baseBranch: task.baseBranch,
+        path: repoPath,
+      } as JsonValue;
+    },
+  });
+
   const gitPush = defineTool({
     name: "git_push",
     description:
@@ -215,14 +307,26 @@ export default defineAgent<Env>(({ id, env }) => {
     }),
     async run(ctx) {
       const { branch, force } = ctx.input;
+      const task = await taskRecord();
+      if (task?.state === "cancellation_requested") {
+        throw new Error("coding task cancellation requested; publication is blocked");
+      }
+      if (task && branch !== task.branch) {
+        throw new Error(`git_push branch must be the task branch ${task.branch}`);
+      }
 
       // ── 1. Snapshot the commit as a manifest BEFORE asking for approval ─
       // This way the container can sleep during the wait without losing work.
-      const preSandbox = getSandbox(env.Sandbox, `hermes-${id}`, {
-        sleepAfter: "5m",
-      });
+      const preSandbox = sandbox();
       const repoPath = await findWorkspaceRepo(preSandbox);
-      const snapshot = await buildPushSnapshot(preSandbox, repoPath, branch, force);
+      if (task) await assertWorkspaceRepository(preSandbox, repoPath, task.repository);
+      const snapshot = await buildPushSnapshot(
+        preSandbox,
+        repoPath,
+        branch,
+        force,
+        task?.baseBranch || "main",
+      );
 
       // ── 2. Request approval (container free to sleep during wait) ───────
       await requireGitPushApproval(ctx, snapshot);
@@ -244,6 +348,15 @@ export default defineAgent<Env>(({ id, env }) => {
     }),
     async run(ctx) {
       const { title, body, branch, baseBranch } = ctx.input;
+      const task = await taskRecord();
+      if (task?.state === "cancellation_requested") {
+        throw new Error("coding task cancellation requested; publication is blocked");
+      }
+      if (task && (branch !== task.branch || baseBranch !== task.baseBranch)) {
+        throw new Error(
+          `create_pr must use task branch ${task.branch} and base branch ${task.baseBranch}`,
+        );
+      }
       return createPullRequest(ctx, {
         title,
         body,
@@ -268,7 +381,17 @@ export default defineAgent<Env>(({ id, env }) => {
     }),
     async run(ctx) {
       const { branch, commitMessage, prTitle, prBody, baseBranch, createPr, force } = ctx.input;
+      const task = await taskRecord();
+      if (task?.state === "cancellation_requested") {
+        throw new Error("coding task cancellation requested; finalization is blocked");
+      }
+      if (task && (branch !== task.branch || baseBranch !== task.baseBranch)) {
+        throw new Error(
+          `mark_ready_to_finalize must use task branch ${task.branch} and base branch ${task.baseBranch}`,
+        );
+      }
       const request: FinalizeRequest = {
+        repository: task?.repository || "",
         branch,
         commitMessage,
         prTitle,
@@ -278,32 +401,37 @@ export default defineAgent<Env>(({ id, env }) => {
         force: force ?? false,
       };
 
-      return runDeterministicFinalize(request, {
+      const result = await runDeterministicFinalize(request, {
         loadCheckpoint: () => loadFinalizeCheckpoint(branch),
         saveCheckpoint: saveFinalizeCheckpoint,
         async prepare() {
-          const sandbox = getSandbox(env.Sandbox, `hermes-${id}`, {
-            sleepAfter: "5m",
-          });
-          const repoPath = await findWorkspaceRepo(sandbox);
-          await ensureWorkspaceCommitted(sandbox, repoPath, commitMessage, authorName, authorEmail);
-          return buildPushSnapshot(sandbox, repoPath, branch, force);
+          const taskSandbox = sandbox();
+          const repoPath = await findWorkspaceRepo(taskSandbox);
+          if (task) await assertWorkspaceRepository(taskSandbox, repoPath, task.repository);
+          await ensureWorkspaceCommitted(
+            taskSandbox,
+            repoPath,
+            commitMessage,
+            authorName,
+            authorEmail,
+          );
+          return buildPushSnapshot(taskSandbox, repoPath, branch, force, baseBranch || "main");
         },
         approvePush: (snapshot) => requireGitPushApproval(ctx, snapshot),
         push: (snapshot) => pushSnapshot(ctx, snapshot),
         createPr: (input) => createPullRequest(ctx, input),
       });
+      await recordFinalizeResult(result, branch);
+      return result;
     },
   });
 
   return {
     model: env.LLM_MODEL || "anthropic/claude-sonnet-4-6",
     instructions: INSTRUCTIONS,
-    tools: [markReadyToFinalize, gitPush, createPR],
+    tools: [cloneRepository, markReadyToFinalize, gitPush, createPR],
     sandbox: withDefaultExecTimeout(
-      cloudflareSandbox(getSandbox(env.Sandbox, `hermes-${id}`, { sleepAfter: "5m" }), {
-        cwd: "/workspace",
-      }),
+      cloudflareSandbox(sandbox(), { cwd: "/workspace" }),
       DEFAULT_SANDBOX_EXEC_TIMEOUT_MS,
     ),
     durability: {
@@ -318,4 +446,18 @@ function approvalDeniedReason(decision: string): string {
   if (decision === "hardline_blocked") return "blocked by hardline policy (never allowed)";
   if (decision === "timeout") return "no approval received within 1 hour";
   return "denied by operator";
+}
+
+function asRecord(value: JsonValue | null | undefined): Record<string, JsonValue> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, JsonValue>)
+    : null;
+}
+
+function asString(value: JsonValue | undefined): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function asNumber(value: JsonValue | undefined): number | undefined {
+  return typeof value === "number" ? value : undefined;
 }
