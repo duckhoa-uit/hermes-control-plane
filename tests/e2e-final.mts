@@ -1,6 +1,6 @@
 import { createFlueClient } from "@flue/sdk";
 
-const BASE = "https://hermes-control-plane.duckhoa-dev.workers.dev";
+const BASE = "https://hermes-control-plane.duckhoa-dev.workers.dev"; // Legacy deployment alias.
 const SESSION = `e2e-full-${Date.now()}`;
 
 async function main() {
@@ -18,7 +18,7 @@ async function main() {
   // ── 2. Prompt with git clone + file read ──
   console.log("2. Full chain: git clone + read file...");
   try {
-    const result = await client.agents.prompt("hermes", SESSION, {
+    const result = await client.agents.prompt("control-plan", SESSION, {
       message: `Clone https://github.com/duckhoa-uit/lawn.git to /workspace/lawn, then read /workspace/lawn/README.md and report:
 1. What is the project about?
 2. What tech stack does it use?

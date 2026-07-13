@@ -1,5 +1,5 @@
 // ============================================================
-// ApprovalDurableObject — Hermes-compatible approval queue
+// ApprovalDurableObject — Hermes Agent-compatible approval queue
 // ============================================================
 // SQLite-backed approval queue with Hibernatable WebSockets for
 // long-wait notification. Tools open a WS to the DO and the DO
@@ -22,6 +22,16 @@ interface ApprovalRow {
   created_at: number;
   expires_at: number;
 }
+
+interface FinalizeCheckpointRow {
+  session_id: string;
+  branch: string;
+  phase: string;
+  chunk_count: number;
+  updated_at: number;
+}
+
+const CHECKPOINT_CHUNK_SIZE = 256_000;
 
 export class ApprovalDurableObject extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
@@ -54,6 +64,25 @@ export class ApprovalDurableObject extends DurableObject<Env> {
     this.ctx.storage.sql.exec(
       `CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status);`,
     );
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS finalize_checkpoints (
+        session_id TEXT NOT NULL,
+        branch TEXT NOT NULL,
+        phase TEXT NOT NULL,
+        chunk_count INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (session_id, branch)
+      );
+    `);
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS finalize_checkpoint_chunks (
+        session_id TEXT NOT NULL,
+        branch TEXT NOT NULL,
+        chunk_index INTEGER NOT NULL,
+        payload TEXT NOT NULL,
+        PRIMARY KEY (session_id, branch, chunk_index)
+      );
+    `);
   }
 
   async fetch(req: Request): Promise<Response> {
@@ -69,6 +98,12 @@ export class ApprovalDurableObject extends DurableObject<Env> {
       if (req.method === "GET" && path === "/get") return this.handleGet(url);
       if (req.method === "POST" && path === "/resolve") return this.handleResolve(req);
       if (req.method === "GET" && path === "/list-open") return this.handleListOpen(url);
+      if (req.method === "GET" && path === "/finalize-checkpoint") {
+        return this.handleGetFinalizeCheckpoint(url);
+      }
+      if (req.method === "POST" && path === "/finalize-checkpoint") {
+        return this.handleSaveFinalizeCheckpoint(req);
+      }
     } catch (err) {
       return Response.json({ error: String(err) }, { status: 500 });
     }
@@ -195,6 +230,93 @@ export class ApprovalDurableObject extends DurableObject<Env> {
     });
   }
 
+  // ─── Durable finalizer checkpoints ──────────────────────────────────
+
+  private handleGetFinalizeCheckpoint(url: URL): Response {
+    const sessionId = url.searchParams.get("session_id") ?? "";
+    const branch = url.searchParams.get("branch") ?? "";
+    if (!sessionId || !branch) {
+      return Response.json({ error: "session_id and branch required" }, { status: 400 });
+    }
+
+    const rows = this.ctx.storage.sql
+      .exec(
+        "SELECT * FROM finalize_checkpoints WHERE session_id = ? AND branch = ?",
+        sessionId,
+        branch,
+      )
+      .toArray() as unknown as FinalizeCheckpointRow[];
+    const row = rows[0];
+    if (!row) return Response.json({ checkpoint: null });
+
+    const chunks = this.ctx.storage.sql
+      .exec(
+        `SELECT payload FROM finalize_checkpoint_chunks
+         WHERE session_id = ? AND branch = ? ORDER BY chunk_index ASC`,
+        sessionId,
+        branch,
+      )
+      .toArray() as unknown as { payload: string }[];
+    if (chunks.length !== row.chunk_count) {
+      return Response.json({ error: "finalize checkpoint is incomplete" }, { status: 500 });
+    }
+
+    return Response.json({ checkpoint: safeParse(chunks.map((chunk) => chunk.payload).join("")) });
+  }
+
+  private async handleSaveFinalizeCheckpoint(req: Request): Promise<Response> {
+    const body = (await req.json()) as {
+      sessionId?: string;
+      branch?: string;
+      checkpoint?: { phase?: string };
+    };
+    const checkpoint = body.checkpoint;
+    if (!body.sessionId || !body.branch || !checkpoint?.phase) {
+      return Response.json(
+        { error: "sessionId, branch, and checkpoint.phase required" },
+        { status: 400 },
+      );
+    }
+
+    const serialized = JSON.stringify(checkpoint);
+    const chunks = chunkString(serialized, CHECKPOINT_CHUNK_SIZE);
+    const now = Date.now();
+
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(
+        "DELETE FROM finalize_checkpoint_chunks WHERE session_id = ? AND branch = ?",
+        body.sessionId,
+        body.branch,
+      );
+      for (let index = 0; index < chunks.length; index++) {
+        this.ctx.storage.sql.exec(
+          `INSERT INTO finalize_checkpoint_chunks
+           (session_id, branch, chunk_index, payload) VALUES (?, ?, ?, ?)`,
+          body.sessionId,
+          body.branch,
+          index,
+          chunks[index],
+        );
+      }
+      this.ctx.storage.sql.exec(
+        `INSERT OR REPLACE INTO finalize_checkpoints
+         (session_id, branch, phase, chunk_count, updated_at) VALUES (?, ?, ?, ?, ?)`,
+        body.sessionId,
+        body.branch,
+        checkpoint.phase,
+        chunks.length,
+        now,
+      );
+    });
+
+    return Response.json({
+      saved: true,
+      phase: checkpoint.phase,
+      chunks: chunks.length,
+      updated_at: now,
+    });
+  }
+
   // ─── /ws-wait?id=... ─────────────────────────────────────────────────
   // Hibernatable WebSocket: tool opens this WS and the DO can hibernate.
   // When approval resolved, DO sends the decision and closes the WS.
@@ -310,4 +432,12 @@ function safeParse(s: string): unknown {
   } catch {
     return {};
   }
+}
+
+function chunkString(value: string, size: number): string[] {
+  const chunks: string[] = [];
+  for (let offset = 0; offset < value.length; offset += size) {
+    chunks.push(value.slice(offset, offset + size));
+  }
+  return chunks.length > 0 ? chunks : [""];
 }

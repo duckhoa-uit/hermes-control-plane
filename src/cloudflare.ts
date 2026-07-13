@@ -17,3 +17,5 @@ export { Sandbox };
 
 export { PrIndexDurableObject } from "./do/pr-index-do";
 export { ApprovalDurableObject } from "./do/approval-do";
+export { ControlPlanTaskDurableObject } from "./do/coding-task-do";
+export { ControlPlanAdmissionDurableObject } from "./do/admission-do";

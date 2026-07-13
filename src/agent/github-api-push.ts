@@ -1,0 +1,298 @@
+export type GitTreeFileMode = "100644" | "100755" | "120000";
+
+export type PushManifestChange =
+  | {
+      action: "upsert";
+      path: string;
+      mode: GitTreeFileMode;
+      contentBase64: string;
+    }
+  | {
+      action: "delete";
+      path: string;
+    };
+
+export type PushManifest = {
+  branch: string;
+  baseBranch?: string;
+  baseSha: string;
+  baseTreeSha: string;
+  commitMessage: string;
+  changes: PushManifestChange[];
+  force?: boolean;
+};
+
+export const MAX_PUSH_CHANGES = 1_000;
+export const MAX_PUSH_FILE_BYTES = 4 * 1024 * 1024;
+export const MAX_PUSH_MANIFEST_BYTES = 16 * 1024 * 1024;
+
+type GitApiClient = {
+  rest: {
+    git: {
+      createBlob: (args: {
+        owner: string;
+        repo: string;
+        content: string;
+        encoding: "base64";
+      }) => Promise<{ data: { sha: string } }>;
+      createTree: (args: {
+        owner: string;
+        repo: string;
+        base_tree: string;
+        tree: Array<{
+          path: string;
+          mode: GitTreeFileMode;
+          type: "blob";
+          sha: string | null;
+        }>;
+      }) => Promise<{ data: { sha: string } }>;
+      createCommit: (args: {
+        owner: string;
+        repo: string;
+        message: string;
+        tree: string;
+        parents: string[];
+      }) => Promise<{ data: { sha: string } }>;
+      getRef: (args: {
+        owner: string;
+        repo: string;
+        ref: string;
+      }) => Promise<{ data: { object: { sha: string } } }>;
+      getCommit: (args: {
+        owner: string;
+        repo: string;
+        commit_sha: string;
+      }) => Promise<{ data: { message: string; tree: { sha: string } } }>;
+      createRef: (args: {
+        owner: string;
+        repo: string;
+        ref: string;
+        sha: string;
+      }) => Promise<unknown>;
+      updateRef: (args: {
+        owner: string;
+        repo: string;
+        ref: string;
+        sha: string;
+        force: boolean;
+      }) => Promise<unknown>;
+    };
+  };
+};
+
+export function isPushManifest(value: unknown): value is PushManifest {
+  if (!value || typeof value !== "object") return false;
+  const manifest = value as PushManifest;
+  if (!isNonEmptyString(manifest.branch)) return false;
+  if (!isSha(manifest.baseSha) || !isSha(manifest.baseTreeSha)) return false;
+  if (!isNonEmptyString(manifest.commitMessage)) return false;
+  if (
+    !Array.isArray(manifest.changes) ||
+    manifest.changes.length === 0 ||
+    manifest.changes.length > MAX_PUSH_CHANGES
+  )
+    return false;
+  if (JSON.stringify(manifest).length > MAX_PUSH_MANIFEST_BYTES) return false;
+  return manifest.changes.every((change) => {
+    if (!change || typeof change !== "object") return false;
+    if (
+      !isNonEmptyString(change.path) ||
+      change.path.startsWith("/") ||
+      change.path.includes("\\") ||
+      change.path.split("/").includes("..")
+    )
+      return false;
+    if (change.action === "delete") return true;
+    if (change.action !== "upsert") return false;
+    if (!["100644", "100755", "120000"].includes(change.mode)) return false;
+    return (
+      typeof change.contentBase64 === "string" &&
+      Math.ceil((change.contentBase64.length * 3) / 4) <= MAX_PUSH_FILE_BYTES
+    );
+  });
+}
+
+export async function pushManifestWithGitHubApi(
+  octokit: GitApiClient,
+  owner: string,
+  repo: string,
+  manifest: PushManifest,
+): Promise<{
+  branch: string;
+  sha: string;
+  created: boolean;
+  verified: true;
+  idempotent: boolean;
+}> {
+  const ref = `heads/${manifest.branch}`;
+  const branchHeadSha = await getRefSha(octokit, owner, repo, ref);
+  const baseBranch = manifest.baseBranch || "main";
+  const baseRefSha = await getRefSha(octokit, owner, repo, `heads/${baseBranch}`);
+  if (!baseRefSha || baseRefSha !== manifest.baseSha) {
+    throw new Error(`base branch ${baseBranch} changed or does not match the approved snapshot`);
+  }
+  const baseCommit = await octokit.rest.git.getCommit({
+    owner,
+    repo,
+    commit_sha: baseRefSha,
+  });
+  if (baseCommit.data.tree.sha !== manifest.baseTreeSha) {
+    throw new Error(`base tree does not match the approved snapshot for ${baseBranch}`);
+  }
+
+  const tree = [];
+  for (const change of manifest.changes) {
+    if (change.action === "delete") {
+      tree.push({ path: change.path, mode: "100644" as const, type: "blob" as const, sha: null });
+      continue;
+    }
+
+    const blob = await octokit.rest.git.createBlob({
+      owner,
+      repo,
+      content: change.contentBase64,
+      encoding: "base64",
+    });
+    tree.push({
+      path: change.path,
+      mode: change.mode,
+      type: "blob" as const,
+      sha: blob.data.sha,
+    });
+  }
+
+  const newTree = await octokit.rest.git.createTree({
+    owner,
+    repo,
+    base_tree: manifest.baseTreeSha,
+    tree,
+  });
+
+  if (
+    branchHeadSha &&
+    (await isEquivalentCommit(
+      octokit,
+      owner,
+      repo,
+      branchHeadSha,
+      newTree.data.sha,
+      manifest.commitMessage,
+    ))
+  ) {
+    return {
+      branch: manifest.branch,
+      sha: branchHeadSha,
+      created: false,
+      verified: true,
+      idempotent: true,
+    };
+  }
+
+  const commit = await octokit.rest.git.createCommit({
+    owner,
+    repo,
+    message: manifest.commitMessage,
+    tree: newTree.data.sha,
+    parents: [branchHeadSha ?? manifest.baseSha],
+  });
+
+  const created = branchHeadSha === null;
+  if (created) {
+    await octokit.rest.git.createRef({
+      owner,
+      repo,
+      ref: `refs/${ref}`,
+      sha: commit.data.sha,
+    });
+  } else {
+    try {
+      await octokit.rest.git.updateRef({
+        owner,
+        repo,
+        ref,
+        sha: commit.data.sha,
+        force: Boolean(manifest.force),
+      });
+    } catch (err) {
+      const latest = await getRefSha(octokit, owner, repo, ref);
+      if (
+        !latest ||
+        !(await isEquivalentCommit(
+          octokit,
+          owner,
+          repo,
+          latest,
+          newTree.data.sha,
+          manifest.commitMessage,
+        ))
+      ) {
+        throw err;
+      }
+      return {
+        branch: manifest.branch,
+        sha: latest,
+        created: false,
+        verified: true,
+        idempotent: true,
+      };
+    }
+  }
+
+  const verify = await octokit.rest.git.getRef({ owner, repo, ref });
+  if (verify.data.object.sha !== commit.data.sha) {
+    throw new Error(
+      `GitHub ref verification failed: ${ref} is ${verify.data.object.sha}, expected ${commit.data.sha}`,
+    );
+  }
+
+  return {
+    branch: manifest.branch,
+    sha: commit.data.sha,
+    created,
+    verified: true,
+    idempotent: false,
+  };
+}
+
+async function isEquivalentCommit(
+  octokit: GitApiClient,
+  owner: string,
+  repo: string,
+  sha: string,
+  treeSha: string,
+  message: string,
+): Promise<boolean> {
+  const commit = await octokit.rest.git.getCommit({
+    owner,
+    repo,
+    commit_sha: sha,
+  });
+  return commit.data.tree.sha === treeSha && commit.data.message === message;
+}
+
+async function getRefSha(
+  octokit: GitApiClient,
+  owner: string,
+  repo: string,
+  ref: string,
+): Promise<string | null> {
+  try {
+    const current = await octokit.rest.git.getRef({ owner, repo, ref });
+    return current.data.object.sha;
+  } catch (err) {
+    if (isHttpStatus(err, 404)) return null;
+    throw err;
+  }
+}
+
+function isHttpStatus(err: unknown, status: number): boolean {
+  return Boolean(err && typeof err === "object" && "status" in err && err.status === status);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function isSha(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{40}$/i.test(value);
+}

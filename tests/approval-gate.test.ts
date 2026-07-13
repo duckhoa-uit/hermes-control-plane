@@ -34,49 +34,71 @@ describe("requireApproval gate", () => {
     expect(result.decision).toBe("auto_approved");
   });
 
-  it("mode 'smart' flags risky commands and falls back to auto when no DO binding", async () => {
-    const emitted: Array<{ name: string; data: any }> = [];
+  it("mode 'smart' flags risky commands and registers them with the pattern in the DO", async () => {
+    const { doBinding, requests } = mockApprovalDO();
     const result = await requireApproval(
-      {
-        emitData: (name, data) => {
-          emitted.push({ name, data: data as any });
-        },
-      },
+      {},
       { type: "exec", title: "danger", command: "chmod 777 /tmp/foo" },
-      { mode: "smart", sessionId: "s2" },
+      { mode: "smart", sessionId: "s2", approvalDOBinding: doBinding },
     );
-    expect(emitted.length).toBe(1);
-    expect(emitted[0]?.name).toBe("approval_requested");
-    expect((emitted[0]!.data as any).pattern).toBeTruthy();
-    // No DO binding → fallback to sleep + auto-approve
-    expect(result.decision).toBe("auto_approved");
+    expect(requests.length).toBe(1);
+    expect(requests[0]!.pattern).toBeTruthy();
+    // ws-wait upgrade fails in mock → gate resolves as timeout (denied)
+    expect(result.denied).toBe(true);
+    expect(result.decision).toBe("timeout");
   });
 
-  it("manual mode emits approval_requested event with full payload shape", async () => {
-    const emitted: Array<{ name: string; data: any; opts?: any }> = [];
-    const result = await requireApproval(
-      {
-        emitData: (name, data, opts) => {
-          emitted.push({ name, data, opts });
-        },
-      },
+  it("manual mode registers pending approval in DO with full payload shape", async () => {
+    const { doBinding, requests } = mockApprovalDO();
+    await requireApproval(
+      {},
       {
         type: "git_push",
         title: "Push hermes/dock",
         diff: "+1 -0",
         metadata: { branch: "hermes/dock" },
       },
-      { mode: "manual", sessionId: "s3" },
+      { mode: "manual", sessionId: "s3", approvalDOBinding: doBinding },
     );
-    expect(emitted.length).toBe(1);
-    const ev = emitted[0]!;
-    expect(ev.name).toBe("approval_requested");
-    expect(ev.data.type).toBe("git_push");
-    expect(ev.data.title).toBe("Push hermes/dock");
-    expect(ev.data.diff).toBe("+1 -0");
-    expect(ev.data.metadata).toEqual({ branch: "hermes/dock" });
-    expect(ev.opts.id).toBe(ev.data.id);
-    expect(result.decision).toBe("auto_approved"); // no DO → fallback
+    expect(requests.length).toBe(1);
+    const req = requests[0]!;
+    expect(req.id).toMatch(/^approval_/);
+    expect(req.sessionId).toBe("s3");
+    expect(req.type).toBe("git_push");
+    expect(req.title).toBe("Push hermes/dock");
+    expect(req.payload.diff).toBe("+1 -0");
+    expect(req.payload.metadata).toEqual({ branch: "hermes/dock" });
+  });
+
+  it("uses persisted DO state when the WebSocket wake-up is unavailable", async () => {
+    const { doBinding, requests, stub } = mockApprovalDO({
+      status: "approved",
+      decision: "once",
+      decided_by: "controller",
+    });
+    const result = await requireApproval(
+      {},
+      { type: "git_push", title: "Push", diff: "+1" },
+      { mode: "manual", sessionId: "s4", approvalDOBinding: doBinding },
+    );
+
+    expect(requests).toHaveLength(1);
+    expect(stub.fetch).toHaveBeenCalledTimes(3);
+    expect(result).toMatchObject({
+      decision: "once",
+      actor: "controller",
+      denied: false,
+    });
+  });
+
+  it("manual mode without DO binding falls back to auto-approve (dev only)", async () => {
+    const result = await requireApproval(
+      {},
+      { type: "exec", title: "x", command: "echo hi" },
+      { mode: "manual", sessionId: "s5" },
+    );
+    expect(result.decision).toBe("auto_approved");
+    expect(result.denied).toBe(false);
   });
 
   it("returns timeout decision when DO binding throws on /request", async () => {
@@ -88,7 +110,7 @@ describe("requireApproval gate", () => {
       get: vi.fn().mockReturnValue(stub),
     };
     const result = await requireApproval(
-      { emitData: () => {} },
+      {},
       { type: "git_push", title: "Push", diff: "+1" },
       { mode: "manual", sessionId: "s4", approvalDOBinding: doBinding },
     );
@@ -97,18 +119,31 @@ describe("requireApproval gate", () => {
     expect(doBinding.idFromName).toHaveBeenCalledWith("approvals");
     expect(stub.fetch).toHaveBeenCalledOnce();
   });
-
-  it("emitData error is swallowed and approval continues", async () => {
-    const result = await requireApproval(
-      {
-        emitData: () => {
-          throw new Error("stream closed");
-        },
-      },
-      { type: "exec", title: "x", command: "echo hi" },
-      { mode: "manual", sessionId: "s5" },
-    );
-    // No DO → fallback auto_approved
-    expect(result.decision).toBe("auto_approved");
-  });
 });
+
+/**
+ * Mock ApprovalDO binding that records /request bodies and rejects the
+ * ws-wait upgrade (so the gate resolves as timeout instead of hanging).
+ */
+function mockApprovalDO(resolvedState?: Record<string, unknown>) {
+  const requests: any[] = [];
+  const stub = {
+    fetch: vi.fn(async (url: URL | string, init?: { body?: string }) => {
+      const path = new URL(String(url), "http://do").pathname;
+      if (path === "/request") {
+        requests.push(JSON.parse(init?.body ?? "{}"));
+        return new Response("{}", { status: 200 });
+      }
+      if (path === "/get" && resolvedState) {
+        return Response.json(resolvedState);
+      }
+      // /ws-wait: no webSocket on the response → treated as upgrade failure
+      return new Response(null, { status: 400 });
+    }),
+  };
+  const doBinding = {
+    idFromName: vi.fn().mockReturnValue("doid"),
+    get: vi.fn().mockReturnValue(stub),
+  };
+  return { doBinding, requests, stub };
+}

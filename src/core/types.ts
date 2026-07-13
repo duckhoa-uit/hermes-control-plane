@@ -1,5 +1,5 @@
 // ============================================================
-// Hermes Control Plane - Core Type Definitions
+// Control Plan - Core Type Definitions
 // ============================================================
 
 // ---- Session States ----

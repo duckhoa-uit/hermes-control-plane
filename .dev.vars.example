@@ -1,4 +1,4 @@
-# Hermes Control Plane — Environment Variables (Cloudflare Workers production)
+# Control Plan — Environment Variables (Cloudflare Workers production)
 # Copy to .dev.vars, fill in values. Secrets go through `wrangler secret put`.
 
 # GitHub (fine-grained PAT)
@@ -6,8 +6,11 @@ GITHUB_WRITE_TOKEN=ghp_...
 GITHUB_READ_TOKEN=ghp_...
 GITHUB_WEBHOOK_SECRET=openssl rand -hex 32
 GITHUB_USER_LOGIN=your-github-username
-GITHUB_OWNER=your-org-or-user
-GITHUB_REPO=your-repo
+
+# Separate capability secrets. Never reuse GITHUB_WEBHOOK_SECRET.
+CONTROL_PLAN_REPLAY_SECRET=openssl rand -hex 32
+CONTROL_PLAN_PROXY_SECRET=openssl rand -hex 32
+CONTROL_PLAN_INTERNAL_SECRET=openssl rand -hex 32
 
 # LLM Provider (Z.AI for zai/glm-5.2, or anthropic/openai)
 LLM_MODEL=zai/glm-5.2
@@ -21,3 +24,12 @@ POSTHOG_PROJECT_TOKEN=
 AUTOFIX_CAP_PER_PR=3
 MAX_CONCURRENT_SESSIONS=10
 AUTO_CREATE_PR=1
+
+# Local Worker/Sandbox defaults. Set WORKER_URL to the public HTTPS origin in production.
+WORKER_URL=http://localhost:8787
+SANDBOX_TRANSPORT=rpc
+
+# Hermes Agent → Control Plan MCP service boundary
+CONTROL_PLAN_MCP_TOKEN=replace-with-a-long-random-token
+CONTROL_PLAN_ALLOWED_REPOSITORIES=duckhoa-uit/lawn
+CONTROL_PLAN_ALLOWED_BASE_BRANCHES=main

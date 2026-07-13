@@ -239,8 +239,8 @@ describe("E2E: Token flow (HMAC)", () => {
   });
 });
 
-describe("E2E: Hermes event contract verification", () => {
-  it("approval_requested event matches Hermes shape", () => {
+describe("E2E: Hermes Agent event contract verification", () => {
+  it("approval_requested event matches Hermes Agent shape", () => {
     const ev = {
       name: "approval_requested",
       id: "req_001",
@@ -259,7 +259,7 @@ describe("E2E: Hermes event contract verification", () => {
     expect(ev.data.command).toBeDefined();
   });
 
-  it("approval_resolved event matches Hermes shape", () => {
+  it("approval_resolved event matches Hermes Agent shape", () => {
     const ev = {
       name: "approval_resolved",
       id: "req_001",
@@ -277,7 +277,7 @@ describe("E2E: Hermes event contract verification", () => {
     ]).toContain(ev.data.decision);
   });
 
-  it("permissions_list_open matches Hermes MCP shape", () => {
+  it("permissions_list_open matches Hermes Agent MCP shape", () => {
     const resp = {
       approvals: [
         { id: "a1", session_id: "s1", type: "git_push", title: "Push", status: "pending" },
@@ -287,7 +287,7 @@ describe("E2E: Hermes event contract verification", () => {
     expect(resp.approvals[0].status).toBe("pending");
   });
 
-  it("permissions_respond matches Hermes MCP shape", () => {
+  it("permissions_respond matches Hermes Agent MCP shape", () => {
     // POST /approvals/:id with { decision, actor } is equivalent to permissions_respond
     const payload = { decision: "once", actor: "web" };
     expect(payload.decision).toBe("once");
@@ -301,7 +301,7 @@ describe("E2E: Source code audit", () => {
   }
 
   const app = read("src/app.ts");
-  const agent = read("src/agents/hermes.ts");
+  const agent = read("src/agents/control-plan.ts");
   const cf = read("src/cloudflare.ts");
   const wrangler = read("wrangler.jsonc");
   const envFile = read("src/env.d.ts");

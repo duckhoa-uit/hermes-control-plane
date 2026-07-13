@@ -12,24 +12,27 @@
 
 ```bash
 bun install
-bun run test         # 140+ tests
+bun run test
 bun run typecheck    # tsc --noEmit
 
 # Local dev
 npx flue build --target cloudflare
-npx wrangler dev
+npx wrangler dev --port 8787
 
-# Deploy
+# Deploy (production)
+# Follow docs/DEPLOYMENT.md for all secrets, runtime vars, dry-run, and smoke checks.
 npx flue build --target cloudflare
-npx wrangler deploy
-echo "$YOUR_TOKEN" | npx wrangler secret put GITHUB_WRITE_TOKEN
+npx wrangler deploy --dry-run
 ```
 
 ## Environment
 
-Copy `.dev.vars.example` → `.dev.vars` for local dev. Production secrets
-go through `wrangler secret put`.
+Copy `.dev.vars.example` → `.dev.vars` for local dev. Production secrets and
+deployment vars are documented in [`docs/DEPLOYMENT.md`](DEPLOYMENT.md).
 
 ## Architecture
 
-Single Cloudflare Worker with Flue agents. See `docs/FLUE-MIGRATION-SPEC.md`.
+Hermes Agent calls the Control Plan remote HTTP MCP server; Control Plan
+dispatches to the Flue Durable Object and Cloudflare Sandbox `0.12.3`.
+See [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) and
+[`docs/HERMES-AGENT-INTEGRATION.md`](HERMES-AGENT-INTEGRATION.md).

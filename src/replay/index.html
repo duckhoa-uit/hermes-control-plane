@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Session Replay — Hermes</title>
+<title>Session Replay — Control Plan</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0d1117; color: #c9d1d9; min-height: 100vh; }
@@ -542,8 +542,43 @@ function truncate(s, n) {
   return s.length > n ? s.slice(0, n) + '...' : s;
 }
 
+// === Approval poller ===
+// ApprovalDO is the source of truth for approvals. Poll the open list instead
+// of relying on stream data events; handleDataEvent() stays only as a
+// compatibility fallback for older recorded sessions.
+async function pollApprovals() {
+  try {
+    const resp = await fetch('/sessions/' + SESSION_ID + '/approvals/open?token=' + encodeURIComponent(TOKEN));
+    if (resp.ok) {
+      const res = await resp.json();
+      const open = (res && res.approvals) || [];
+      const openIds = new Set(open.map(a => a.id));
+      for (const a of open) {
+        if (!approvalMap.has(a.id)) {
+          const p = a.payload || {};
+          renderApprovalRequest(a.id, { type: a.type, title: a.title, command: p.command, diff: p.diff, metadata: p.metadata });
+          document.getElementById('status-badge').textContent = 'needs_approval';
+          document.getElementById('status-badge').className = 'status-badge needs_approval';
+        }
+      }
+      // Locally-pending approval no longer open → resolved elsewhere; fetch decision
+      for (const [aid, entry] of approvalMap) {
+        if (entry.pending && !openIds.has(aid)) {
+          try {
+            const row = await (await fetch('/approvals/' + aid + '?token=' + encodeURIComponent(TOKEN))).json();
+            if (row && row.status && row.status !== 'pending') {
+              resolveApprovalUI(aid, row.decision || row.status);
+            }
+          } catch { /* retry next poll */ }
+        }
+      }
+    }
+  } catch { /* transient; retry next tick */ }
+  setTimeout(pollApprovals, 4000);
+}
+
 // Start
-if (SESSION_ID) connect();
+if (SESSION_ID) { connect(); pollApprovals(); }
 </script>
 </body>
 </html>

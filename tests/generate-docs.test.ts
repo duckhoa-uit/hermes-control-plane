@@ -16,8 +16,11 @@ describe("auto-generated docs", () => {
     expect(content).toContain("AUTO-GENERATED");
   });
 
-  it("docs/FLUE-MIGRATION-SPEC.md exists (current migration state)", () => {
-    const file = path.join(DOCS_DIR, "FLUE-MIGRATION-SPEC.md");
+  it("current deployment and architecture docs exist", () => {
+    const file = path.join(DOCS_DIR, "DEPLOYMENT.md");
     expect(fs.existsSync(file)).toBe(true);
+    expect(fs.existsSync(path.join(DOCS_DIR, "ARCHITECTURE.md"))).toBe(true);
+    expect(fs.existsSync(path.join(DOCS_DIR, "FLUE-MIGRATION-SPEC.md"))).toBe(false);
+    expect(fs.existsSync(path.join(DOCS_DIR, "FLUE-BETA10-MIGRATION.md"))).toBe(false);
   });
 });

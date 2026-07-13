@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Single-command bootstrap for hermes-control-plane local dev.
+# Single-command bootstrap for Control Plan local dev.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"

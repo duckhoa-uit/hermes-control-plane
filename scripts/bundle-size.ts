@@ -52,6 +52,17 @@ function sumDirSize(dir: string): number {
 function main(): void {
   mkdirSync(OUT_DIR, { recursive: true });
 
+  // The Flue entry is generated from the current checkout. Run this here so
+  // the standalone CI/local bundle check never consumes a generated entry
+  // containing absolute paths from another machine.
+  const flueBuild = spawnSync("npx", ["flue", "build", "--target", "cloudflare"], {
+    stdio: "inherit",
+  });
+  if (flueBuild.status !== 0) {
+    console.error(`flue build failed with status ${flueBuild.status}`);
+    process.exit(2);
+  }
+
   // wrangler deploy --dry-run produces the exact bundle without uploading.
   // We pin --outdir so we can stat the result.
   const r = spawnSync("bunx", ["wrangler", "deploy", "--dry-run", "--outdir", OUT_DIR], {
