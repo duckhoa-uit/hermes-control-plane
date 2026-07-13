@@ -33,9 +33,9 @@
       "groupName": "cloudflare workers runtime"
     },
     {
-      "description": "OpenCode + E2B drive the sandboxed agent runtime — keep them in their own group so breakage is isolated to a single PR.",
-      "matchPackageNames": ["@opencode-ai/sdk", "e2b"],
-      "groupName": "agent runtime (opencode + e2b)"
+      "description": "Flue + Cloudflare Sandbox drive the coding-agent runtime — keep them in their own group so runtime breakage is isolated to a single PR.",
+      "matchPackageNames": ["@flue/cli", "@flue/runtime", "@flue/sdk", "@cloudflare/sandbox"],
+      "groupName": "agent runtime (flue + cloudflare sandbox)"
     },
     {
       "description": "Test/lint/format/quality toolchain churns frequently; group so PRs don't fragment the dashboard.",
