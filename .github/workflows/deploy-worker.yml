@@ -46,10 +46,10 @@ jobs:
 
       - run: bun run typecheck
 
-      - run: bun run bundle:size
-
       - name: Flue build
         run: npx flue build --target cloudflare
+
+      - run: bun run bundle:size
 
       - name: Deploy
         id: wrangler

@@ -1,6 +1,10 @@
 node_modules/
 dist/
 .wrangler/
+# Flue generates these from the current checkout. They contain absolute
+# source paths and must never be shared between machines.
+.flue-vite/
+.flue-vite.wrangler.jsonc
 .dev.vars
 *.log
 .DS_Store
