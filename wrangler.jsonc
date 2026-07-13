@@ -4,6 +4,7 @@
   "main": ".flue-vite/_entry.ts",
   "compatibility_date": "2026-06-28",
   "compatibility_flags": ["nodejs_compat"],
+  "routes": [{ "pattern": "control-plan.khoa.lol", "custom_domain": true }],
   "observability": { "enabled": true, "head_sampling_rate": 0.1 },
   "containers": [
     {

@@ -32,10 +32,10 @@ server prefix (for example, `mcp_control_plan_spawn_coding_task`).
 
 | Tool | Purpose |
 |---|---|
-| `spawn_coding_task` | Validate repository/branch policy, allocate an isolated task branch, persist an idempotent task, and dispatch Flue under the concurrency lease. |
+| `spawn_coding_task` | Verify GitHub App installation access and repository branch, allocate an isolated task branch, persist an idempotent task, and dispatch Flue under the concurrency lease. |
 | `get_coding_task` | Reconcile Flue history settlements and return durable task state, repository/branch, summary, replay URL, result metadata, and open approvals. |
 | `respond_coding_approval` | Resolve a pending ApprovalDO record belonging to the task. |
 | `cancel_coding_task` | Persist cancellation, request Flue abort, and block later GitHub publication. |
 
 See [`HERMES-AGENT-INTEGRATION.md`](HERMES-AGENT-INTEGRATION.md) for schemas,
-authentication, policy configuration, and the Hermes client setup.
+authentication, GitHub App installation configuration, and Hermes client setup.

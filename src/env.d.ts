@@ -18,13 +18,13 @@ interface Env {
   AI: import("agents").Ai;
 
   // Secrets and vars
-  GITHUB_WRITE_TOKEN: string;
-  GITHUB_READ_TOKEN: string;
+  GITHUB_APP_ID?: string;
+  GITHUB_APP_PRIVATE_KEY?: string;
   GITHUB_WEBHOOK_SECRET: string;
   CONTROL_PLAN_REPLAY_SECRET?: string;
   CONTROL_PLAN_PROXY_SECRET?: string;
   CONTROL_PLAN_INTERNAL_SECRET?: string;
-  GITHUB_USER_LOGIN: string;
+  GITHUB_USER_LOGIN?: string;
   GITHUB_USER_EMAIL?: string;
   MODEL_PROGRESS_TIMEOUT_MS?: string;
   LLM_MODEL: string;
@@ -37,6 +37,4 @@ interface Env {
   ZAI_API_KEY: string;
   WORKER_URL: string;
   CONTROL_PLAN_MCP_TOKEN?: string;
-  CONTROL_PLAN_ALLOWED_REPOSITORIES?: string;
-  CONTROL_PLAN_ALLOWED_BASE_BRANCHES?: string;
 }

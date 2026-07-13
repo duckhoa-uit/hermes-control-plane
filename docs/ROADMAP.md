@@ -1,6 +1,6 @@
 # Roadmap
 
-## Done (2026-07-12)
+## Done (2026-07-14)
 
 - [x] Migrate from E2B/OpenCode/Bun Launcher to Flue + Cloudflare Sandbox.
 - [x] Establish the Hermes → remote HTTP MCP → Control Plan boundary.
@@ -17,4 +17,4 @@
 - [ ] Stage the Worker rename/state-preserving Durable Object migration.
 - [ ] Run a staged approval, GitHub push, and PR smoke test with production secrets.
 - [x] Keep GitHub webhook events acknowledgement-only; Hermes owns triage and task creation.
-- [ ] Add PR lifecycle follow-up and profile-scoped repository policy management.
+- [x] Use GitHub App installation access for dynamic multi-repository policy and short-lived tokens.

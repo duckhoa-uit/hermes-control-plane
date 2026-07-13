@@ -1,14 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { signScopedToken } from "../core/auth";
+import { GitHubApp, GitHubAppError } from "../agent/github-app";
 import type { CodingTaskRecord } from "../do/coding-task-do";
-import {
-  allowedBaseBranch,
-  allowedRepository,
-  codingTaskId,
-  taskStateFromHistory,
-  taskBranch,
-} from "./task-utils";
+import { codingTaskId, taskStateFromHistory, taskBranch } from "./task-utils";
 
 type InternalFetch = (request: Request) => Promise<Response>;
 
@@ -35,17 +30,25 @@ export async function createControlPlanMcpHandler(options: ControlPlanMcpOptions
       inputSchema: z.object({
         repository: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
         task: z.string().min(1).max(8000),
-        baseBranch: z.string().min(1).max(255).default("main"),
+        baseBranch: z.string().min(1).max(255).optional(),
         idempotencyKey: z.string().min(1).max(128),
       }),
     },
     async ({ repository, task, baseBranch, idempotencyKey }) => {
-      if (!allowedRepository(repository, options.env)) {
-        return toolError(`Repository ${repository} is not allowed for Control Plan.`);
+      let authorization;
+      try {
+        authorization = await new GitHubApp(options.env).authorizeRepository(
+          repository,
+          baseBranch,
+        );
+      } catch (error) {
+        const message =
+          error instanceof GitHubAppError
+            ? error.message
+            : `Could not authorize GitHub repository ${repository}`;
+        return toolError(message);
       }
-      if (!allowedBaseBranch(baseBranch, options.env)) {
-        return toolError(`Base branch ${baseBranch} is not allowed for Control Plan.`);
-      }
+      const resolvedBaseBranch = authorization.baseBranch;
 
       const id = await codingTaskId(repository, idempotencyKey);
       const stub = taskStub(options.env, id);
@@ -56,7 +59,7 @@ export async function createControlPlanMcpHandler(options: ControlPlanMcpOptions
         id,
         sessionId,
         repository,
-        baseBranch,
+        baseBranch: resolvedBaseBranch,
         branch,
         task,
         replayUrl,
@@ -109,7 +112,9 @@ export async function createControlPlanMcpHandler(options: ControlPlanMcpOptions
               "Content-Type": "application/json",
               Authorization: `Bearer ${await internalAgentToken(options.env, sessionId)}`,
             },
-            body: JSON.stringify({ message: codingPrompt(repository, baseBranch, branch, task) }),
+            body: JSON.stringify({
+              message: codingPrompt(repository, resolvedBaseBranch, branch, task),
+            }),
           }),
         );
       } catch (error) {

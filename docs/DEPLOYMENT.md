@@ -6,6 +6,21 @@ production rollout so Durable Object state is preserved.
 
 ## Production configuration
 
+### Create and install the GitHub App
+
+Create a GitHub App under the GitHub account that owns the repositories Hermes
+will modify. It does not need a callback URL or webhook events for the current
+Hermes-driven flow. Grant only:
+
+- Repository metadata: read
+- Repository contents: read/write
+- Pull requests: read/write
+
+Generate a private key, record the numeric App ID, and install the App on the
+personal account. Select **All repositories** when every repository owned by
+that account is in scope. An organization owner must install/approve the App
+for organization repositories.
+
 ### Secrets
 
 Set these with `wrangler secret put`. Wrangler prompts for each value; do not
@@ -13,8 +28,8 @@ commit them or put them in `wrangler.jsonc`.
 
 | Secret | Purpose |
 |---|---|
-| `GITHUB_WRITE_TOKEN` | Push branches + create PRs |
-| `GITHUB_READ_TOKEN` | Clone repos |
+| `GITHUB_APP_ID` | Numeric GitHub App identifier |
+| `GITHUB_APP_PRIVATE_KEY` | PEM private key used to mint short-lived installation tokens |
 | `GITHUB_WEBHOOK_SECRET` | HMAC verify GitHub webhooks |
 | `ZAI_API_KEY` | LLM provider (z.ai) |
 | `CONTROL_PLAN_MCP_TOKEN` | Bearer token for Hermes remote MCP |
@@ -25,8 +40,8 @@ commit them or put them in `wrangler.jsonc`.
 ```bash
 export WORKER_NAME=hermes-control-plane
 
-npx wrangler secret put GITHUB_WRITE_TOKEN --name "$WORKER_NAME"
-npx wrangler secret put GITHUB_READ_TOKEN --name "$WORKER_NAME"
+npx wrangler secret put GITHUB_APP_ID --name "$WORKER_NAME"
+npx wrangler secret put GITHUB_APP_PRIVATE_KEY --name "$WORKER_NAME"
 npx wrangler secret put GITHUB_WEBHOOK_SECRET --name "$WORKER_NAME"
 npx wrangler secret put ZAI_API_KEY --name "$WORKER_NAME"
 npx wrangler secret put CONTROL_PLAN_MCP_TOKEN --name "$WORKER_NAME"
@@ -41,6 +56,24 @@ Verify names without printing secret values:
 npx wrangler secret list --name "$WORKER_NAME"
 ```
 
+The GitHub App installation is the repository authorization boundary. Install it
+with **All repositories** on the personal account if every owned repository is
+in scope; organization repositories still require that organization's approval.
+Control Plan resolves the repository's default branch from GitHub when Hermes
+omits `baseBranch` and verifies an explicitly supplied branch exists. No
+repository or branch allowlist is deployed.
+
+After the migration is verified, revoke the old fine-grained PATs and remove
+their local copies from `.dev.vars`; the Worker no longer reads them.
+
+If the old secrets still exist on the Worker, remove them after the first
+successful App-backed smoke task:
+
+```bash
+npx wrangler secret delete GITHUB_READ_TOKEN --name "$WORKER_NAME"
+npx wrangler secret delete GITHUB_WRITE_TOKEN --name "$WORKER_NAME"
+```
+
 ### Runtime vars
 
 These are non-secret deployment inputs. Keep them in the shell/CI environment
@@ -50,28 +83,26 @@ list in the repository.
 | Var | Default | Purpose |
 |---|---|---|
 | `LLM_MODEL` | `zai/glm-5.2` | Model name |
-| `WORKER_URL` | unset | Public HTTPS Worker origin used by callbacks and replay links |
-| `CONTROL_PLAN_ALLOWED_REPOSITORIES` | unset | Comma-separated repository allowlist; unset means fail-closed |
-| `CONTROL_PLAN_ALLOWED_BASE_BRANCHES` | `main` | Comma-separated base-branch allowlist |
+| `WORKER_URL` | unset | Public HTTPS Worker origin used by callbacks and replay links; production is `https://control-plan.khoa.lol` |
 | `APPROVAL_MODE` | `manual` | Production GitHub-write approval mode |
 
 ## Prerequisites
 
 - Cloudflare Workers Paid plan (for Durable Objects + Containers)
 - Wrangler CLI logged in
-- Production repository and base-branch allowlists decided
+- A GitHub App installed on the account/organizations whose repositories Hermes may delegate
+- GitHub App permissions: Metadata read, Contents read/write, Pull requests read/write
 - Public HTTPS Worker URL available
 
 ## Deploy and verify
 
-Set the runtime inputs for this deployment. Use the exact repositories and
-branches that Hermes profiles are allowed to delegate.
+Set the runtime inputs for this deployment. Hermes profiles may delegate any
+repository covered by the GitHub App installation; `baseBranch` is optional and
+is resolved/verified dynamically per repository.
 
 ```bash
 export WORKER_NAME=hermes-control-plane
-export WORKER_URL="https://<your-worker-domain>"
-export CONTROL_PLAN_ALLOWED_REPOSITORIES="owner/repo-a,owner/repo-b"
-export CONTROL_PLAN_ALLOWED_BASE_BRANCHES="main"
+export WORKER_URL="https://control-plan.khoa.lol"
 
 bun run typecheck
 bun run test
@@ -79,9 +110,7 @@ bun run lint
 npx flue build --target cloudflare
 npx wrangler deploy --dry-run \
   --name "$WORKER_NAME" \
-  --var "WORKER_URL:${WORKER_URL}" \
-  --var "CONTROL_PLAN_ALLOWED_REPOSITORIES:${CONTROL_PLAN_ALLOWED_REPOSITORIES}" \
-  --var "CONTROL_PLAN_ALLOWED_BASE_BRANCHES:${CONTROL_PLAN_ALLOWED_BASE_BRANCHES}"
+  --var "WORKER_URL:${WORKER_URL}"
 ```
 
 Only after the dry run passes, deploy with the same vars:
@@ -89,10 +118,13 @@ Only after the dry run passes, deploy with the same vars:
 ```bash
 npx wrangler deploy \
   --name "$WORKER_NAME" \
-  --var "WORKER_URL:${WORKER_URL}" \
-  --var "CONTROL_PLAN_ALLOWED_REPOSITORIES:${CONTROL_PLAN_ALLOWED_REPOSITORIES}" \
-  --var "CONTROL_PLAN_ALLOWED_BASE_BRANCHES:${CONTROL_PLAN_ALLOWED_BASE_BRANCHES}"
+  --var "WORKER_URL:${WORKER_URL}"
 ```
+
+`wrangler.jsonc` declares `control-plan.khoa.lol` as a Cloudflare Custom
+Domain. The first deploy with the logged-in account creates the hostname's DNS
+record and certificate; verify it with `curl -fsS "$WORKER_URL/health"` after
+the deployment.
 
 After deployment, verify the public boundary before connecting Hermes:
 

@@ -209,6 +209,7 @@ describe("push manifest validation", () => {
     );
 
     expect(agent).not.toContain("GITHUB_WRITE_TOKEN");
+    expect(agent).not.toContain("GITHUB_APP_PRIVATE_KEY");
     expect(agent).not.toContain("authUrl");
     expect(agent).not.toContain("git remote set-url origin");
     expect(agent).not.toContain("git -c http.version=HTTP/1.1 push");

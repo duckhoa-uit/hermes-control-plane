@@ -40,8 +40,9 @@ Sandbox logs.
 
 1. Open Worker Logs → Live and filter `level:error`.
 2. Follow the `requestId` and task/session ID through the failing request.
-3. For GitHub `401`/`403`, verify `GITHUB_READ_TOKEN`,
-   `GITHUB_WRITE_TOKEN`, and the configured repository bindings.
+3. For GitHub `401`/`403`, verify `GITHUB_APP_ID`, the PEM
+   `GITHUB_APP_PRIVATE_KEY`, and that the App installation includes the task
+   repository with the required permissions.
 4. For `/mcp` `401`, verify the Hermes `Authorization` header matches
    `CONTROL_PLAN_MCP_TOKEN`; do not reuse the GitHub webhook secret.
 5. For a deployment or binding error, rerun the CI deploy checks after fixing
@@ -67,8 +68,9 @@ Sandbox logs.
    `application/json` and `text/event-stream` in the `Accept` header.
 2. Verify `CONTROL_PLAN_MCP_TOKEN` is present on the Worker and configured in
    Hermes as a secret header.
-3. Confirm the repository and base branch are present in the Control Plan
-   allowlists.
+3. Confirm the GitHub App installation includes the repository and that the
+   requested base branch exists. If `baseBranch` was omitted, inspect the
+   repository's current default branch.
 4. Check that the Hermes tool filter includes the four tools documented in
    [`HERMES-AGENT-INTEGRATION.md`](HERMES-AGENT-INTEGRATION.md).
 

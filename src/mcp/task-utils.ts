@@ -1,8 +1,3 @@
-export type ControlPlanPolicyEnv = Pick<
-  Env,
-  "CONTROL_PLAN_ALLOWED_REPOSITORIES" | "CONTROL_PLAN_ALLOWED_BASE_BRANCHES"
->;
-
 export type AgentEvent = {
   type?: string;
   isError?: boolean;
@@ -20,22 +15,6 @@ export type AgentHistory = {
     result?: { text?: string };
   }>;
 };
-
-export function allowedRepository(repository: string, env: ControlPlanPolicyEnv): boolean {
-  const allowed = (env.CONTROL_PLAN_ALLOWED_REPOSITORIES || "")
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
-  return allowed.includes(repository);
-}
-
-export function allowedBaseBranch(branch: string, env: ControlPlanPolicyEnv): boolean {
-  const allowed = (env.CONTROL_PLAN_ALLOWED_BASE_BRANCHES || "main")
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
-  return allowed.includes(branch);
-}
 
 export function taskBranch(taskId: string): string {
   return `control-plan/${taskId.replace(/^task_/, "").slice(0, 16)}`;

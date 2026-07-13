@@ -1,7 +1,7 @@
 # Architecture
 
 **Status:** Production-candidate Control Plan execution service; Hermes MCP
-integration audited 2026-07-12.
+integration audited 2026-07-14.
 
 ## Current deployment
 
@@ -19,7 +19,7 @@ Control Plan Worker (Hono + Flue)
     |- ControlPlanTaskDurableObject
     |- ControlPlanAdmissionDurableObject
     |- PrIndexDurableObject
-    |- credential-isolated GitHub write routes
+    |- GitHub App auth + credential-isolated GitHub write routes
     |
     v
 Cloudflare Sandbox container
@@ -37,7 +37,7 @@ Cloudflare Sandbox container
 | Task store | Repository/base-branch/isolated-branch correlation, result metadata, stream offset | `src/do/coding-task-do.ts` |
 | Admission store | Global concurrent-task limit with expiring leases | `src/do/admission-do.ts` |
 | PR index | Durable pull-request lookup | `src/do/pr-index-do.ts` |
-| GitHub write boundary | Publish manifests and create PRs without exposing the write token to the sandbox | `src/app.ts`, `src/agent/github-api-push.ts` |
+| GitHub App/write boundary | Resolve installation access and publish manifests/create PRs without exposing a write token to the sandbox | `src/agent/github-app.ts`, `src/app.ts`, `src/agent/github-api-push.ts` |
 | Sandbox | Isolated repository checkout and command execution | `src/cf-sandbox/Dockerfile` |
 
 The Worker currently exports these Durable Object classes:
@@ -55,13 +55,16 @@ class, not two independent classes.
 
 ## Current lifecycle
 
-1. Hermes calls `spawn_coding_task` with an allowlisted repository, base branch,
+1. Hermes calls `spawn_coding_task` with a repository, optional base branch,
    idempotency key, and the root-cause coding prompt.
-2. Control Plan persists the task, allocates `control-plan/<task-prefix>`, and
-   admits it under the global concurrency lease.
+2. Control Plan verifies that a GitHub App installation grants access to the
+   repository, resolves/verifies the base branch, then persists the task and
+   allocates `control-plan/<task-prefix>`, then admits it under the global
+   concurrency lease.
 3. Control Plan dispatches `/agents/control-plan/:id`; Flue runs the model/tool
    loop in its Durable Object.
-4. `clone_repository` performs a task-bound public/private clone into Sandbox.
+4. `clone_repository` mints a short-lived GitHub App installation token scoped
+   to the task repository and performs a task-bound clone into Sandbox.
 5. The agent prepares a validated file manifest and requests approval.
 6. The Worker resolves the task's repository and branch before publishing the
    commit through GitHub's Git Database API.
@@ -71,11 +74,12 @@ class, not two independent classes.
 
 ## Security boundary
 
-Sandbox code is untrusted. It never receives `GITHUB_WRITE_TOKEN`. Privileged
-GitHub writes happen only in the Worker after a purpose-bound, short-lived proxy
-capability, task binding, base-branch validation, and manifest limits are
-validated. Replay and internal Flue capabilities use different secrets and
-cannot be exchanged.
+Sandbox code is untrusted. It receives only a short-lived, repository-scoped
+GitHub App read token for the clone command and never receives a write token.
+Privileged GitHub writes happen only in the Worker after a purpose-bound,
+short-lived proxy capability, task binding, installation authorization,
+base-branch validation, and manifest limits are validated. Replay and internal
+Flue capabilities use different secrets and cannot be exchanged.
 
 The replay and approval UI uses signed session URLs. This is sufficient for the
 current single-operator model, but it is not a multi-user authorization model.
@@ -100,7 +104,7 @@ Control Plan Worker (Hono + Flue)
     |- task/approval correlation
     |- FlueControlPlanAgent Durable Object
     |- Approval DO and PR index
-    `- credential-isolated GitHub write boundary
+    `- GitHub App auth + credential-isolated GitHub write boundary
              |
              v
  Cloudflare Sandbox container
@@ -118,7 +122,7 @@ rollout gates are in
 
 | Tool | Responsibility |
 |---|---|
-| `spawn_coding_task` | Validate repo/task policy, create a Control Plan task ID, and dispatch a Flue coding session |
+| `spawn_coding_task` | Verify GitHub App repository access, create a Control Plan task ID, and dispatch a Flue coding session |
 | `get_coding_task` | Read durable task status, replay URL, and pending approval summary |
 | `respond_coding_approval` | Forward an explicit Hermes/user approval decision to ApprovalDO |
 | `cancel_coding_task` | Abort the Flue submission and block publication for the task |
@@ -134,18 +138,19 @@ remains `hermes-control-plane` until a deliberate cutover transfers Durable
 Object classes and re-creates secrets/routes for the new Worker script. Changing
 `wrangler.name` alone would create a separate deployment and orphan live state.
 
-## Release gates from the 2026-07-12 audit
+## Release gates from the 2026-07-14 audit
 
 The architecture passes its local test/type/lint/build gates and a
 Docker-backed Lawn task. The remaining release gates are environment and
 operations checks, not an alternate issue-trigger architecture:
 
 1. Configure a real Hermes profile with the production `/mcp` URL, service
-   token, repository allowlist, and tool allowlist; run one smoke task.
+   token, GitHub App-installed repository scope, and tool allowlist; run one
+   smoke task.
 2. Set the production `WORKER_URL` to the public HTTPS origin and configure the
-   three purpose-specific capability secrets. GitHub write
-   routing is task-bound; `GITHUB_OWNER/GITHUB_REPO` are retained only for
-   legacy tests and are not used by production task sessions.
+   three purpose-specific capability secrets plus the GitHub App credentials.
+   GitHub installation access and task-bound routing are both enforced at
+   runtime.
 3. Sandbox uses `@cloudflare/sandbox` and `docker.io/cloudflare/sandbox`
    `0.12.3`, with RPC transport and default sessions disabled. The migrated
    Docker path passed the Lawn task; production rollout still needs its

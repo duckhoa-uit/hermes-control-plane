@@ -24,6 +24,7 @@ import {
 import type { CodingTaskRecord, CodingTaskResult } from "../do/coding-task-do";
 import { taskIdFromSessionId } from "../mcp/task-utils";
 import { withDefaultExecTimeout } from "../agent/sandbox-timeout";
+import { GitHubApp } from "../agent/github-app";
 
 const DEFAULT_SANDBOX_EXEC_TIMEOUT_MS = 15 * 60 * 1000;
 
@@ -269,22 +270,21 @@ export default defineAgent<Env>(({ id, env }) => {
       const [owner, repo] = task.repository.split("/");
       const repoPath = `/workspace/${repo}`;
       const askpassPath = `/tmp/control-plan-askpass-${task.id.slice(-12)}`;
+      const githubAccess = await new GitHubApp(env).getRepositoryAccess(task.repository, "read");
       const command = [
         "set -eu",
         `if [ -d ${shellQuote(`${repoPath}/.git`)} ]; then exit 0; fi`,
         `rm -rf ${shellQuote(repoPath)}`,
         `askpass=${shellQuote(askpassPath)}`,
         `trap 'rm -f "$askpass"' EXIT`,
-        `printf '%s\\n' '#!/bin/sh' 'printf "%s\\n" "$CONTROL_PLAN_GITHUB_READ_TOKEN"' > "$askpass"`,
+        `printf '%s\\n' '#!/bin/sh' 'printf "%s\\n" "$CONTROL_PLAN_GITHUB_APP_TOKEN"' > "$askpass"`,
         `chmod 700 "$askpass"`,
-        `if [ -n "\${CONTROL_PLAN_GITHUB_READ_TOKEN:-}" ]; then GIT_TERMINAL_PROMPT=0 GIT_ASKPASS="$askpass" git -c credential.helper= clone --branch ${shellQuote(task.baseBranch)} --single-branch https://x-access-token@github.com/${owner}/${repo}.git ${shellQuote(repoPath)}; else git -c credential.helper= clone --branch ${shellQuote(task.baseBranch)} --single-branch https://github.com/${owner}/${repo}.git ${shellQuote(repoPath)}; fi`,
+        `GIT_TERMINAL_PROMPT=0 GIT_ASKPASS="$askpass" git -c credential.helper= clone --branch ${shellQuote(task.baseBranch)} --single-branch https://x-access-token@github.com/${owner}/${repo}.git ${shellQuote(repoPath)}`,
       ].join("\n");
 
       const result = await sandbox().exec(command, {
         timeout: DEFAULT_SANDBOX_EXEC_TIMEOUT_MS,
-        env: env.GITHUB_READ_TOKEN
-          ? { CONTROL_PLAN_GITHUB_READ_TOKEN: env.GITHUB_READ_TOKEN }
-          : undefined,
+        env: { CONTROL_PLAN_GITHUB_APP_TOKEN: githubAccess.token },
       });
       if (result.exitCode !== 0) {
         throw new Error(`Repository clone failed: ${result.stderr || result.stdout}`);
@@ -344,15 +344,16 @@ export default defineAgent<Env>(({ id, env }) => {
       title: v.string(),
       body: v.string(),
       branch: v.string(),
-      baseBranch: v.optional(v.string(), "main"),
+      baseBranch: v.optional(v.string()),
     }),
     async run(ctx) {
       const { title, body, branch, baseBranch } = ctx.input;
       const task = await taskRecord();
+      const resolvedBaseBranch = task?.baseBranch || baseBranch || "main";
       if (task?.state === "cancellation_requested") {
         throw new Error("coding task cancellation requested; publication is blocked");
       }
-      if (task && (branch !== task.branch || baseBranch !== task.baseBranch)) {
+      if (task && (branch !== task.branch || resolvedBaseBranch !== task.baseBranch)) {
         throw new Error(
           `create_pr must use task branch ${task.branch} and base branch ${task.baseBranch}`,
         );
@@ -361,7 +362,7 @@ export default defineAgent<Env>(({ id, env }) => {
         title,
         body,
         branch,
-        baseBranch: baseBranch || "main",
+        baseBranch: resolvedBaseBranch,
       });
     },
   });
@@ -375,17 +376,18 @@ export default defineAgent<Env>(({ id, env }) => {
       commitMessage: v.string(),
       prTitle: v.optional(v.string()),
       prBody: v.optional(v.string(), ""),
-      baseBranch: v.optional(v.string(), "main"),
+      baseBranch: v.optional(v.string()),
       createPr: v.optional(v.boolean(), true),
       force: v.optional(v.boolean(), false),
     }),
     async run(ctx) {
       const { branch, commitMessage, prTitle, prBody, baseBranch, createPr, force } = ctx.input;
       const task = await taskRecord();
+      const resolvedBaseBranch = task?.baseBranch || baseBranch || "main";
       if (task?.state === "cancellation_requested") {
         throw new Error("coding task cancellation requested; finalization is blocked");
       }
-      if (task && (branch !== task.branch || baseBranch !== task.baseBranch)) {
+      if (task && (branch !== task.branch || resolvedBaseBranch !== task.baseBranch)) {
         throw new Error(
           `mark_ready_to_finalize must use task branch ${task.branch} and base branch ${task.baseBranch}`,
         );
@@ -396,7 +398,7 @@ export default defineAgent<Env>(({ id, env }) => {
         commitMessage,
         prTitle,
         prBody: prBody || "",
-        baseBranch: baseBranch || "main",
+        baseBranch: resolvedBaseBranch,
         createPr: createPr ?? true,
         force: force ?? false,
       };
@@ -415,7 +417,7 @@ export default defineAgent<Env>(({ id, env }) => {
             authorName,
             authorEmail,
           );
-          return buildPushSnapshot(taskSandbox, repoPath, branch, force, baseBranch || "main");
+          return buildPushSnapshot(taskSandbox, repoPath, branch, force, resolvedBaseBranch);
         },
         approvePush: (snapshot) => requireGitPushApproval(ctx, snapshot),
         push: (snapshot) => pushSnapshot(ctx, snapshot),

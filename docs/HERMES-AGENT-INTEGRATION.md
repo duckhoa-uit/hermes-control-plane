@@ -12,7 +12,7 @@ with a service token and calls a small, allowlisted tool surface:
 
 | MCP tool | Input | Result |
 |---|---|---|
-| `spawn_coding_task` | repository, task, base branch, idempotency key | Control Plan task ID, state, replay URL |
+| `spawn_coding_task` | repository, task, optional base branch, idempotency key | Control Plan task ID, state, replay URL |
 | `get_coding_task` | task ID | state, current summary, pending approval, PR/result when available |
 | `respond_coding_approval` | task ID, approval ID, decision | recorded decision and resulting task state |
 | `cancel_coding_task` | task ID | cancellation-requested state plus Flue abort request |
@@ -36,11 +36,11 @@ call, not an IDE or process-host protocol.
 | Durable model/tool loop | Flue `FlueControlPlanAgent` Durable Object |
 | Git, shell, dependency install, and tests | Cloudflare Sandbox container |
 | Approval persistence and enforcement | Control Plan ApprovalDO |
-| GitHub write token, commit publication, and PR creation | Control Plan Worker |
+| GitHub App installation authorization, token minting, commit publication, and PR creation | Control Plan Worker |
 
-Hermes never receives `GITHUB_WRITE_TOKEN`; the sandbox never receives it
-either. Hermes only receives task state and approved result metadata from
-Control Plan.
+Hermes never receives the GitHub App private key or installation tokens; the
+sandbox receives only a short-lived repository-scoped read token for cloning.
+Hermes only receives task state and approved result metadata from Control Plan.
 
 ## Hermes configuration
 
@@ -51,7 +51,7 @@ production and a local Docker origin only for development.
 ```yaml
 mcp_servers:
   control_plan:
-    url: "https://control-plan.example.com/mcp"
+    url: "https://control-plan.khoa.lol/mcp"
     headers:
       Authorization: "Bearer <Control Plan MCP service token>"
     tools:
@@ -72,7 +72,7 @@ webhook secret, signed replay tokens, or a GitHub token for this boundary.
 ```text
 Hermes receives a coding request
   -> Hermes calls spawn_coding_task
-  -> Control Plan validates policy and dispatches Flue
+  -> Control Plan validates GitHub App access and dispatches Flue
   -> Flue works in its per-task Cloudflare Sandbox
   -> Control Plan records and enforces an approval if GitHub publication is needed
   -> Control Plan writes the commit/PR through its GitHub API boundary
@@ -86,8 +86,10 @@ diagnostic and operator interface, not the only record of task completion.
 
 1. Authenticate every MCP request with `CONTROL_PLAN_MCP_TOKEN`; reject missing
    or invalid credentials before parsing a tool call.
-2. Allow only explicitly configured repositories and base branches. Validate an
-   idempotency key before dispatching a second Flue session.
+2. Let the GitHub App installation determine repository access. When
+   `baseBranch` is omitted, Control Plan uses the repository default branch;
+   when supplied, it must exist. Validate an idempotency key before dispatching
+   a second Flue session.
 3. Persist the task record before dispatch. Store the Control Plan task ID,
    Flue session ID, repository, base branch, deterministic publication branch,
    and lifecycle state. The task branch is enforced at both the agent tool and
@@ -104,10 +106,11 @@ Control Plan currently pins `@cloudflare/sandbox` and its Docker base image to
 `0.12.3`. Every task sandbox uses RPC transport with default sessions disabled,
 which is required by Cloudflare's post-2026-07-09 Sandbox SDK migration.
 
-Private repositories require `GITHUB_READ_TOKEN`. It is passed only to the
-task-bound clone tool for the duration of the clone command; it is not placed in
-the model shell or clone URL. `MAX_CONCURRENT_SESSIONS` is enforced by a
-Durable Object admission lease, not only by the Sandbox container
+Private repositories require the GitHub App to be installed on the repository.
+Control Plan mints a read installation token scoped to that repository and
+passes it only to the task-bound clone command; it is not persisted in the task
+record or placed in the model shell or clone URL. `MAX_CONCURRENT_SESSIONS` is
+enforced by a Durable Object admission lease, not only by the Sandbox container
 `max_instances` setting. Capacity failures are retryable and do not dispatch a
 second Flue session for the same idempotency key.
 

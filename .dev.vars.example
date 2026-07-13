@@ -1,9 +1,9 @@
 # Control Plan — Environment Variables (Cloudflare Workers production)
 # Copy to .dev.vars, fill in values. Secrets go through `wrangler secret put`.
 
-# GitHub (fine-grained PAT)
-GITHUB_WRITE_TOKEN=ghp_...
-GITHUB_READ_TOKEN=ghp_...
+# GitHub App (install the App on every account/org repository Hermes may use)
+GITHUB_APP_ID=123456
+GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
 GITHUB_WEBHOOK_SECRET=openssl rand -hex 32
 GITHUB_USER_LOGIN=your-github-username
 
@@ -31,5 +31,3 @@ SANDBOX_TRANSPORT=rpc
 
 # Hermes Agent → Control Plan MCP service boundary
 CONTROL_PLAN_MCP_TOKEN=replace-with-a-long-random-token
-CONTROL_PLAN_ALLOWED_REPOSITORIES=duckhoa-uit/lawn
-CONTROL_PLAN_ALLOWED_BASE_BRANCHES=main

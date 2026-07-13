@@ -20,7 +20,6 @@
 
 import { flue } from "@flue/runtime/routing";
 import { Hono } from "hono";
-import { Octokit } from "@octokit/rest";
 import { signScopedToken, verifyScopedToken } from "./core/auth";
 import {
   isPushManifest,
@@ -31,6 +30,7 @@ import { installModelProgressWatchdog } from "./agent/runtime-watchdog";
 import { createControlPlanMcpHandler, isAuthorizedMcpRequest } from "./mcp/control-plan";
 import type { CodingTaskRecord } from "./do/coding-task-do";
 import { repositoryParts, taskIdFromSessionId } from "./mcp/task-utils";
+import { GitHubApp } from "./agent/github-app";
 
 type AppEnv = { Bindings: Env };
 const app = new Hono<AppEnv>();
@@ -102,14 +102,13 @@ app.post("/proxy/git-push", async (c) => {
       409,
     );
   }
-  const token = c.env.GITHUB_WRITE_TOKEN;
   const target = repositoryParts(task.repository);
   const owner = target?.owner;
   const repo = target?.repo;
-  if (!token || !owner || !repo) return c.json({ error: "GitHub not configured" }, 500);
+  if (!owner || !repo) return c.json({ error: "invalid task repository" }, 500);
   try {
-    const octokit = new Octokit({ auth: token });
-    const result = await pushManifestWithGitHubApi(octokit, owner, repo, {
+    const access = await new GitHubApp(c.env).getRepositoryAccess(task.repository, "write");
+    const result = await pushManifestWithGitHubApi(access.client, owner, repo, {
       ...body,
       baseBranch: task.baseBranch,
     });
@@ -127,7 +126,15 @@ app.post("/proxy/create-pr", async (c) => {
   }
   const body = await c.req.json().catch(() => ({}));
   const { title, body: prBody, branch, baseBranch } = body as Record<string, unknown>;
-  if (!title || !branch) return c.json({ error: "title and branch required" }, 400);
+  if (typeof title !== "string" || typeof branch !== "string") {
+    return c.json({ error: "title and branch required" }, 400);
+  }
+  if (baseBranch !== undefined && typeof baseBranch !== "string") {
+    return c.json({ error: "baseBranch must be a string" }, 400);
+  }
+  if (prBody !== undefined && typeof prBody !== "string") {
+    return c.json({ error: "body must be a string" }, 400);
+  }
   const sessionId = proxySessionId(c.req.raw);
   const task = await taskForProxy(c.env, sessionId);
   if (!task) return c.json({ error: "session is not bound to a coding task" }, 409);
@@ -138,24 +145,25 @@ app.post("/proxy/create-pr", async (c) => {
   ) {
     return c.json({ error: `coding task is ${task.state}` }, 409);
   }
-  if (branch !== task.branch || (baseBranch ?? "main") !== task.baseBranch) {
+  const resolvedBaseBranch = baseBranch ?? task.baseBranch;
+  if (branch !== task.branch || resolvedBaseBranch !== task.baseBranch) {
     return c.json(
       { error: `branch/baseBranch must be ${task.branch}/${task.baseBranch} for this coding task` },
       409,
     );
   }
-  const token = c.env.GITHUB_WRITE_TOKEN;
   const target = repositoryParts(task.repository);
   const owner = target?.owner;
   const repo = target?.repo;
-  if (!token || !owner || !repo) return c.json({ error: "GitHub not configured" }, 500);
+  if (!owner || !repo) return c.json({ error: "invalid task repository" }, 500);
   try {
-    const octokit = new Octokit({ auth: token });
+    const access = await new GitHubApp(c.env).getRepositoryAccess(task.repository, "write");
+    const octokit = access.client;
     const existing = await octokit.rest.pulls.list({
       owner,
       repo,
-      head: `${owner}:${branch as string}`,
-      base: (baseBranch as string) ?? "main",
+      head: `${owner}:${branch}`,
+      base: resolvedBaseBranch,
       state: "open",
       per_page: 1,
     });
@@ -171,10 +179,10 @@ app.post("/proxy/create-pr", async (c) => {
     const pr = await octokit.rest.pulls.create({
       owner,
       repo,
-      title: title as string,
-      body: (prBody as string) ?? "",
-      head: branch as string,
-      base: (baseBranch as string) ?? "main",
+      title,
+      body: prBody ?? "",
+      head: branch,
+      base: resolvedBaseBranch,
     });
     return c.json({
       success: true,

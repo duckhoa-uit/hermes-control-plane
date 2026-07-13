@@ -6,6 +6,27 @@ const octokitState = vi.hoisted(() => ({
   create: vi.fn(),
 }));
 
+vi.mock("jose", () => ({
+  importPKCS8: vi.fn(async () => ({})),
+  SignJWT: class {
+    setProtectedHeader() {
+      return this;
+    }
+    setIssuedAt() {
+      return this;
+    }
+    setExpirationTime() {
+      return this;
+    }
+    setIssuer() {
+      return this;
+    }
+    sign() {
+      return Promise.resolve("test-app-jwt");
+    }
+  },
+}));
+
 vi.mock("@octokit/rest", () => ({
   Octokit: vi.fn(() => ({
     rest: {
@@ -21,12 +42,12 @@ describe("create-pr proxy", () => {
   const taskId = `task_${"a".repeat(32)}`;
   const sessionId = `control-plan-${taskId}`;
 
-  function taskBinding() {
+  function taskBinding(baseBranch = "main") {
     const task = {
       id: taskId,
       sessionId,
       repository: "owner/repo",
-      baseBranch: "main",
+      baseBranch,
       branch: "codex/test",
       task: "test",
       state: "dispatched",
@@ -43,7 +64,27 @@ describe("create-pr proxy", () => {
   afterEach(() => {
     octokitState.list.mockReset();
     octokitState.create.mockReset();
+    vi.unstubAllGlobals();
   });
+
+  function appEnv(secret: string, binding = taskBinding()) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if ((init?.method || "GET") === "POST") {
+          return Response.json({ token: "installation-token", expires_at: "2099-01-01T00:00:00Z" });
+        }
+        return Response.json({ id: 123 });
+      }),
+    );
+    return {
+      GITHUB_APP_ID: "123",
+      GITHUB_APP_PRIVATE_KEY: "test-key",
+      GITHUB_WEBHOOK_SECRET: secret,
+      CONTROL_PLAN_PROXY_SECRET: secret,
+      CONTROL_PLAN_TASK_DO: binding,
+    } as unknown as Env;
+  }
 
   it("returns an existing open PR for the same branch/base instead of creating a duplicate", async () => {
     const { default: app } = await import("../src/app");
@@ -66,12 +107,7 @@ describe("create-pr proxy", () => {
           baseBranch: "main",
         }),
       }),
-      {
-        GITHUB_WRITE_TOKEN: "token",
-        GITHUB_WEBHOOK_SECRET: secret,
-        CONTROL_PLAN_PROXY_SECRET: secret,
-        CONTROL_PLAN_TASK_DO: taskBinding(),
-      } as unknown as Env,
+      appEnv(secret),
     );
 
     expect(res.status).toBe(200);
@@ -106,12 +142,7 @@ describe("create-pr proxy", () => {
           baseBranch: "main",
         }),
       }),
-      {
-        GITHUB_WRITE_TOKEN: "token",
-        GITHUB_WEBHOOK_SECRET: secret,
-        CONTROL_PLAN_PROXY_SECRET: secret,
-        CONTROL_PLAN_TASK_DO: taskBinding(),
-      } as unknown as Env,
+      appEnv(secret),
     );
 
     expect(res.status).toBe(200);
@@ -122,6 +153,33 @@ describe("create-pr proxy", () => {
       existing: false,
     });
     expect(octokitState.create).toHaveBeenCalledOnce();
+  });
+
+  it("uses the task base branch when the proxy request omits it", async () => {
+    const { default: app } = await import("../src/app");
+    const secret = "test-secret";
+    octokitState.list.mockResolvedValueOnce({ data: [] });
+    octokitState.create.mockResolvedValueOnce({
+      data: { html_url: "https://github.com/o/r/pull/9", number: 9 },
+    });
+
+    const res = await app.fetch(
+      new Request("http://localhost/proxy/create-pr", {
+        method: "POST",
+        headers: {
+          "X-Control-Plan-Session-Id": sessionId,
+          Authorization: `Bearer ${await signScopedToken(secret, "proxy", sessionId, 60_000)}`,
+        },
+        body: JSON.stringify({ title: "Trunk PR", body: "body", branch: "codex/test" }),
+      }),
+      appEnv(secret, taskBinding("trunk")),
+    );
+
+    expect(res.status).toBe(200);
+    expect(octokitState.list).toHaveBeenCalledWith(
+      expect.objectContaining({ base: "trunk", head: "owner:codex/test" }),
+    );
+    expect(octokitState.create).toHaveBeenCalledWith(expect.objectContaining({ base: "trunk" }));
   });
 
   it("rejects calls without a control-plane signature", async () => {

@@ -6,7 +6,7 @@
 - Node.js 22.18+ (for Flue CLI)
 - Cloudflare account (Workers Paid for DO + Containers)
 - wrangler CLI: `npm i -g wrangler`
-- GitHub fine-grained PAT with Contents + Pull-requests RW
+- GitHub App with Metadata read, Contents read/write, and Pull requests read/write
 
 ## Quick start
 

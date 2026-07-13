@@ -12,7 +12,7 @@ Control Plan is the coding-agent execution service:
 - **Flue** (`@flue/runtime`) — durable coding-agent loop
 - **Cloudflare Workers** + Durable Objects — task service and durable state
 - **Cloudflare Containers** — isolated git, shell, and test execution
-- **GitHub API** — credential-isolated commit and PR writes
+- **GitHub App + API** — installation-authorized, credential-isolated commit and PR writes
 - **Task admission** — repository-scoped durable task records, deterministic
   branches, result metadata, and a bounded concurrency lease
 

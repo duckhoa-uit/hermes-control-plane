@@ -33,19 +33,19 @@ describe("parseRepoUrl", () => {
 
 describe("PrLifecycle", () => {
   it("can be constructed", () => {
-    const lifecycle = new PrLifecycle({ GITHUB_WRITE_TOKEN: "test" });
+    const lifecycle = new PrLifecycle({ GITHUB_APP_ID: "1", GITHUB_APP_PRIVATE_KEY: "test" });
     expect(lifecycle).toBeDefined();
   });
 
   it("pushBranch returns error with bad token", async () => {
-    const lifecycle = new PrLifecycle({ GITHUB_WRITE_TOKEN: "bad-token" });
+    const lifecycle = new PrLifecycle({ GITHUB_APP_ID: "1", GITHUB_APP_PRIVATE_KEY: "bad-token" });
     const result = await lifecycle.pushBranch("owner", "repo", "branch", "sha123", false);
     expect(result.success).toBe(false);
     expect(result.error).toBeDefined();
   });
 
   it("getBranchHeadSha returns null for bad token", async () => {
-    const lifecycle = new PrLifecycle({ GITHUB_WRITE_TOKEN: "bad-token" });
+    const lifecycle = new PrLifecycle({ GITHUB_APP_ID: "1", GITHUB_APP_PRIVATE_KEY: "bad-token" });
     const result = await lifecycle.getBranchHeadSha("owner", "repo", "nonexistent");
     expect(result).toBeNull();
   });

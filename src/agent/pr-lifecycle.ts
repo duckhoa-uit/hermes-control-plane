@@ -3,10 +3,9 @@
 // Runs inside the Worker (DO context). Tools delegate to this.
 // ============================================================
 
-import { Octokit } from "@octokit/rest";
+import { GitHubApp, type GitHubAppEnv } from "./github-app";
 
-export interface PrLifecycleEnv {
-  GITHUB_WRITE_TOKEN: string;
+export interface PrLifecycleEnv extends GitHubAppEnv {
   GITHUB_USER_LOGIN?: string;
 }
 
@@ -36,14 +35,14 @@ export function parseRepoUrl(url: string): Params {
 }
 
 /**
- * PR lifecycle handler with GitHub write token.
+ * PR lifecycle handler with a repository-scoped GitHub App installation token.
  * Create one instance per session from Worker env.
  */
 export class PrLifecycle {
-  private octokit: Octokit;
+  private github: GitHubApp;
 
   constructor(env: PrLifecycleEnv) {
-    this.octokit = new Octokit({ auth: env.GITHUB_WRITE_TOKEN });
+    this.github = new GitHubApp(env);
   }
 
   /** Push a branch to GitHub via Octokit (no sandbox needed). */
@@ -55,7 +54,9 @@ export class PrLifecycle {
     force = false,
   ): Promise<PushResult> {
     try {
-      await this.octokit.rest.git.updateRef({
+      const octokit = (await this.github.getRepositoryAccess(`${repoOwner}/${repoName}`, "write"))
+        .client;
+      await octokit.rest.git.updateRef({
         owner: repoOwner,
         repo: repoName,
         ref: `heads/${branch}`,
@@ -78,7 +79,9 @@ export class PrLifecycle {
     head: string,
     base: string,
   ): Promise<PrCreateResult> {
-    const pr = await this.octokit.rest.pulls.create({
+    const octokit = (await this.github.getRepositoryAccess(`${repoOwner}/${repoName}`, "write"))
+      .client;
+    const pr = await octokit.rest.pulls.create({
       owner: repoOwner,
       repo: repoName,
       title,
@@ -99,7 +102,9 @@ export class PrLifecycle {
     branch: string,
   ): Promise<string | null> {
     try {
-      const ref = await this.octokit.rest.git.getRef({
+      const octokit = (await this.github.getRepositoryAccess(`${repoOwner}/${repoName}`, "read"))
+        .client;
+      const ref = await octokit.rest.git.getRef({
         owner: repoOwner,
         repo: repoName,
         ref: `heads/${branch}`,

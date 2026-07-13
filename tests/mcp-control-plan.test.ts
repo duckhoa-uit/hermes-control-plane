@@ -1,7 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  allowedBaseBranch,
-  allowedRepository,
   codingTaskId,
   taskStateFromEvents,
   taskStateFromHistory,
@@ -10,19 +8,7 @@ import {
   repositoryParts,
 } from "../src/mcp/task-utils";
 
-const env = {
-  CONTROL_PLAN_ALLOWED_REPOSITORIES: "duckhoa-uit/lawn,example/private-repo",
-  CONTROL_PLAN_ALLOWED_BASE_BRANCHES: "main,release",
-} as Env;
-
 describe("Control Plan MCP policy", () => {
-  it("allows only configured repositories and branches", () => {
-    expect(allowedRepository("duckhoa-uit/lawn", env)).toBe(true);
-    expect(allowedRepository("duckhoa-uit/other", env)).toBe(false);
-    expect(allowedBaseBranch("main", env)).toBe(true);
-    expect(allowedBaseBranch("feature", env)).toBe(false);
-  });
-
   it("uses a stable, repository-scoped task idempotency key", async () => {
     const first = await codingTaskId("duckhoa-uit/lawn", "issue-42");
     const repeated = await codingTaskId("duckhoa-uit/lawn", "issue-42");

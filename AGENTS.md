@@ -44,6 +44,7 @@ No VPS, no E2B, no OpenCode, no Bun launcher. Single CF Worker.
 | `src/cloudflare.ts` | Worker-level DO exports (Sandbox, task, approval, and PR index) |
 | `src/do/pr-index-do.ts` | PR Index DurableObject |
 | `src/agent/pr-lifecycle.ts` | GitHub push/PR via Octokit |
+| `src/agent/github-app.ts` | GitHub App installation authorization and short-lived repo-scoped tokens |
 | `src/agent/state-bridge.ts` | Flue lifecycle → Control Plan state machine |
 | `src/core/state-machine.ts` | Session state machine (11 states) |
 | `src/cf-sandbox/Dockerfile` | Container image for agent sandbox |
