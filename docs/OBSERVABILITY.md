@@ -26,7 +26,8 @@ At minimum, alert on:
 
 - sustained Worker 5xx responses;
 - repeated `/mcp` 401 responses or dispatch failures;
-- task records stuck in `dispatched` beyond the expected task duration;
+- task records whose `dispatched` state and `streamOffset` remain unchanged
+  beyond the expected task duration (a short-lived `dispatched` state is normal);
 - Sandbox/container startup or command failures;
 - failed deployment checks.
 

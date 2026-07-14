@@ -4,7 +4,13 @@ import { z } from "zod";
 import { signScopedToken } from "../core/auth";
 import { GitHubApp, GitHubAppError } from "../agent/github-app";
 import type { CodingTaskRecord } from "../do/coding-task-do";
-import { codingTaskId, taskStateFromHistory, taskBranch } from "./task-utils";
+import {
+  codingTaskId,
+  derivedIdempotencyKey,
+  taskLifecycle,
+  taskStateFromHistory,
+  taskBranch,
+} from "./task-utils";
 
 type InternalFetch = (request: Request) => Promise<Response>;
 
@@ -27,12 +33,19 @@ export async function createControlPlanMcpHandler(options: ControlPlanMcpOptions
     "spawn_coding_task",
     {
       description:
-        "Start a policy-checked Control Plan coding task in Flue and Cloudflare Sandbox.",
+        "Start an asynchronous, policy-checked Control Plan coding task in Flue and Cloudflare Sandbox. This returns after dispatch is accepted, not after coding is complete. Save the returned taskId and poll get_coding_task; use a stable idempotencyKey so retries cannot spawn duplicates.",
       inputSchema: z.object({
         repository: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
         task: z.string().min(1).max(8000),
         baseBranch: z.string().min(1).max(255).optional(),
-        idempotencyKey: z.string().min(1).max(128),
+        idempotencyKey: z
+          .string()
+          .min(1)
+          .max(128)
+          .optional()
+          .describe(
+            "Optional stable issue/run ID. If omitted, Control Plan derives one from the task and base branch.",
+          ),
       }),
     },
     async ({ repository, task, baseBranch, idempotencyKey }) => {
@@ -51,7 +64,9 @@ export async function createControlPlanMcpHandler(options: ControlPlanMcpOptions
       }
       const resolvedBaseBranch = authorization.baseBranch;
 
-      const id = await codingTaskId(repository, idempotencyKey);
+      const resolvedIdempotencyKey =
+        idempotencyKey ?? (await derivedIdempotencyKey(task, resolvedBaseBranch));
+      const id = await codingTaskId(repository, resolvedIdempotencyKey);
       const stub = taskStub(options.env, id);
       const sessionId = `control-plan-${id}`;
       const branch = taskBranch(id);
@@ -81,11 +96,11 @@ export async function createControlPlanMcpHandler(options: ControlPlanMcpOptions
         created.task.state !== "created" &&
         created.task.state !== "dispatching"
       ) {
-        return toolResult(created.task);
+        return taskToolResult(created.task);
       }
 
       const claim = await stub.claimDispatch();
-      if (!claim.claimed) return toolResult(claim.task ?? created.task);
+      if (!claim.claimed) return taskToolResult(claim.task ?? created.task);
 
       const admission = admissionStub(options.env);
       const limit = parsePositiveInt(options.env.MAX_CONCURRENT_SESSIONS, 10);
@@ -139,7 +154,7 @@ export async function createControlPlanMcpHandler(options: ControlPlanMcpOptions
         submissionId: body.submissionId,
         streamOffset: body.offset,
       });
-      return toolResult(admitted ?? created.task);
+      return taskToolResult(admitted ?? created.task);
     },
   );
 
@@ -147,7 +162,7 @@ export async function createControlPlanMcpHandler(options: ControlPlanMcpOptions
     "get_coding_task",
     {
       description:
-        "Get the durable status, replay URL, and open approval requests for a coding task.",
+        "Reconcile and return the durable status, replay URL, open approvals, and result for a coding task. State=dispatched is active and non-terminal: it means Flue accepted the work, not that it is stuck or complete. Poll this tool every 10-20 seconds until state=completed or state=failed; cancellation_requested is also non-terminal until the abort settles. If approvals is non-empty, call respond_coding_approval and then resume polling. Do not spawn a duplicate task while the state is non-terminal.",
       inputSchema: z.object({ taskId: z.string().regex(/^task_[a-f0-9]{32}$/) }),
       annotations: { readOnlyHint: true },
     },
@@ -155,7 +170,7 @@ export async function createControlPlanMcpHandler(options: ControlPlanMcpOptions
       const task = await refreshTask(taskId, options);
       if (!task) return toolError(`Coding task ${taskId} was not found.`);
       const approvals = await openApprovals(task.sessionId, options);
-      return toolResult({ ...task, approvals });
+      return taskToolResult(task, { approvals });
     },
   );
 
@@ -163,7 +178,7 @@ export async function createControlPlanMcpHandler(options: ControlPlanMcpOptions
     "respond_coding_approval",
     {
       description:
-        "Complete native Hermes approval for a pending Control Plan publication. The decision argument is only a hint; non-deny requests invoke MCP elicitation/create and record the gateway's accept or decline result.",
+        "Resolve one pending Control Plan publication approval. For once/session/always, the decision argument is only a hint: this tool must complete native Hermes MCP elicitation/create and records the gateway's accept or decline result. For deny, resolve immediately. After a successful response, poll get_coding_task again; do not assume the coding task is terminal.",
       inputSchema: z.object({
         taskId: z.string().regex(/^task_[a-f0-9]{32}$/),
         approvalId: z.string().min(1).max(255),
@@ -194,7 +209,8 @@ export async function createControlPlanMcpHandler(options: ControlPlanMcpOptions
                     confirm: {
                       type: "boolean",
                       title: "Approve this operation",
-                      description: "The Control Plan will perform the described GitHub publication.",
+                      description:
+                        "The Control Plan will perform the described GitHub publication.",
                     },
                   },
                   required: ["confirm"],
@@ -211,7 +227,7 @@ export async function createControlPlanMcpHandler(options: ControlPlanMcpOptions
         resolvedDecision = elicitation.action === "accept" ? "once" : "deny";
       }
       const resolved = await resolveApproval(approvalId, resolvedDecision, options);
-      return toolResult({ taskId, approval: resolved });
+      return toolResult({ taskId, approval: resolved, nextAction: "poll", pollAfterMs: 15_000 });
     },
   );
 
@@ -219,14 +235,14 @@ export async function createControlPlanMcpHandler(options: ControlPlanMcpOptions
     "cancel_coding_task",
     {
       description:
-        "Request cancellation and abort the running Flue submission. Publication is blocked after cancellation.",
+        "Request asynchronous cancellation of a non-terminal Flue coding task and block later GitHub publication. The returned cancellation_requested state is not completion; poll get_coding_task to reconcile the abort. Do not use this as a substitute for normal polling.",
       inputSchema: z.object({ taskId: z.string().regex(/^task_[a-f0-9]{32}$/) }),
     },
     async ({ taskId }) => {
       const task = await taskStub(options.env, taskId).requestCancellation();
       if (!task) return toolError(`Coding task ${taskId} was not found.`);
       if (task.state === "completed" || task.state === "failed") {
-        return toolResult({ ...task, cancellation: "already_terminal" });
+        return taskToolResult(task, { cancellation: "already_terminal" });
       }
       let abortRequested = false;
       try {
@@ -243,8 +259,7 @@ export async function createControlPlanMcpHandler(options: ControlPlanMcpOptions
       } catch {
         // Durable task state remains cancellation_requested even if transport abort is unavailable.
       }
-      return toolResult({
-        ...task,
+      return taskToolResult(task, {
         cancellation: abortRequested ? "requested_and_aborted" : "requested",
       });
     },
@@ -386,6 +401,15 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
 
 function toolResult(value: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value) }] };
+}
+
+function taskToolResult(task: CodingTaskRecord, extra: Record<string, unknown> = {}) {
+  const approvals = Array.isArray(extra.approvals) ? extra.approvals : [];
+  return toolResult({
+    ...task,
+    ...extra,
+    lifecycle: taskLifecycle(task.state, approvals.length > 0),
+  });
 }
 
 function toolError(message: string) {

@@ -12,8 +12,8 @@ with a service token and calls a small, allowlisted tool surface:
 
 | MCP tool | Input | Result |
 |---|---|---|
-| `spawn_coding_task` | repository, task, optional base branch, idempotency key | Control Plan task ID, state, replay URL |
-| `get_coding_task` | task ID | state, current summary, pending approval, PR/result when available |
+| `spawn_coding_task` | repository, task, optional base branch, idempotency key | Control Plan task ID, non-terminal state, replay URL, lifecycle guidance |
+| `get_coding_task` | task ID | reconciled state, lifecycle guidance, current summary, pending approval, PR/result when available |
 | `respond_coding_approval` | task ID, approval ID, decision hint | starts a native Hermes elicitation; only the gateway's accept/decline result is recorded |
 | `cancel_coding_task` | task ID | cancellation-requested state plus Flue abort request |
 
@@ -55,13 +55,28 @@ mcp_servers:
   control_plan:
     url: "https://control-plan.khoa.lol/mcp"
     headers:
-      Authorization: "Bearer <Control Plan MCP service token>"
+      Authorization: "Bearer ${CONTROL_PLAN_MCP_TOKEN}"
+    timeout: 300
+    tools:
+      include:
+        - spawn_coding_task
+        - get_coding_task
+        - respond_coding_approval
+        - cancel_coding_task
+      resources: false
+      prompts: false
 ```
 
-The current Hermes config schema does not support `tools.include`,
-`resources`, or `prompts` nested under an `mcp_servers` entry. Hermes discovers
-the four tools and prefixes them as `mcp_control_plan_*`; filter/disable tools
-at the Hermes tool-policy layer if needed.
+Current Hermes releases support per-server `tools.include` filtering. Hermes
+registers the selected tools with the `mcp_control_plan_*` prefix. Keep all
+four tools enabled: polling, native approval, and cancellation are part of the
+same asynchronous task contract.
+
+Install the versioned workflow skill from
+[`integrations/hermes/skills/control-plan-delegation/SKILL.md`](../integrations/hermes/skills/control-plan-delegation/SKILL.md)
+into `~/.hermes/skills/` on the Hermes host, or expose its parent directory via
+`skills.external_dirs`. Restart Hermes or run `/reset` after installation so
+the skill is loaded in new sessions.
 
 Use a dedicated `CONTROL_PLAN_MCP_TOKEN` secret. Do not reuse the GitHub
 webhook secret, signed replay tokens, or a GitHub token for this boundary.
@@ -71,15 +86,21 @@ webhook secret, signed replay tokens, or a GitHub token for this boundary.
 ```text
 Hermes receives a coding request
   -> Hermes calls spawn_coding_task
-  -> Control Plan validates GitHub App access and dispatches Flue
+  -> Control Plan validates GitHub App access and asynchronously dispatches Flue
   -> Flue works in its per-task Cloudflare Sandbox
   -> Control Plan applies publication policy and, when required, sends native MCP elicitation
   -> Control Plan writes the commit/PR through its GitHub API boundary
-  -> Hermes polls get_coding_task and reports the result to the user
+  -> Hermes polls get_coding_task every 10-20 seconds
+  -> Hermes responds to any open approval, then resumes polling
+  -> Hermes reports only a completed or failed terminal result
 ```
 
 `get_coding_task` is the reconciliation source of truth. Replay/SSE is a
 diagnostic and operator interface, not the only record of task completion.
+`created`, `dispatching`, `dispatched`, and `cancellation_requested` are
+non-terminal states. Every task response includes a `lifecycle` object with
+`terminal`, `nextAction`, and (while active) `pollAfterMs` to make this
+contract explicit to the upstream orchestrator.
 
 ## Security and rollout requirements
 
@@ -101,8 +122,10 @@ diagnostic and operator interface, not the only record of task completion.
    branches, sensitive paths, and non-draft PRs require the native approval.
    `manual` remains available for an all-publications approval gate; `off` is
    an explicit unsafe development mode.
-6. Test the MCP protocol and tool schemas against a pinned Hermes Agent release.
-7. Run one real Docker-backed task against `duckhoa-uit/lawn` before staging or
+6. Load and test the Control Plan delegation skill against the configured
+   Hermes gateway; do not rely on a one-off prompt for production behavior.
+7. Test the MCP protocol and tool schemas against a pinned Hermes Agent release.
+8. Run one real Docker-backed task against `duckhoa-uit/lawn` before staging or
    production deployment. The task must clone the repository, make a narrow
    change, run its repository checks, request/receive any needed approval, and
    return a verifiable result.

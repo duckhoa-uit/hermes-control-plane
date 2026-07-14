@@ -5,6 +5,7 @@ import {
   taskStateFromHistory,
   taskBranch,
   taskIdFromSessionId,
+  taskLifecycle,
   repositoryParts,
 } from "../src/mcp/task-utils";
 
@@ -29,6 +30,25 @@ describe("Control Plan MCP policy", () => {
   it("parses repository targets without accepting arbitrary URLs", () => {
     expect(repositoryParts("owner/repo")).toEqual({ owner: "owner", repo: "repo" });
     expect(repositoryParts("https://github.com/owner/repo")).toBeNull();
+  });
+
+  it("treats dispatched work as active and tells Hermes to poll", () => {
+    expect(taskLifecycle("dispatched")).toEqual({
+      terminal: false,
+      nextAction: "poll",
+      pollAfterMs: 15_000,
+    });
+    expect(taskLifecycle("dispatched", true)).toEqual({
+      terminal: false,
+      nextAction: "respond_to_approval",
+      pollAfterMs: 15_000,
+    });
+  });
+
+  it("only marks completed and failed states as terminal", () => {
+    expect(taskLifecycle("completed")).toEqual({ terminal: true, nextAction: "report" });
+    expect(taskLifecycle("failed")).toEqual({ terminal: true, nextAction: "report" });
+    expect(taskLifecycle("cancellation_requested").terminal).toBe(false);
   });
 });
 

@@ -131,10 +131,10 @@ rollout gates are in
 
 | Tool | Responsibility |
 |---|---|
-| `spawn_coding_task` | Verify GitHub App repository access, create a Control Plan task ID, and dispatch a Flue coding session |
-| `get_coding_task` | Read durable task status, replay URL, and pending approval summary |
-| `respond_coding_approval` | Require native Hermes elicitation for non-deny decisions, then resolve the ApprovalDO record |
-| `cancel_coding_task` | Abort the Flue submission and block publication for the task |
+| `spawn_coding_task` | Verify GitHub App repository access, create a Control Plan task ID, and asynchronously dispatch a Flue coding session |
+| `get_coding_task` | Reconcile durable task status, lifecycle guidance, replay URL, and pending approval summary; non-terminal states must be polled |
+| `respond_coding_approval` | Require native Hermes elicitation for non-deny decisions, then resolve the ApprovalDO record and resume polling |
+| `cancel_coding_task` | Request asynchronous Flue abort and block publication for the task; poll afterward for reconciliation |
 
 The task ID is the stable correlation key across Hermes, Flue, ApprovalDO, and
 GitHub. MCP responses are intentionally small; the replay stream remains the

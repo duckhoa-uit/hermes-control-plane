@@ -32,10 +32,10 @@ server prefix (for example, `mcp_control_plan_spawn_coding_task`).
 
 | Tool | Purpose |
 |---|---|
-| `spawn_coding_task` | Verify GitHub App installation access and repository branch, allocate an isolated task branch, persist an idempotent task, and dispatch Flue under the concurrency lease. |
-| `get_coding_task` | Reconcile Flue history settlements and return durable task state, repository/branch, summary, replay URL, result metadata, and open approvals. |
-| `respond_coding_approval` | Resolve a pending ApprovalDO record belonging to the task; non-deny requests first invoke native MCP `elicitation/create` in Hermes. |
-| `cancel_coding_task` | Persist cancellation, request Flue abort, and block later GitHub publication. |
+| `spawn_coding_task` | Verify GitHub App installation access and repository branch, allocate an isolated task branch, persist an idempotent task, and asynchronously dispatch Flue under the concurrency lease. |
+| `get_coding_task` | Reconcile Flue history settlements and return durable task state, lifecycle guidance, repository/branch, summary, replay URL, result metadata, and open approvals. Non-terminal states must be polled. |
+| `respond_coding_approval` | Resolve a pending ApprovalDO record belonging to the task; non-deny requests first invoke native MCP `elicitation/create` in Hermes, then require further task polling. |
+| `cancel_coding_task` | Persist cancellation, asynchronously request Flue abort, and block later GitHub publication; poll afterward for reconciliation. |
 
 See [`HERMES-AGENT-INTEGRATION.md`](HERMES-AGENT-INTEGRATION.md) for schemas,
 authentication, GitHub App installation configuration, and Hermes client setup.
