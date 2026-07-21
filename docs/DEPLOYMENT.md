@@ -87,6 +87,7 @@ missing or if any required Worker secret is absent.
 | `LLM_MODEL` | `zai/glm-5.2` | Model name |
 | `WORKER_URL` | unset | Public HTTPS Worker origin used by callbacks and replay links; production is `https://control-plan.khoa.lol` |
 | `APPROVAL_MODE` | `policy` | `policy` auto-publishes task-branch commits and draft PRs; `manual` approves every publication; `off` is unsafe development-only mode |
+| `CONTROL_PLAN_EXECUTION_MODE` | `workflow` | New MCP tasks use the finite Flue Workflow; set `agent` only for rollback/legacy compatibility |
 
 ## Prerequisites
 
@@ -137,6 +138,10 @@ Domain. The first deploy with the logged-in account creates the hostname's DNS
 record and certificate; verify it with `curl -fsS "$WORKER_URL/health"` after
 the deployment.
 
+The Workflow migration adds `FlueCodingTaskWorkflow` in migration `v6`. Keep
+that migration in every subsequent deploy so existing task and workflow
+Durable Objects are preserved.
+
 After deployment, verify the public boundary before connecting Hermes:
 
 ```bash
@@ -145,7 +150,8 @@ curl -i "$WORKER_URL/mcp"  # must return 401 without Authorization
 ```
 
 Configure Hermes with the production `/mcp` URL and the dedicated
-`CONTROL_PLAN_MCP_TOKEN`. Control Plan exposes the four-tool MCP surface in
+`CONTROL_PLAN_MCP_TOKEN`. Control Plan exposes the coding lifecycle plus
+read-only specialist MCP surface in
 [`HERMES-AGENT-INTEGRATION.md`](./HERMES-AGENT-INTEGRATION.md); do not point
 Hermes at the localhost URL.
 

@@ -1,7 +1,7 @@
 # Architecture
 
-**Status:** Production-candidate Control Plan execution service; Hermes MCP
-integration audited 2026-07-14.
+**Status:** Production-candidate Control Plan execution service; Flue-native
+Workflow migration and Hermes MCP integration audited 2026-07-21.
 
 ## Current deployment
 
@@ -31,7 +31,10 @@ Cloudflare Sandbox container
 
 | Component | Responsibility | Location |
 |---|---|---|
-| Flue coding agent | Durable model/tool loop and deterministic finalize call | `src/agents/control-plan.ts` |
+| Flue coding agent | Durable model loop with packaged instructions/skill and one deterministic finalization Action; retained for compatibility/rollback | `src/agents/control-plan.ts`, `src/agent/control-plan-agent-config.ts`, `src/agents/control-plan.md`, `src/skills/control-plan-coding-task/SKILL.md` |
+| Flue coding workflow | Finite task boundary, validated input, run persistence, and workflow-run observation around the same coding harness | `src/workflows/coding-task.ts` |
+| PR review workflow | Finite, read-only review of a caller-supplied PR snapshot; returns line-scoped findings and the reviewed head SHA | `src/workflows/pr-review.ts`, `src/agent/agent-profiles.ts`, `src/skills/pr-review/SKILL.md` |
+| Sentry triage workflow | Finite, read-only triage of a caller-supplied issue/event snapshot; returns evidence and one next action | `src/workflows/sentry-triage.ts`, `src/agent/agent-profiles.ts`, `src/skills/sentry-triage/SKILL.md` |
 | GitHub channel | Verify and acknowledge GitHub webhooks; no direct task dispatch policy yet | `src/channels/github.ts` |
 | Approval store | Durable approval decisions and finalize checkpoints | `src/do/approval-do.ts` |
 | Task store | Repository/base-branch/isolated-branch correlation, result metadata, stream offset | `src/do/coding-task-do.ts` |
@@ -61,11 +64,25 @@ class, not two independent classes.
    repository, resolves/verifies the base branch, then persists the task and
    allocates `control-plan/<task-prefix>`, then admits it under the global
    concurrency lease.
-3. Control Plan dispatches `/agents/control-plan/:id`; Flue runs the model/tool
-   loop in its Durable Object.
-4. `clone_repository` mints a short-lived GitHub App installation token scoped
-   to the task repository and performs a task-bound clone into Sandbox.
-5. The agent prepares a validated file manifest. `APPROVAL_MODE=policy` allows
+3. Control Plan invokes the finite `coding-task` Flue Workflow by default. The
+   workflow input contains the task ID and immutable repository/branch fields;
+   the agent initializer reads that persisted input with `getRun(id)`, resolves
+   the task DO, provisions the task-bound workspace, and sets the repository
+   directory as the agent `cwd` before Flue discovers `AGENTS.md` and workspace
+   skills. Existing tasks can use the compatibility Agent path when
+   `CONTROL_PLAN_EXECUTION_MODE=agent` is explicitly configured.
+4. Flue runs the model loop with the packaged Control Plan instructions and
+   coding-task skill. The model uses the sandbox's native shell/file tools; it
+   does not receive clone or publication tools. The Workflow's finite run
+   result is reconciled through `client.runs.get`; the task DO remains the
+   source of truth for Hermes.
+5. After verification, the model calls the `finalize_change` Action. The Action
+   commits the workspace, prepares a validated file manifest, and delegates
+   publication to the Worker boundary. A successful publication is first
+   recorded on the task DO, then the finite Workflow must return a validated
+   `published` result before reconciliation marks the task terminal. A
+   `no_change` result completes without a publication; `blocked` is a failed
+   terminal result with an explicit reason. `APPROVAL_MODE=policy` allows
    normal `control-plan/*` pushes and draft PRs after checks; force pushes,
    sensitive paths, non-task branches, and non-draft PRs pause for native
    Hermes MCP elicitation. `manual` pauses every publication.
@@ -84,11 +101,11 @@ Sandbox code is untrusted. It receives only a short-lived, repository-scoped
 GitHub App read token for the clone command and never receives a write token.
 Privileged GitHub writes happen only in the Worker after a purpose-bound,
 short-lived proxy capability, task binding, installation authorization,
-base-branch validation, and manifest limits are validated. Approval is an
-additional policy gate for exceptional publication; normal policy-mode draft
-publication is intentionally autonomous but remains restricted to the task
-branch. Replay and internal Flue capabilities use different secrets and cannot
-be exchanged.
+base-branch validation, manifest limits, and an atomic task-owned publication
+lease are validated. Approval is an additional policy gate for exceptional
+publication; normal policy-mode draft publication is intentionally autonomous
+but remains restricted to the task branch. Replay and internal Flue
+capabilities use different secrets and cannot be exchanged.
 
 The replay and approval UI uses signed session URLs. This is sufficient for the
 current single-operator model, but it is not a multi-user authorization model.
@@ -132,13 +149,42 @@ rollout gates are in
 | Tool | Responsibility |
 |---|---|
 | `spawn_coding_task` | Verify GitHub App repository access, create a Control Plan task ID, and asynchronously dispatch a Flue coding session |
-| `get_coding_task` | Reconcile durable task status, lifecycle guidance, replay URL, and pending approval summary; non-terminal states must be polled |
+| `get_coding_task` | Reconcile durable task status, lifecycle guidance, replay URL, and pending approval summary; `dispatched` and `publishing` are active and must be polled |
 | `respond_coding_approval` | Require native Hermes elicitation for non-deny decisions, then resolve the ApprovalDO record and resume polling |
-| `cancel_coding_task` | Request asynchronous Flue abort and block publication for the task; poll afterward for reconciliation |
+| `cancel_coding_task` | Request asynchronous Flue abort and block publication before the atomic lease; if publishing already started, report that publication is in progress |
+| `start_pr_review` | Start a PR review Workflow from a caller-supplied bounded diff; it does not fetch or write GitHub |
+| `start_sentry_triage` | Start a Sentry triage Workflow from a caller-supplied bounded snapshot; it does not query or modify Sentry |
+| `get_specialist_workflow` | Poll only the two specialist workflows; coding-task run IDs are not exposed |
 
 The task ID is the stable correlation key across Hermes, Flue, ApprovalDO, and
 GitHub. MCP responses are intentionally small; the replay stream remains the
 detailed operational record.
+
+### Agent versus Workflow boundary
+
+The default path is now a finite `defineWorkflow`, which matches the coding
+task's run-to-completion shape and gives Flue durable run records and a native
+`/runs/:runId` observation surface. The workflow still uses a Flue
+`defineAgent` initializer for the model turn, so the coding harness, packaged
+skill, Cloudflare Sandbox adapter, and deterministic `finalize_change` Action
+remain shared with the compatibility path.
+
+The Control Plan task ID is the external correlation key. The workflow `runId`
+is an internal reconciliation pointer (and optional diagnostic metadata in the
+task response); `get_coding_task` reads the workflow run with
+`client.runs.get` and settles the task DO. Cancellation first marks the task as
+cancellation-requested, then destroys the task-bound sandbox; a task that has
+already acquired the atomic publication lease remains `publishing` until the
+write settles. Reconciliation then settles cancellation as terminal `cancelled`.
+The explicit Agent path remains available for rollback and legacy records, but
+new MCP tasks use Workflow unless `CONTROL_PLAN_EXECUTION_MODE=agent` is set.
+
+PR review and Sentry triage are separate finite Workflows, not modes of the
+coding task. Hermes starts them through the dedicated MCP tools with bounded
+snapshots, then polls the Flue run ID. Their profiles intentionally have no
+sandbox, tools, Actions, or GitHub/Sentry write capability. External connectors
+may be added later to assemble snapshots, but the workflow boundary must remain
+read-only and must not reuse the coding profile.
 
 ## Deployment identity
 
@@ -161,9 +207,10 @@ operations checks, not an alternate issue-trigger architecture:
    GitHub installation access and task-bound routing are both enforced at
    runtime.
 3. Sandbox uses `@cloudflare/sandbox` and `docker.io/cloudflare/sandbox`
-   `0.12.3`, with RPC transport and default sessions disabled. The migrated
-   Docker path passed the Lawn task; production rollout still needs its
-   Cloudflare environment smoke test.
+   `0.12.3`, with RPC transport and an explicit persistent session per Flue
+   harness; implicit default sessions remain disabled. The migrated Docker path
+   and a production read-only Lawn MCP smoke task both pass; approval/PR
+   publication still needs its separate staged smoke test.
 4. The rename and local routes pass the Wrangler dry run, but the
    state-preserving Durable Object rename and live route still need a staged
    deploy and a real session/approval/PR smoke test before traffic is moved.

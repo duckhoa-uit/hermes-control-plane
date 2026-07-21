@@ -57,13 +57,16 @@ Sandbox logs.
    failed command or approval request. For an exceptional publication, also
    inspect the Hermes gateway log for the matching MCP `elicitation/create`.
 3. Check the `Sandbox` Durable Object and container logs for startup, RPC, or
-   command timeout errors. The current runtime uses RPC transport and disables
-   the default Sandbox session.
+   command timeout errors. The current runtime uses RPC transport with one
+   explicit persistent session per Flue harness and disables the default
+   Sandbox session.
 4. If the task is still running, use `respond_coding_approval` for a real
    pending ApprovalDO record; a non-deny call must complete native Hermes
-   elicitation. `cancel_coding_task` records a request but does
-   requests the Flue abort endpoint and independently blocks publication for the
-   task, so a cancellation race cannot create a GitHub write.
+   elicitation. A task in `publishing` has already acquired the atomic GitHub
+   write lease, so cancellation reports that publication is in progress and
+   waits for settlement. Otherwise `cancel_coding_task` records a request, asks
+   the Flue abort endpoint when applicable, and blocks the proxy before the
+   lease. Once the run settles, the task becomes terminal `cancelled`.
 
 ### Hermes cannot call the MCP server
 
@@ -74,7 +77,9 @@ Sandbox logs.
 3. Confirm the GitHub App installation includes the repository and that the
    requested base branch exists. If `baseBranch` was omitted, inspect the
    repository's current default branch.
-4. Check that the Hermes tool filter includes the four tools documented in
+4. Check that the Hermes tool filter includes the coding lifecycle tools and,
+   when specialist automation is enabled, the three read-only specialist tools
+   documented in
    [`HERMES-AGENT-INTEGRATION.md`](HERMES-AGENT-INTEGRATION.md).
 
 ### GitHub webhook is not starting work
@@ -97,7 +102,9 @@ without updating the architecture and security contract.
 
 - HTTP routes and MCP boundary: `src/app.ts`, `src/mcp/control-plan.ts`.
 - Task persistence: `src/do/coding-task-do.ts`.
-- Agent state reconciliation: `src/mcp/task-utils.ts` and the Flue event stream.
+- Task reconciliation: `src/mcp/control-plan.ts` uses the Flue Runs API for
+  Workflow tasks and the history seam in `src/mcp/task-utils.ts` for legacy
+  Agent tasks.
 - Approval persistence: `src/do/approval-do.ts` and `src/approval/index.ts`.
 - GitHub writes: `src/agent/github-api-push.ts`, `src/agent/pr-lifecycle.ts`,
   and the signed proxy routes in `src/app.ts`.

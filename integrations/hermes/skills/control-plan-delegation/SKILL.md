@@ -1,6 +1,6 @@
 ---
 name: control-plan-delegation
-description: Delegate repository coding work to Hermes Control Plan and reconcile asynchronous execution safely.
+description: Delegate a known implementation or bug-fix task to Hermes Control Plan when the repository, root cause, and acceptance criteria are available. Use for asynchronous coding work that may produce a task branch or PR; do not use for read-only PR review, Sentry triage, or status-only questions.
 version: 1.0.0
 author: duckhoa-uit
 license: MIT
@@ -9,7 +9,9 @@ license: MIT
 # Control Plan Delegation
 
 Use this skill after Hermes has triaged a root cause and the required fix must
-be implemented in a GitHub repository by the Control Plan coding agent.
+be implemented in a GitHub repository by the Control Plan coding agent. This
+skill orchestrates the remote task lifecycle; it does not replace the coding
+agent, perform the code change, or prove that a task is complete by itself.
 
 ## Required inputs
 
@@ -46,6 +48,13 @@ repository and each task supplies its own prompt.
 6. Use `mcp_control_plan_cancel_coding_task` only when cancellation is
    explicitly required or the operator timeout is reached. After cancellation,
    continue polling until the abort is reconciled or report the timeout.
+
+## Do not use this skill for
+
+- Reviewing a supplied PR diff without changing the repository; use the PR
+  review workflow instead.
+- Classifying a supplied Sentry issue/event snapshot; use Sentry triage instead.
+- A status-only request where no implementation task should be created.
 
 ## Idempotency and safety
 

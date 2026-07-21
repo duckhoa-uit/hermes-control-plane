@@ -32,12 +32,14 @@ export function taskLifecycle(
     | "created"
     | "dispatching"
     | "dispatched"
+    | "publishing"
     | "completed"
     | "failed"
-    | "cancellation_requested",
+    | "cancellation_requested"
+    | "cancelled",
   hasOpenApprovals = false,
 ): TaskLifecycle {
-  if (state === "completed" || state === "failed") {
+  if (state === "completed" || state === "failed" || state === "cancelled") {
     return { terminal: true, nextAction: "report" };
   }
   if (hasOpenApprovals) {

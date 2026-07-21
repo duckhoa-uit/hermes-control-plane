@@ -2,6 +2,7 @@
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": [
     "src/agents/control-plan.ts",
+    "src/workflows/*.ts",
     "src/app.ts",
     "src/cloudflare.ts",
     "src/channels/github.ts",

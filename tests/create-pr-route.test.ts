@@ -57,7 +57,13 @@ describe("create-pr proxy", () => {
     };
     return {
       idFromName: () => "task-do",
-      get: () => ({ get: async () => task }),
+      get: () => ({
+        get: async () => task,
+        beginPublication: async (ownerSessionId: string) => ({
+          claimed: true,
+          task: { ...task, state: "publishing", publicationSessionId: ownerSessionId },
+        }),
+      }),
     };
   }
 

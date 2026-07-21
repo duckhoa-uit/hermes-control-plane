@@ -302,6 +302,9 @@ describe("E2E: Source code audit", () => {
 
   const app = read("src/app.ts");
   const agent = read("src/agents/control-plan.ts");
+  const agentConfig = read("src/agent/control-plan-agent-config.ts");
+  const finalizeAction = read("src/agent/control-plan-finalize-action.ts");
+  const agentSurface = `${agent}\n${agentConfig}\n${finalizeAction}`;
   const cf = read("src/cloudflare.ts");
   const wrangler = read("wrangler.jsonc");
   const envFile = read("src/env.d.ts");
@@ -335,13 +338,19 @@ describe("E2E: Source code audit", () => {
     expect(app).toContain("resolveUI");
   });
 
-  it("agent tools wrapped with requireApproval", () => {
-    expect(agent).toContain("import { requireApproval }");
-    const calls = agent.match(/requireApproval\(/g);
+  it("agent uses Flue-native Action boundary for publication", () => {
+    expect(agentSurface).toContain("import { requireApproval }");
+    expect(agentSurface).toContain("defineAction({");
+    expect(agentSurface).toContain('name: "finalize_change"');
+    expect(agentSurface).toContain("actions: [finalizeChange]");
+    expect(agentSurface).toContain("tools: []");
+    const calls = finalizeAction.match(/requireApproval\(/g);
     expect(calls).not.toBeNull();
-    expect(calls!.length).toBe(2); // gitPush + createPR
-    expect(agent).toContain("decision.denied");
-    expect(agent).toContain("APPROVAL_MODE");
+    expect(calls!.length).toBe(2); // push + PR are internal to finalize_change
+    expect(agentSurface).not.toContain('name: "git_push"');
+    expect(agentSurface).not.toContain('name: "create_pr"');
+    expect(agentSurface).toContain("decision.denied");
+    expect(agentSurface).toContain("APPROVAL_MODE");
   });
 
   it("DO exported and bound in wrangler", () => {

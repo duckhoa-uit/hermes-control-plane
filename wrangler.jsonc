@@ -46,6 +46,14 @@
     {
       "tag": "v5-control-plan-admission-do",
       "new_sqlite_classes": ["ControlPlanAdmissionDurableObject"]
+    },
+    {
+      "tag": "v6-coding-task-workflow",
+      "new_sqlite_classes": ["FlueCodingTaskWorkflow"]
+    },
+    {
+      "tag": "v7-specialist-workflows",
+      "new_sqlite_classes": ["FluePrReviewWorkflow", "FlueSentryTriageWorkflow"]
     }
   ],
   "ai": { "binding": "AI" },

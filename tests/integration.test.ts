@@ -11,7 +11,19 @@ function readAppSource(): string {
   return fs.readFileSync(path.join(__dirname, "..", "src", "app.ts"), "utf-8");
 }
 function readAgentSource(): string {
-  return fs.readFileSync(path.join(__dirname, "..", "src", "agents", "control-plan.ts"), "utf-8");
+  const agent = fs.readFileSync(
+    path.join(__dirname, "..", "src", "agents", "control-plan.ts"),
+    "utf-8",
+  );
+  const config = fs.readFileSync(
+    path.join(__dirname, "..", "src", "agent", "control-plan-agent-config.ts"),
+    "utf-8",
+  );
+  const capabilities = fs.readFileSync(
+    path.join(__dirname, "..", "src", "agent", "control-plan-finalize-action.ts"),
+    "utf-8",
+  );
+  return `${agent}\n${config}\n${capabilities}`;
 }
 function readCfSource(): string {
   return fs.readFileSync(path.join(__dirname, "..", "src", "cloudflare.ts"), "utf-8");
@@ -21,6 +33,18 @@ function readWranglerSource(): string {
 }
 function readEnvSource(): string {
   return fs.readFileSync(path.join(__dirname, "..", "src", "env.d.ts"), "utf-8");
+}
+function readWorkflowSource(): string {
+  return fs.readFileSync(path.join(__dirname, "..", "src", "workflows", "coding-task.ts"), "utf-8");
+}
+function readFinalizeActionSource(): string {
+  return fs.readFileSync(
+    path.join(__dirname, "..", "src", "agent", "control-plan-finalize-action.ts"),
+    "utf-8",
+  );
+}
+function readTaskDoSource(): string {
+  return fs.readFileSync(path.join(__dirname, "..", "src", "do", "coding-task-do.ts"), "utf-8");
 }
 
 describe("Token lifecycle", () => {
@@ -193,22 +217,126 @@ describe("Source audit: app.ts", () => {
 
 describe("Source audit: agent tools", () => {
   const src = readAgentSource();
-  it("requireApproval imported", () => {
-    expect(src).toContain("import { requireApproval }");
+  const agentModule = fs.readFileSync(
+    path.join(__dirname, "..", "src", "agents", "control-plan.ts"),
+    "utf-8",
+  );
+  it("Flue-native instructions and skill are imported", () => {
+    expect(src).toContain('with { type: "markdown" }');
+    expect(src).toContain('with { type: "skill" }');
   });
-  it("git_push requires approval", () => {
-    expect(src).toContain("requireApproval(");
+  it("finalization is exposed as an Action", () => {
+    expect(src).toContain("defineAction({");
+    expect(src).toContain('name: "finalize_change"');
+    expect(src).toContain("actions: [finalizeChange]");
+    expect(src).toContain("tools: []");
   });
-  it("approval called exactly twice", () => {
+  it("publication approval stays inside the Action boundary", () => {
     const matches = src.match(/requireApproval\(/g);
     expect(matches).not.toBeNull();
     expect(matches!.length).toBe(2);
+    expect(src).not.toContain('name: "git_push"');
+    expect(src).not.toContain('name: "create_pr"');
   });
   it("decision.denied checked", () => {
     expect(src).toContain("decision.denied");
   });
   it("APPROVAL_MODE env respected", () => {
     expect(src).toContain("APPROVAL_MODE");
+  });
+  it("Agent module keeps its own scoped route gate", () => {
+    expect(agentModule).toContain("export const route");
+    expect(agentModule).toContain("verifyScopedToken(");
+    expect(agentModule).toContain('"agent"');
+    expect(agentModule).toContain('return c.json({ error: "unauthorized" }, 401)');
+  });
+});
+
+describe("Source audit: coding workflow", () => {
+  const src = readWorkflowSource();
+  const sharedConfig = fs.readFileSync(
+    path.join(__dirname, "..", "src", "agent", "control-plan-agent-config.ts"),
+    "utf-8",
+  );
+  const finalizeAction = readFinalizeActionSource();
+  it("uses a finite Flue workflow with persisted run input", () => {
+    expect(src).toContain("defineWorkflow({");
+    expect(src).toContain("getRun(id)");
+    expect(src).toContain("input: codingTaskInput");
+    expect(src).toContain("output: codingTaskWorkflowOutput");
+    expect(src).toContain("result: codingTaskModelResult");
+    expect(src).toContain("response.data.outcome");
+    expect(src).toContain("blocked coding workflow result");
+  });
+  it("keeps workspace provisioning and publication inside the workflow initializer", () => {
+    expect(sharedConfig).toContain("ensureTaskWorkspace(");
+    expect(sharedConfig).toContain("createFinalizeChangeAction(");
+    expect(finalizeAction).toContain('name: "finalize_change"');
+  });
+  it("exports authenticated workflow invocation and run observation routes", () => {
+    expect(src).toContain("export const route");
+    expect(src).toContain("export const runs");
+    expect(src).toContain('"workflow",\n    "coding-task"');
+  });
+
+  it("keeps publication application-owned and reconciled after the Flue result", () => {
+    expect(readFinalizeActionSource()).toContain("recordPublication");
+    expect(
+      fs.readFileSync(path.join(__dirname, "..", "src", "mcp", "control-plan.ts"), "utf-8"),
+    ).toContain("settleWorkflow");
+  });
+});
+
+describe("Source audit: specialist workflows", () => {
+  const profiles = fs.readFileSync(
+    path.join(__dirname, "..", "src", "agent", "agent-profiles.ts"),
+    "utf-8",
+  );
+  const review = fs.readFileSync(
+    path.join(__dirname, "..", "src", "workflows", "pr-review.ts"),
+    "utf-8",
+  );
+  const triage = fs.readFileSync(
+    path.join(__dirname, "..", "src", "workflows", "sentry-triage.ts"),
+    "utf-8",
+  );
+  const mcp = fs.readFileSync(path.join(__dirname, "..", "src", "mcp", "control-plan.ts"), "utf-8");
+
+  it("defines separate read-only profiles", () => {
+    expect(profiles).toContain("prReviewProfile");
+    expect(profiles).toContain("sentryTriageProfile");
+    expect(profiles.match(/Read-only by construction/g)?.length).toBe(2);
+  });
+
+  it("keeps review and triage workflows finite and publication-free", () => {
+    for (const source of [review, triage]) {
+      expect(source).toContain("defineWorkflow({");
+      expect(source).toContain("result: output");
+      expect(source).not.toContain("finalize_change");
+      expect(source).not.toContain("git-push");
+      expect(source).not.toContain("create-pr");
+    }
+  });
+
+  it("exposes asynchronous start/poll tools without exposing coding runs", () => {
+    expect(mcp).toContain('"start_pr_review"');
+    expect(mcp).toContain('"start_sentry_triage"');
+    expect(mcp).toContain('"get_specialist_workflow"');
+    expect(mcp).toContain("getSpecialistWorkflow");
+  });
+});
+
+describe("Source audit: task cancellation lifecycle", () => {
+  const src = readTaskDoSource();
+  it("settles cancellation as terminal and preserves the cancellation race guard", () => {
+    expect(src).toContain('| "cancelled";');
+    expect(src).toContain('| "publishing"');
+    expect(src).toContain('state: "cancelled"');
+    expect(src).toContain('state: "cancellation_requested"');
+    expect(src).toContain('current.state === "cancellation_requested"');
+    expect(src).toContain("beginPublication");
+    expect(src).toContain("publicationSessionId");
+    expect(src).toContain("blockConcurrencyWhile");
   });
 });
 
@@ -229,6 +357,10 @@ describe("Source audit: wrangler.jsonc", () => {
   });
   it("migration v2 exists", () => {
     expect(src).toContain('"v2"');
+  });
+  it("workflow Durable Object migration exists", () => {
+    expect(src).toContain('"v6-coding-task-workflow"');
+    expect(src).toContain('"FlueCodingTaskWorkflow"');
   });
 });
 

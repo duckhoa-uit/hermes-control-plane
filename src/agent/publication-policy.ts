@@ -28,8 +28,13 @@ export function requiresPublicationApproval(
   if (mode === "manual" || mode === "smart") return true;
 
   if (action === "git_push") {
-    return Boolean(input.force) || !input.branch.startsWith("control-plan/") ||
-      Boolean(input.changes?.some((change) => change.path && isSensitivePublicationPath(change.path)));
+    return (
+      Boolean(input.force) ||
+      !input.branch.startsWith("control-plan/") ||
+      Boolean(
+        input.changes?.some((change) => change.path && isSensitivePublicationPath(change.path)),
+      )
+    );
   }
 
   return input.draft !== true;

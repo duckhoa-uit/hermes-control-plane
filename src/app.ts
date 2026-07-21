@@ -17,6 +17,8 @@
 //   POST /channels/github/webhook    → GitHub webhook (HMAC verified)
 //   POST /agents/control-plan/:id    → Agent dispatch
 //   GET  /agents/control-plan/:id    → Agent event stream
+//   POST /workflows/*                → finite specialist Workflow invocation
+//   GET  /runs/:runId                → Workflow run observation
 
 import { flue } from "@flue/runtime/routing";
 import { Hono } from "hono";
@@ -29,6 +31,7 @@ import {
 import { installModelProgressWatchdog } from "./agent/runtime-watchdog";
 import { createControlPlanMcpHandler, isAuthorizedMcpRequest } from "./mcp/control-plan";
 import type { CodingTaskRecord } from "./do/coding-task-do";
+import type { PublicationClaimResult } from "./do/publication-lease";
 import { repositoryParts, taskIdFromSessionId } from "./mcp/task-utils";
 import { GitHubApp } from "./agent/github-app";
 
@@ -50,7 +53,7 @@ app.all("/mcp", async (c) => {
   const handler = await createControlPlanMcpHandler({
     env: c.env,
     origin: new URL(c.req.url).origin,
-    fetch: async (request) => app.fetch(request, c.env, c.executionCtx),
+    fetch: async (input, init) => app.fetch(new Request(input, init), c.env, c.executionCtx),
   });
   return handler(c.req.raw, c.env, c.executionCtx as never);
 });
@@ -91,6 +94,7 @@ app.post("/proxy/git-push", async (c) => {
   if (!task) return c.json({ error: "session is not bound to a coding task" }, 409);
   if (
     task.state === "cancellation_requested" ||
+    task.state === "cancelled" ||
     task.state === "completed" ||
     task.state === "failed"
   ) {
@@ -108,6 +112,8 @@ app.post("/proxy/git-push", async (c) => {
   if (!owner || !repo) return c.json({ error: "invalid task repository" }, 500);
   try {
     const access = await new GitHubApp(c.env).getRepositoryAccess(task.repository, "write");
+    const publicationError = await proxyPublicationRejection(c.env, sessionId);
+    if (publicationError) return publicationError;
     const result = await pushManifestWithGitHubApi(access.client, owner, repo, {
       ...body,
       baseBranch: task.baseBranch,
@@ -125,24 +131,15 @@ app.post("/proxy/create-pr", async (c) => {
     return c.json({ error: "unauthorized" }, 401);
   }
   const body = await c.req.json().catch(() => ({}));
-  const { title, body: prBody, branch, baseBranch, draft } = body as Record<string, unknown>;
-  if (typeof title !== "string" || typeof branch !== "string") {
-    return c.json({ error: "title and branch required" }, 400);
-  }
-  if (baseBranch !== undefined && typeof baseBranch !== "string") {
-    return c.json({ error: "baseBranch must be a string" }, 400);
-  }
-  if (prBody !== undefined && typeof prBody !== "string") {
-    return c.json({ error: "body must be a string" }, 400);
-  }
-  if (draft !== undefined && typeof draft !== "boolean") {
-    return c.json({ error: "draft must be a boolean" }, 400);
-  }
+  const parsedInput = parseCreatePrInput(body);
+  if ("error" in parsedInput) return c.json({ error: parsedInput.error }, 400);
+  const { title, prBody, branch, baseBranch, draft } = parsedInput;
   const sessionId = proxySessionId(c.req.raw);
   const task = await taskForProxy(c.env, sessionId);
   if (!task) return c.json({ error: "session is not bound to a coding task" }, 409);
   if (
     task.state === "cancellation_requested" ||
+    task.state === "cancelled" ||
     task.state === "completed" ||
     task.state === "failed"
   ) {
@@ -179,6 +176,8 @@ app.post("/proxy/create-pr", async (c) => {
       });
     }
 
+    const publicationError = await proxyPublicationRejection(c.env, sessionId);
+    if (publicationError) return publicationError;
     const pr = await octokit.rest.pulls.create({
       owner,
       repo,
@@ -220,7 +219,7 @@ app.get("/replay/:id", async (c) => {
 // Stream-Next-Offset). Keep the browser-facing replay contract stable when
 // the pinned Flue stream API changes. See docs/ARCHITECTURE.md.
 //
-// Auth-gated SSE proxy that forwards to Flue's agent stream.
+// Auth-gated SSE proxy that forwards to the Flue agent or workflow run stream.
 // The replay HTML connects here instead of directly to /agents/control-plan/:id
 // so we can enforce token access. Uses raw ReadableStream to avoid buffering.
 
@@ -236,7 +235,12 @@ app.get("/sessions/:id/stream", async (c) => {
   const live = c.req.query("live") || "sse";
   const tail = c.req.query("tail") || "";
 
-  let fluePath = `/agents/control-plan/${sessionId}?view=updates&offset=${encodeURIComponent(offset)}&live=${encodeURIComponent(live)}`;
+  const task = await taskForProxy(c.env, sessionId);
+  const workflowRunId = task?.executionMode === "workflow" ? task.workflowRunId : undefined;
+  const isWorkflow = Boolean(workflowRunId);
+  let fluePath = workflowRunId
+    ? `/runs/${encodeURIComponent(workflowRunId)}?offset=${encodeURIComponent(offset)}&live=${encodeURIComponent(live)}`
+    : `/agents/control-plan/${sessionId}?view=updates&offset=${encodeURIComponent(offset)}&live=${encodeURIComponent(live)}`;
   if (tail) fluePath += `&tail=${encodeURIComponent(tail)}`;
 
   // We use a raw fetch to the Flue route so Hono doesn't buffer SSE
@@ -245,8 +249,8 @@ app.get("/sessions/:id/stream", async (c) => {
       Accept: "text/event-stream, application/json",
       Authorization: `Bearer ${await signScopedToken(
         c.env.CONTROL_PLAN_INTERNAL_SECRET || "",
-        "agent",
-        sessionId,
+        isWorkflow ? "workflow" : "agent",
+        isWorkflow ? "coding-task" : sessionId,
         5 * 60 * 1000,
       )}`,
     },
@@ -377,6 +381,58 @@ async function taskForProxy(env: Env, sessionId: string): Promise<CodingTaskReco
   }
 
   return null;
+}
+
+async function beginProxyPublication(env: Env, sessionId: string): Promise<PublicationClaimResult> {
+  const taskId = taskIdFromSessionId(sessionId);
+  const binding = (env as Partial<Env>).CONTROL_PLAN_TASK_DO;
+  if (!taskId || !binding) return { claimed: false, task: null, reason: "not_publishable" };
+  return binding.get(binding.idFromName(taskId)).beginPublication(sessionId);
+}
+
+async function proxyPublicationRejection(env: Env, sessionId: string): Promise<Response | null> {
+  const publication = await beginProxyPublication(env, sessionId);
+  if (publication.claimed) return null;
+  return Response.json(
+    {
+      error:
+        publication.reason === "owned_by_other_session"
+          ? "publication is owned by another session"
+          : "coding task is no longer publishable",
+    },
+    { status: 409 },
+  );
+}
+
+type CreatePrInput = {
+  title: string;
+  prBody?: string;
+  branch: string;
+  baseBranch?: string;
+  draft?: boolean;
+};
+
+function parseCreatePrInput(value: unknown): CreatePrInput | { error: string } {
+  const input = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  if (typeof input.title !== "string" || typeof input.branch !== "string") {
+    return { error: "title and branch required" };
+  }
+  if (input.baseBranch !== undefined && typeof input.baseBranch !== "string") {
+    return { error: "baseBranch must be a string" };
+  }
+  if (input.body !== undefined && typeof input.body !== "string") {
+    return { error: "body must be a string" };
+  }
+  if (input.draft !== undefined && typeof input.draft !== "boolean") {
+    return { error: "draft must be a boolean" };
+  }
+  return {
+    title: input.title,
+    prBody: input.body,
+    branch: input.branch,
+    baseBranch: input.baseBranch,
+    draft: input.draft,
+  };
 }
 
 // ─── Inlined Replay HTML ──────────────────────────────────────────────────

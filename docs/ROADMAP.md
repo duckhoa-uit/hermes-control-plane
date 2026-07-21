@@ -5,13 +5,21 @@
 - [x] Migrate from E2B/OpenCode/Bun Launcher to Flue + Cloudflare Sandbox.
 - [x] Establish the Hermes → remote HTTP MCP → Control Plan boundary.
 - [x] Persist idempotent coding-task records and reconcile paged Flue events.
-- [x] Upgrade Sandbox to `0.12.3` with RPC transport and default sessions disabled.
+- [x] Upgrade Sandbox to `0.12.3` with RPC transport and one explicit persistent session per Flue harness (implicit default sessions disabled).
 - [x] Verify a real Docker-backed task against `duckhoa-uit/lawn` through MCP.
 - [x] Bind GitHub publication to each task's repository/base branch and deterministic branch.
 - [x] Add scoped private-repository clone access and durable concurrency admission.
 - [x] Verify MCP tasks against both `duckhoa-uit/lawn` and `NousResearch/hermes-agent` locally.
 - [x] Route exceptional publication approvals through native Hermes MCP elicitation and fail closed when ApprovalDO is unavailable.
 - [x] Add policy-mode publication boundaries: task-branch commits and draft PRs may run autonomously; force/sensitive/non-draft operations require approval.
+
+## Done (2026-07-21)
+
+- [x] Make the coding executor Flue-native: packaged Markdown instructions and skill, task workspace provisioning before harness init, and a single `finalize_change` Action for publication.
+- [x] Move new MCP coding tasks to a finite Flue Workflow with persisted `runId` reconciliation, workflow replay, and an explicit Agent compatibility fallback.
+- [x] Share the sandbox/session/action harness between Workflow and Agent fallback so execution modes cannot drift policy or workspace setup.
+- [x] Close the cancellation/publication TOCTOU race with an atomic task-owned GitHub publication lease.
+- [x] Expose bounded PR review and Sentry triage Workflows through separate read-only MCP start/poll tools.
 
 ## Next
 
@@ -21,3 +29,5 @@
 - [x] Keep GitHub webhook events acknowledgement-only; Hermes owns triage and task creation.
 - [x] Use GitHub App installation access for dynamic multi-repository policy and short-lived tokens.
 - [ ] Bind exceptional approval grants to a one-use manifest hash at the proxy boundary for defense in depth beyond the current task/session capability checks.
+- [ ] Replace the raw Flue history-view reconciliation seam with an SDK history/observe adapter once task-state reconciliation consumes materialized settlements end-to-end.
+- [x] Verify Workflow cancellation in production; cancellation now settles to terminal `cancelled` and blocks the publication proxy.

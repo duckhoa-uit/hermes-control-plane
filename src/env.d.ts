@@ -37,4 +37,5 @@ interface Env {
   ZAI_API_KEY: string;
   WORKER_URL: string;
   CONTROL_PLAN_MCP_TOKEN?: string;
+  CONTROL_PLAN_EXECUTION_MODE?: string;
 }
