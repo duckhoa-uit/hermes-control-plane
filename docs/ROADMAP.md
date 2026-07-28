@@ -44,4 +44,5 @@
 - [x] Use GitHub App installation access for dynamic multi-repository policy and short-lived tokens.
 - [ ] Bind exceptional approval grants to a one-use manifest hash at the proxy boundary for defense in depth beyond the current task/session capability checks.
 - [ ] Run the separate [Vitest 4 + `@cloudflare/vitest-pool-workers` migration spike](ADR-001-vitest-pool-workers.md); compare native workerd coverage, DO isolation, runtime startup, and CI cost before changing the canonical test runner.
+- [ ] Implement the bounded [Sandbox reset recovery plan](ADR-002-sandbox-reset-recovery.md): reacquire transiently reset sessions, retry only safe operations, preserve unknown command outcomes, and harden post-verification agent behavior before considering clean-sandbox retries or R2 checkpoints.
 - [x] Verify Workflow cancellation in production; cancellation now settles to terminal `cancelled` and blocks the publication proxy.
