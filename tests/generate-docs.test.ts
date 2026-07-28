@@ -13,7 +13,7 @@ describe("auto-generated docs", () => {
     const file = path.join(DOCS_DIR, "api-reference.md");
     expect(fs.existsSync(file)).toBe(true);
     const content = fs.readFileSync(file, "utf-8");
-    expect(content).toContain("AUTO-GENERATED");
+    expect(content).toContain("Source of truth: src/app.ts");
   });
 
   it("current deployment and architecture docs exist", () => {

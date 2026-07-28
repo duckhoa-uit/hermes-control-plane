@@ -11,7 +11,6 @@ interface Env {
   >;
 
   // Flue-generated DO bindings
-  FLUE_CONTROL_PLAN_AGENT: DurableObjectNamespace;
   FLUE_REGISTRY: DurableObjectNamespace;
 
   // Cloudflare bindings
@@ -37,5 +36,4 @@ interface Env {
   ZAI_API_KEY: string;
   WORKER_URL: string;
   CONTROL_PLAN_MCP_TOKEN?: string;
-  CONTROL_PLAN_EXECUTION_MODE?: string;
 }

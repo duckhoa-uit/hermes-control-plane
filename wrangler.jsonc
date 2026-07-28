@@ -5,7 +5,11 @@
   "compatibility_date": "2026-06-28",
   "compatibility_flags": ["nodejs_compat"],
   "routes": [{ "pattern": "control-plan.khoa.lol", "custom_domain": true }],
-  "observability": { "enabled": true, "head_sampling_rate": 0.1 },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.1,
+    "traces": { "enabled": true }
+  },
   "containers": [
     {
       "class_name": "Sandbox",
@@ -22,7 +26,6 @@
       { "name": "CONTROL_PLAN_TASK_DO", "class_name": "ControlPlanTaskDurableObject" },
       { "name": "CONTROL_PLAN_ADMISSION_DO", "class_name": "ControlPlanAdmissionDurableObject" },
       { "name": "FlueRegistry", "class_name": "FlueRegistry" },
-      { "name": "FLUE_CONTROL_PLAN_AGENT", "class_name": "FlueControlPlanAgent" },
       { "name": "FLUE_REGISTRY", "class_name": "FlueRegistry" }
     ]
   },
@@ -54,6 +57,10 @@
     {
       "tag": "v7-specialist-workflows",
       "new_sqlite_classes": ["FluePrReviewWorkflow", "FlueSentryTriageWorkflow"]
+    },
+    {
+      "tag": "v8-remove-addressable-agent",
+      "deleted_classes": ["FlueControlPlanAgent"]
     }
   ],
   "ai": { "binding": "AI" },

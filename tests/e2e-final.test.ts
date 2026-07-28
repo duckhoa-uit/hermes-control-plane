@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { signToken, verifyToken } from "../src/core/auth";
+import { signScopedToken, verifyScopedToken } from "../src/core/auth";
 import { classifyCommand } from "../src/approval/classifier";
 import { checkHardline } from "../src/approval/hardline";
 import * as fs from "fs";
@@ -217,20 +217,20 @@ describe("E2E: Classifier -> Hardline -> Decision pipeline", () => {
 
 describe("E2E: Token flow (HMAC)", () => {
   it("sign and verify valid session", async () => {
-    const t = await signToken(SECRET, "sess-x");
-    expect(await verifyToken(SECRET, "sess-x", t)).toBe(true);
+    const t = await signScopedToken(SECRET, "replay", "sess-x", 60_000);
+    expect(await verifyScopedToken(SECRET, "replay", "sess-x", t)).toBe(true);
   });
 
   it("replay URL constructed correctly", async () => {
-    const t = await signToken(SECRET, "sess-y");
-    const url = `http://localhost:8787/sessions/sess-y/replay?token=${t}`;
+    const t = await signScopedToken(SECRET, "replay", "sess-y", 60_000);
+    const url = `http://localhost:8787/replay/sess-y?token=${t}`;
     const p = new URL(url);
-    expect(p.pathname).toBe("/sessions/sess-y/replay");
+    expect(p.pathname).toBe("/replay/sess-y");
     expect(p.searchParams.get("token")).toBe(t);
   });
 
   it("stream URL with full params", async () => {
-    const t = await signToken(SECRET, "sess-z");
+    const t = await signScopedToken(SECRET, "replay", "sess-z", 60_000);
     const u = `/sessions/sess-z/stream?token=${t}&offset=-1&live=sse&tail=100`;
     expect(u).toContain("offset=-1");
     expect(u).toContain("live=sse");
@@ -301,10 +301,10 @@ describe("E2E: Source code audit", () => {
   }
 
   const app = read("src/app.ts");
-  const agent = read("src/agents/control-plan.ts");
+  const workflow = read("src/workflows/coding-task.ts");
   const agentConfig = read("src/agent/control-plan-agent-config.ts");
   const finalizeAction = read("src/agent/control-plan-finalize-action.ts");
-  const agentSurface = `${agent}\n${agentConfig}\n${finalizeAction}`;
+  const codingSurface = `${workflow}\n${agentConfig}\n${finalizeAction}`;
   const cf = read("src/cloudflare.ts");
   const wrangler = read("wrangler.jsonc");
   const envFile = read("src/env.d.ts");
@@ -338,19 +338,19 @@ describe("E2E: Source code audit", () => {
     expect(app).toContain("resolveUI");
   });
 
-  it("agent uses Flue-native Action boundary for publication", () => {
-    expect(agentSurface).toContain("import { requireApproval }");
-    expect(agentSurface).toContain("defineAction({");
-    expect(agentSurface).toContain('name: "finalize_change"');
-    expect(agentSurface).toContain("actions: [finalizeChange]");
-    expect(agentSurface).toContain("tools: []");
+  it("coding workflow uses Flue-native Action boundary for publication", () => {
+    expect(codingSurface).toContain("import { requireApproval }");
+    expect(codingSurface).toContain("defineAction({");
+    expect(codingSurface).toContain('name: "finalize_change"');
+    expect(codingSurface).toContain("actions: [finalizeChange]");
+    expect(codingSurface).toContain("tools: []");
     const calls = finalizeAction.match(/requireApproval\(/g);
     expect(calls).not.toBeNull();
     expect(calls!.length).toBe(2); // push + PR are internal to finalize_change
-    expect(agentSurface).not.toContain('name: "git_push"');
-    expect(agentSurface).not.toContain('name: "create_pr"');
-    expect(agentSurface).toContain("decision.denied");
-    expect(agentSurface).toContain("APPROVAL_MODE");
+    expect(codingSurface).not.toContain('name: "git_push"');
+    expect(codingSurface).not.toContain('name: "create_pr"');
+    expect(codingSurface).toContain("decision.denied");
+    expect(codingSurface).toContain("APPROVAL_MODE");
   });
 
   it("DO exported and bound in wrangler", () => {

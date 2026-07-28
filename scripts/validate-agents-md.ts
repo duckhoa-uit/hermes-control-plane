@@ -13,7 +13,7 @@
 //   1. Every `bun run <name>` referenced in AGENTS.md exists in
 //      `package.json`'s "scripts" map.
 //   2. Every linked file (e.g. `docs/ARCHITECTURE.md`,
-//      `feature-flags.json`, `src/core/state-machine.ts`) exists at
+//      `feature-flags.json`, `docs/ARCHITECTURE.md`) exists at
 //      the referenced path.
 //   3. AGENTS.md is non-trivial (>2 KB, >50 lines) — a guard against
 //      accidental truncation by an agent.

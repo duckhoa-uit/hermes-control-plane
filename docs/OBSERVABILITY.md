@@ -14,8 +14,9 @@ route contract, see [`api-reference.md`](api-reference.md).
 | Service | Where | What it shows |
 |---|---|---|
 | Cloudflare Worker | Cloudflare dashboard → Workers → `hermes-control-plane` → Metrics | Request rate, CPU time, error rate, and egress. |
+| Worker traces | Cloudflare dashboard → Worker → Traces | Sampled request traces, including automatic propagation across Worker subrequests and Durable Objects. Control Plan adds `control_plan.admission.*`, `control_plan.flue.*`, `control_plan.sandbox.*`, and `control_plan.publication.*` spans. |
 | Worker logs | Cloudflare dashboard → Worker → Logs → Live | Structured logs from `src/core/logger.ts`; filter by `service`, `requestId`, `sessionId`, and task ID. |
-| Durable Objects | Cloudflare dashboard → Worker → Settings → Durable Objects | Storage and activity for `FlueControlPlanAgent`, `ControlPlanTaskDurableObject`, `ApprovalDurableObject`, and `Sandbox`. |
+| Durable Objects | Cloudflare dashboard → Worker → Settings → Durable Objects | Storage and activity for Flue-generated Workflow classes, `ControlPlanTaskDurableObject`, `ApprovalDurableObject`, and `Sandbox`. |
 | Hermes MCP calls | Worker logs for `/mcp` plus Hermes MCP client logs | Authentication failures, tool latency, dispatch errors, and task IDs. |
 | GitHub Actions | Repository Actions | Typecheck, tests, Flue build, and deployment history. |
 | GitHub webhook deliveries | Repository Settings → Webhooks → Recent Deliveries | HMAC-verified acknowledgement. The current handler acknowledges events only; it does not start a coding task. |
@@ -26,7 +27,7 @@ At minimum, alert on:
 
 - sustained Worker 5xx responses;
 - repeated `/mcp` 401 responses or dispatch failures;
-- task records whose `dispatched` state and `streamOffset` remain unchanged
+- task records whose `dispatched` state remains unchanged
   beyond the expected task duration (a short-lived `dispatched` state is normal);
 - Sandbox/container startup or command failures;
 - failed deployment checks.
@@ -51,8 +52,7 @@ Sandbox logs.
 
 ### A task is stuck or Sandbox commands fail
 
-1. Call `get_coding_task` with the task ID and record its `state`,
-   `streamOffset`, and replay URL.
+1. Call `get_coding_task` with the task ID and record its `state` and replay URL.
 2. Open the replay URL and inspect the Flue event stream around the first
    failed command or approval request. For an exceptional publication, also
    inspect the Hermes gateway log for the matching MCP `elicitation/create`.
@@ -65,8 +65,8 @@ Sandbox logs.
    elicitation. A task in `publishing` has already acquired the atomic GitHub
    write lease, so cancellation reports that publication is in progress and
    waits for settlement. Otherwise `cancel_coding_task` records a request, asks
-   the Flue abort endpoint when applicable, and blocks the proxy before the
-   lease. Once the run settles, the task becomes terminal `cancelled`.
+   and blocks the publication boundary before the lease. Once the run settles,
+   the task becomes terminal `cancelled`.
 
 ### Hermes cannot call the MCP server
 
@@ -95,17 +95,19 @@ without updating the architecture and security contract.
    `npx flue build --target cloudflare` locally.
 2. Run `npx wrangler deploy --dry-run` to validate Worker bindings and the
    Sandbox image without publishing traffic.
-3. Inspect the failed CI step and rerun only after correcting the source or
+3. Run `bun run test:worker` with Docker enabled to execute the built Flue
+   Worker through Wrangler's `createTestHarness()` and workerd.
+4. Inspect the failed CI step and rerun only after correcting the source or
    configuration issue.
 
 ## 4. Source of truth
 
 - HTTP routes and MCP boundary: `src/app.ts`, `src/mcp/control-plan.ts`.
 - Task persistence: `src/do/coding-task-do.ts`.
-- Task reconciliation: `src/mcp/control-plan.ts` uses the Flue Runs API for
-  Workflow tasks and the history seam in `src/mcp/task-utils.ts` for legacy
-  Agent tasks.
+- Task reconciliation: `src/mcp/control-plan.ts` uses ambient Flue `getRun()`
+  for coding and specialist Workflow runs.
 - Approval persistence: `src/do/approval-do.ts` and `src/approval/index.ts`.
-- GitHub writes: `src/agent/github-api-push.ts`, `src/agent/pr-lifecycle.ts`,
-  and the signed proxy routes in `src/app.ts`.
+- GitHub writes: `src/agent/publication-service.ts`,
+  `src/agent/github-api-push.ts`, `src/agent/control-plan-finalize-action.ts`,
+  and the signed compatibility routes in `src/app.ts`.
 - Structured logs and redaction: `src/core/logger.ts`.

@@ -1,15 +1,11 @@
 // ============================================================
-// E2E Real Test — Full chain: agent dispatch → events → tools
+// E2E Real Test — public boundary security checks
 // ============================================================
 // Set RUN_E2E=1 to enable (requires wrangler dev on port 8787).
-// State machine unit tests always run.
 
 import { describe, it, expect } from "vitest";
-import { applyLifecycleEvent } from "../src/agent/state-bridge";
-import type { SessionStatus } from "../src/core/types";
 
 const BASE = process.env.WORKER_URL || "http://localhost:8787";
-const TEST_SESSION = `e2e-test-${Date.now()}`;
 const RUN_E2E = process.env.RUN_E2E === "1";
 
 if (RUN_E2E) {
@@ -43,64 +39,17 @@ if (RUN_E2E) {
       expect(body.error).toBe("unauthorized");
     });
 
-    it("4. Raw Flue agent dispatch is not public", async () => {
-      const res = await fetch(`${BASE}/agents/control-plan/${TEST_SESSION}`, {
+    it("4. Direct workflow invocation is not public", async () => {
+      const res = await fetch(`${BASE}/workflows/coding-task`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: "Read README.md of duckhoa-uit/lawn" }),
+        body: JSON.stringify({ input: { taskId: "task_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } }),
       });
       expect(res.status).toBe(401);
     }, 30000);
-
-    it("5. Raw Flue event stream is not public", async () => {
-      await new Promise((r) => setTimeout(r, 3000));
-      const res = await fetch(`${BASE}/agents/control-plan/${TEST_SESSION}`);
-      expect(res.status).toBe(401);
-    }, 15000);
   });
 } else {
   describe.skip("E2E: Real against duckhoa-uit/lawn", () => {
     it("requires RUN_E2E=1", () => {});
   });
 }
-
-// ── State machine unit tests (always run) ──────────────────────────
-
-describe("State Machine (unit)", () => {
-  it("1. Happy path: created → completed", () => {
-    let s: SessionStatus = "created";
-    s = applyLifecycleEvent(s, "submitted");
-    expect(s).toBe("provisioning");
-    s = applyLifecycleEvent(s, "running");
-    expect(s).toBe("running");
-    s = applyLifecycleEvent(s, "completed");
-    expect(s).toBe("completed");
-  });
-
-  it("2. needs_approval loop", () => {
-    let s: SessionStatus = "running";
-    s = applyLifecycleEvent(s, "needs_input");
-    expect(s).toBe("needs_approval");
-    s = applyLifecycleEvent(s, "running");
-    expect(s).toBe("running");
-    s = applyLifecycleEvent(s, "completed");
-    expect(s).toBe("completed");
-  });
-
-  it("3. review_ready → running", () => {
-    expect(applyLifecycleEvent("review_ready", "running")).toBe("running");
-  });
-
-  it("4. Invalid transitions throw", () => {
-    expect(() => applyLifecycleEvent("completed", "running")).toThrow();
-    expect(() => applyLifecycleEvent("archived", "completed")).toThrow();
-  });
-
-  it("5. Follow-up submission while running", () => {
-    expect(applyLifecycleEvent("running", "submitted")).toBe("running");
-  });
-
-  it("6. provisioning → running (direct)", () => {
-    expect(applyLifecycleEvent("provisioning", "running")).toBe("running");
-  });
-});

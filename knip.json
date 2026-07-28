@@ -1,16 +1,13 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": [
-    "src/agents/control-plan.ts",
     "src/workflows/*.ts",
     "src/app.ts",
     "src/cloudflare.ts",
     "src/channels/github.ts",
     "src/do/pr-index-do.ts",
-    "src/core/**/*.ts",
     "scripts/**/*.ts",
-    "tests/**/*.test.ts",
-    "tests/**/*.mts"
+    "tests/**/*.test.ts"
   ],
   "project": ["src/**/*.ts", "scripts/**/*.ts"],
   "ignoreBinaries": [],

@@ -1,21 +1,3 @@
-export type AgentEvent = {
-  type?: string;
-  isError?: boolean;
-  outcome?: string;
-  error?: { message?: string };
-  response?: { error?: { message?: string } };
-  message?: { role?: string; content?: unknown };
-};
-
-export type AgentHistory = {
-  offset?: string;
-  settlements?: Array<{
-    submissionId?: string;
-    outcome?: string;
-    result?: { text?: string };
-  }>;
-};
-
 export type TaskLifecycle = {
   terminal: boolean;
   nextAction: "poll" | "respond_to_approval" | "report";
@@ -70,75 +52,10 @@ export async function codingTaskId(repository: string, idempotencyKey: string): 
   return `task_${Array.from(digest.slice(0, 16), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
-/**
- * Derive a stable retry key when the upstream orchestrator does not have a
- * provider-owned issue ID. Keep this deterministic: a random LLM-generated
- * value would defeat idempotency and could dispatch duplicate coding agents.
- */
+/** Derive a stable retry key when the upstream has no provider-owned issue ID. */
 export async function derivedIdempotencyKey(task: string, baseBranch: string): Promise<string> {
   const normalizedTask = task.replace(/\r\n?/g, "\n").trim();
   const input = new TextEncoder().encode(`${baseBranch}\u0000${normalizedTask}`);
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", input));
   return `auto:${baseBranch}:${Array.from(digest.slice(0, 16), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
-}
-
-export function taskStateFromEvents(events: AgentEvent[]): {
-  state?: "completed" | "failed";
-  summary?: string;
-} {
-  const failed = events.find(
-    (event) =>
-      (event.type === "submission_settled" && event.outcome === "failed") ||
-      (event.type === "turn" && event.isError),
-  );
-  if (failed) {
-    return {
-      state: "failed",
-      summary: failed.response?.error?.message || failed.error?.message || "Agent execution failed",
-    };
-  }
-
-  if (events.some((event) => event.type === "idle" || event.type === "agent_end")) {
-    const completedMessage = events
-      .toReversed()
-      .find((event) => event.type === "message_end" && event.message?.role === "assistant");
-    return { state: "completed", summary: textContent(completedMessage?.message?.content) };
-  }
-
-  return {};
-}
-
-export function taskStateFromHistory(
-  history: AgentHistory,
-  submissionId?: string,
-): { state?: "completed" | "failed" | "aborted"; summary?: string; offset?: string } {
-  const settlement = history.settlements?.find(
-    (candidate) => !submissionId || candidate.submissionId === submissionId,
-  );
-  if (!settlement) return { offset: history.offset };
-  if (settlement.outcome === "completed") {
-    return { state: "completed", summary: settlement.result?.text, offset: history.offset };
-  }
-  if (settlement.outcome === "aborted") {
-    return { state: "aborted", summary: "Flue submission aborted", offset: history.offset };
-  }
-  if (settlement.outcome === "failed") {
-    return { state: "failed", summary: "Flue submission failed", offset: history.offset };
-  }
-  return { offset: history.offset };
-}
-
-function textContent(content: unknown): string | undefined {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return undefined;
-  return (
-    content
-      .filter(
-        (part): part is { type?: string; text?: string } =>
-          typeof part === "object" && part !== null,
-      )
-      .filter((part) => part.type === "text" && typeof part.text === "string")
-      .map((part) => part.text)
-      .join("\n") || undefined
-  );
 }

@@ -6,8 +6,8 @@
 //   GET  /health                     → health check
 //   POST /proxy/git-push             → credential-isolated git push
 //   POST /proxy/create-pr            → credential-isolated PR creation
-//   GET  /sessions/:id/replay        → static replay HTML
-//   GET  /sessions/:id/stream        → proxy Flue agent event stream (SSE)
+//   GET  /replay/:id                 → static replay HTML
+//   GET  /sessions/:id/stream        → proxy Flue workflow run stream (SSE)
 //   GET  /approvals/:id              → pending approval payload
 //   POST /approvals/:id              → approve/deny decision
 //   GET  /sessions/:id/approvals/open → list open approvals
@@ -15,28 +15,33 @@
 //
 // Flue auto-mounts (via `flue()` + src/channels/github.ts):
 //   POST /channels/github/webhook    → GitHub webhook (HMAC verified)
-//   POST /agents/control-plan/:id    → Agent dispatch
-//   GET  /agents/control-plan/:id    → Agent event stream
-//   POST /workflows/*                → finite specialist Workflow invocation
+//   POST /workflows/*                → finite Workflow invocation (external/diagnostic)
 //   GET  /runs/:runId                → Workflow run observation
 
 import { flue } from "@flue/runtime/routing";
 import { Hono } from "hono";
 import { signScopedToken, verifyScopedToken } from "./core/auth";
-import {
-  isPushManifest,
-  MAX_PUSH_MANIFEST_BYTES,
-  pushManifestWithGitHubApi,
-} from "./agent/github-api-push";
+import { isPushManifest, MAX_PUSH_MANIFEST_BYTES } from "./agent/github-api-push";
 import { installModelProgressWatchdog } from "./agent/runtime-watchdog";
 import { createControlPlanMcpHandler, isAuthorizedMcpRequest } from "./mcp/control-plan";
 import type { CodingTaskRecord } from "./do/coding-task-do";
-import type { PublicationClaimResult } from "./do/publication-lease";
-import { repositoryParts, taskIdFromSessionId } from "./mcp/task-utils";
-import { GitHubApp } from "./agent/github-app";
+import { taskIdFromSessionId } from "./mcp/task-utils";
+import {
+  PublicationService,
+  publicationTaskAccess,
+  type CreatePullRequestInput,
+} from "./agent/publication-service";
+import type { WorkerTracing } from "./core/tracing";
 
 type AppEnv = { Bindings: Env };
 const app = new Hono<AppEnv>();
+function requestTracing(context: { executionCtx: unknown }) {
+  try {
+    return (context.executionCtx as { tracing?: WorkerTracing }).tracing;
+  } catch {
+    return undefined;
+  }
+}
 
 installModelProgressWatchdog();
 
@@ -53,27 +58,9 @@ app.all("/mcp", async (c) => {
   const handler = await createControlPlanMcpHandler({
     env: c.env,
     origin: new URL(c.req.url).origin,
-    fetch: async (input, init) => app.fetch(new Request(input, init), c.env, c.executionCtx),
+    tracing: requestTracing(c),
   });
   return handler(c.req.raw, c.env, c.executionCtx as never);
-});
-
-// ─── Flue routes ───────────────────────────────────────────────────────────
-
-// The coding agent is an internal implementation detail. MCP dispatch and the
-// replay stream proxy carry a short-lived internal capability; internet callers
-// must never prompt or inspect the raw Flue route directly.
-app.use("/agents/*", async (c, next) => {
-  const pathParts = new URL(c.req.url).pathname.split("/");
-  const sessionId = pathParts[3] || "";
-  const authorization = c.req.header("Authorization") || "";
-  const token = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
-  if (
-    !(await verifyScopedToken(c.env.CONTROL_PLAN_INTERNAL_SECRET || "", "agent", sessionId, token))
-  ) {
-    return c.json({ error: "unauthorized" }, 401);
-  }
-  await next();
 });
 
 app.route("/", flue());
@@ -90,37 +77,16 @@ app.post("/proxy/git-push", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   if (!isPushManifest(body)) return c.json({ error: "valid push manifest required" }, 400);
   const sessionId = proxySessionId(c.req.raw);
-  const task = await taskForProxy(c.env, sessionId);
-  if (!task) return c.json({ error: "session is not bound to a coding task" }, 409);
-  if (
-    task.state === "cancellation_requested" ||
-    task.state === "cancelled" ||
-    task.state === "completed" ||
-    task.state === "failed"
-  ) {
-    return c.json({ error: `coding task is ${task.state}` }, 409);
-  }
-  if (body.branch !== task.branch || (body.baseBranch ?? task.baseBranch) !== task.baseBranch) {
-    return c.json(
-      { error: `branch/baseBranch must be ${task.branch}/${task.baseBranch} for this coding task` },
-      409,
-    );
-  }
-  const target = repositoryParts(task.repository);
-  const owner = target?.owner;
-  const repo = target?.repo;
-  if (!owner || !repo) return c.json({ error: "invalid task repository" }, 500);
   try {
-    const access = await new GitHubApp(c.env).getRepositoryAccess(task.repository, "write");
-    const publicationError = await proxyPublicationRejection(c.env, sessionId);
-    if (publicationError) return publicationError;
-    const result = await pushManifestWithGitHubApi(access.client, owner, repo, {
-      ...body,
-      baseBranch: task.baseBranch,
-    });
-    return c.json({ success: true, ...result });
+    const taskAccess = publicationTaskAccess(c.env, sessionId);
+    if (!taskAccess) return c.json({ error: "session is not bound to a coding task" }, 409);
+    const result = await new PublicationService(c.env).pushGitManifest(
+      { ...body, baseBranch: body.baseBranch ?? undefined },
+      { sessionId, taskAccess, tracing: requestTracing(c) },
+    );
+    return c.json(result);
   } catch (err) {
-    return c.json({ success: false, error: String(err) }, 502);
+    return publicationErrorResponse(c, err);
   }
 });
 
@@ -133,68 +99,18 @@ app.post("/proxy/create-pr", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const parsedInput = parseCreatePrInput(body);
   if ("error" in parsedInput) return c.json({ error: parsedInput.error }, 400);
-  const { title, prBody, branch, baseBranch, draft } = parsedInput;
   const sessionId = proxySessionId(c.req.raw);
-  const task = await taskForProxy(c.env, sessionId);
-  if (!task) return c.json({ error: "session is not bound to a coding task" }, 409);
-  if (
-    task.state === "cancellation_requested" ||
-    task.state === "cancelled" ||
-    task.state === "completed" ||
-    task.state === "failed"
-  ) {
-    return c.json({ error: `coding task is ${task.state}` }, 409);
-  }
-  const resolvedBaseBranch = baseBranch ?? task.baseBranch;
-  if (branch !== task.branch || resolvedBaseBranch !== task.baseBranch) {
-    return c.json(
-      { error: `branch/baseBranch must be ${task.branch}/${task.baseBranch} for this coding task` },
-      409,
-    );
-  }
-  const target = repositoryParts(task.repository);
-  const owner = target?.owner;
-  const repo = target?.repo;
-  if (!owner || !repo) return c.json({ error: "invalid task repository" }, 500);
   try {
-    const access = await new GitHubApp(c.env).getRepositoryAccess(task.repository, "write");
-    const octokit = access.client;
-    const existing = await octokit.rest.pulls.list({
-      owner,
-      repo,
-      head: `${owner}:${branch}`,
-      base: resolvedBaseBranch,
-      state: "open",
-      per_page: 1,
+    const taskAccess = publicationTaskAccess(c.env, sessionId);
+    if (!taskAccess) return c.json({ error: "session is not bound to a coding task" }, 409);
+    const result = await new PublicationService(c.env).createPullRequest(parsedInput, {
+      sessionId,
+      taskAccess,
+      tracing: requestTracing(c),
     });
-    if (existing.data[0]) {
-      return c.json({
-        success: true,
-        prUrl: existing.data[0].html_url,
-        prNumber: existing.data[0].number,
-        existing: true,
-      });
-    }
-
-    const publicationError = await proxyPublicationRejection(c.env, sessionId);
-    if (publicationError) return publicationError;
-    const pr = await octokit.rest.pulls.create({
-      owner,
-      repo,
-      title,
-      body: prBody ?? "",
-      head: branch,
-      base: resolvedBaseBranch,
-      draft: draft !== false,
-    });
-    return c.json({
-      success: true,
-      prUrl: pr.data.html_url,
-      prNumber: pr.data.number,
-      existing: false,
-    });
+    return c.json(result);
   } catch (err) {
-    return c.json({ success: false, error: String(err) }, 502);
+    return publicationErrorResponse(c, err);
   }
 });
 
@@ -219,9 +135,9 @@ app.get("/replay/:id", async (c) => {
 // Stream-Next-Offset). Keep the browser-facing replay contract stable when
 // the pinned Flue stream API changes. See docs/ARCHITECTURE.md.
 //
-// Auth-gated SSE proxy that forwards to the Flue agent or workflow run stream.
-// The replay HTML connects here instead of directly to /agents/control-plan/:id
-// so we can enforce token access. Uses raw ReadableStream to avoid buffering.
+// Auth-gated SSE proxy that forwards to a Flue workflow run stream. The replay
+// HTML connects here instead of directly to `/runs/:runId` so we can enforce
+// task-bound replay access. Uses raw ReadableStream to avoid buffering.
 
 app.get("/sessions/:id/stream", async (c) => {
   const sessionId = c.req.param("id");
@@ -236,11 +152,9 @@ app.get("/sessions/:id/stream", async (c) => {
   const tail = c.req.query("tail") || "";
 
   const task = await taskForProxy(c.env, sessionId);
-  const workflowRunId = task?.executionMode === "workflow" ? task.workflowRunId : undefined;
-  const isWorkflow = Boolean(workflowRunId);
-  let fluePath = workflowRunId
-    ? `/runs/${encodeURIComponent(workflowRunId)}?offset=${encodeURIComponent(offset)}&live=${encodeURIComponent(live)}`
-    : `/agents/control-plan/${sessionId}?view=updates&offset=${encodeURIComponent(offset)}&live=${encodeURIComponent(live)}`;
+  const workflowRunId = task?.workflowRunId;
+  if (!workflowRunId) return new Response("workflow run unavailable", { status: 404 });
+  let fluePath = `/runs/${encodeURIComponent(workflowRunId)}?offset=${encodeURIComponent(offset)}&live=${encodeURIComponent(live)}`;
   if (tail) fluePath += `&tail=${encodeURIComponent(tail)}`;
 
   // We use a raw fetch to the Flue route so Hono doesn't buffer SSE
@@ -249,8 +163,8 @@ app.get("/sessions/:id/stream", async (c) => {
       Accept: "text/event-stream, application/json",
       Authorization: `Bearer ${await signScopedToken(
         c.env.CONTROL_PLAN_INTERNAL_SECRET || "",
-        isWorkflow ? "workflow" : "agent",
-        isWorkflow ? "coding-task" : sessionId,
+        "workflow",
+        "coding-task",
         5 * 60 * 1000,
       )}`,
     },
@@ -382,37 +296,7 @@ async function taskForProxy(env: Env, sessionId: string): Promise<CodingTaskReco
 
   return null;
 }
-
-async function beginProxyPublication(env: Env, sessionId: string): Promise<PublicationClaimResult> {
-  const taskId = taskIdFromSessionId(sessionId);
-  const binding = (env as Partial<Env>).CONTROL_PLAN_TASK_DO;
-  if (!taskId || !binding) return { claimed: false, task: null, reason: "not_publishable" };
-  return binding.get(binding.idFromName(taskId)).beginPublication(sessionId);
-}
-
-async function proxyPublicationRejection(env: Env, sessionId: string): Promise<Response | null> {
-  const publication = await beginProxyPublication(env, sessionId);
-  if (publication.claimed) return null;
-  return Response.json(
-    {
-      error:
-        publication.reason === "owned_by_other_session"
-          ? "publication is owned by another session"
-          : "coding task is no longer publishable",
-    },
-    { status: 409 },
-  );
-}
-
-type CreatePrInput = {
-  title: string;
-  prBody?: string;
-  branch: string;
-  baseBranch?: string;
-  draft?: boolean;
-};
-
-function parseCreatePrInput(value: unknown): CreatePrInput | { error: string } {
+function parseCreatePrInput(value: unknown): CreatePullRequestInput | { error: string } {
   const input = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
   if (typeof input.title !== "string" || typeof input.branch !== "string") {
     return { error: "title and branch required" };
@@ -428,11 +312,25 @@ function parseCreatePrInput(value: unknown): CreatePrInput | { error: string } {
   }
   return {
     title: input.title,
-    prBody: input.body,
+    body: input.body,
     branch: input.branch,
     baseBranch: input.baseBranch,
     draft: input.draft,
   };
+}
+
+function publicationErrorResponse(
+  c: { json: (body: unknown, status: number) => Response },
+  error: unknown,
+): Response {
+  const status =
+    error instanceof Error && "status" in error && typeof error.status === "number"
+      ? error.status
+      : 502;
+  return c.json(
+    { success: false, error: error instanceof Error ? error.message : String(error) },
+    status,
+  );
 }
 
 // ─── Inlined Replay HTML ──────────────────────────────────────────────────

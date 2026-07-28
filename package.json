@@ -6,6 +6,7 @@
     "setup": "bash scripts/dev-setup.sh",
     "dev": "wrangler dev",
     "deploy": "flue build --target cloudflare && wrangler deploy",
+    "test:worker": "flue build --target cloudflare && RUN_WORKER_HARNESS=1 vitest run tests/worker-harness.test.ts",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
@@ -22,10 +23,9 @@
     "dupes": "jscpd"
   },
   "dependencies": {
-    "@cloudflare/sandbox": "0.12.3",
+    "@cloudflare/sandbox": "0.12.4",
     "@flue/github": "1.0.0-beta.1",
     "@flue/runtime": "1.0.0-beta.9",
-    "@flue/sdk": "1.0.0-beta.9",
     "@modelcontextprotocol/sdk": "1.29.0",
     "@octokit/rest": "^22.0.0",
     "agents": "^0.14.0",
@@ -47,7 +47,7 @@
     "oxlint": "^1.71.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0",
-    "wrangler": "4.110.0"
+    "wrangler": "4.114.0"
   },
   "lint-staged": {
     "*.{ts,tsx,js,mjs,json,jsonc,md}": [

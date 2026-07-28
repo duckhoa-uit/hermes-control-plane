@@ -2,21 +2,6 @@ import { describe, expect, it } from "vitest";
 import { signScopedToken } from "../src/core/auth";
 
 describe("production security boundaries", () => {
-  it("rejects direct Flue agent prompts without an internal capability", async () => {
-    const { default: app } = await import("../src/app");
-    const response = await app.fetch(
-      new Request(
-        "http://localhost/agents/control-plan/control-plan-task_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        {
-          method: "POST",
-          body: JSON.stringify({ message: "inject" }),
-        },
-      ),
-      {} as Env,
-    );
-    expect(response.status).toBe(401);
-  });
-
   it("cannot reuse a replay capability as a proxy write capability", async () => {
     const { default: app } = await import("../src/app");
     const sessionId = `control-plan-task_${"a".repeat(32)}`;

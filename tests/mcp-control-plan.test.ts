@@ -1,13 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   codingTaskId,
-  taskStateFromEvents,
-  taskStateFromHistory,
   taskBranch,
   taskIdFromSessionId,
   taskLifecycle,
   repositoryParts,
 } from "../src/mcp/task-utils";
+import { invokeCodingTaskWorkflow, normalizeOpenApprovals } from "../src/mcp/control-plan";
+
+vi.mock("../src/workflows/coding-task", () => ({
+  default: { name: "coding-task-test-definition" },
+}));
 
 describe("Control Plan MCP policy", () => {
   it("uses a stable, repository-scoped task idempotency key", async () => {
@@ -30,6 +33,14 @@ describe("Control Plan MCP policy", () => {
   it("parses repository targets without accepting arbitrary URLs", () => {
     expect(repositoryParts("owner/repo")).toEqual({ owner: "owner", repo: "repo" });
     expect(repositoryParts("https://github.com/owner/repo")).toBeNull();
+  });
+
+  it("normalizes the approval DO envelope to the MCP array shape", () => {
+    expect(normalizeOpenApprovals({ approvals: [{ id: "approval-1" }] })).toEqual([
+      { id: "approval-1" },
+    ]);
+    expect(normalizeOpenApprovals({ approvals: null })).toEqual([]);
+    expect(normalizeOpenApprovals([])).toEqual([]);
   });
 
   it("treats dispatched work as active and tells Hermes to poll", () => {
@@ -56,49 +67,28 @@ describe("Control Plan MCP policy", () => {
     expect(taskLifecycle("cancellation_requested").terminal).toBe(false);
     expect(taskLifecycle("cancelled")).toEqual({ terminal: true, nextAction: "report" });
   });
-});
 
-describe("Control Plan MCP event reconciliation", () => {
-  it("marks an idle agent as completed and returns its final message", () => {
-    expect(
-      taskStateFromEvents([
-        {
-          type: "message_end",
-          message: { role: "assistant", content: [{ type: "text", text: "Checks passed" }] },
+  it("routes coding dispatch through the injected workflow runtime", async () => {
+    let received: { workflow: unknown; input: unknown } | undefined;
+    const result = await invokeCodingTaskWorkflow(
+      {
+        invoke: async (workflow, request) => {
+          received = { workflow, input: request.input };
+          return { runId: "run-coding-1" };
         },
-        { type: "idle" },
-      ]),
-    ).toEqual({ state: "completed", summary: "Checks passed" });
-  });
+        getRun: async () => null,
+      },
+      {
+        taskId: "task_0123456789abcdef0123456789abcdef",
+        repository: "owner/repo",
+        baseBranch: "main",
+        branch: "control-plan/task-1",
+        task: "Run the bounded coding task",
+      },
+    );
 
-  it("prefers a failed terminal event over an idle event", () => {
-    expect(
-      taskStateFromEvents([
-        { type: "idle" },
-        { type: "turn", isError: true, response: { error: { message: "model failed" } } },
-      ]),
-    ).toEqual({ state: "failed", summary: "model failed" });
-  });
-
-  it("reconciles beta.9 history settlements", () => {
-    expect(
-      taskStateFromHistory(
-        {
-          offset: "0000000000000000_0000000000000001",
-          settlements: [
-            {
-              submissionId: "submission-1",
-              outcome: "completed",
-              result: { text: "read-only summary" },
-            },
-          ],
-        },
-        "submission-1",
-      ),
-    ).toEqual({
-      state: "completed",
-      summary: "read-only summary",
-      offset: "0000000000000000_0000000000000001",
-    });
+    expect(result).toEqual({ runId: "run-coding-1" });
+    expect(received?.workflow).toBeDefined();
+    expect(received?.input).toMatchObject({ repository: "owner/repo" });
   });
 });

@@ -26,27 +26,6 @@ function hexToBytes(hex: string): Uint8Array {
   return bytes;
 }
 
-export async function signToken(secret: string, sessionId: string): Promise<string> {
-  const key = await getKey(secret);
-  const sig = await crypto.subtle.sign(ALG, key, new TextEncoder().encode(sessionId));
-  return bytesToHex(sig);
-}
-
-export async function verifyToken(
-  secret: string,
-  sessionId: string,
-  token: string,
-): Promise<boolean> {
-  if (!secret || !token) return false;
-  try {
-    const key = await getKey(secret);
-    const expected = hexToBytes(token);
-    return crypto.subtle.verify(ALG, key, expected, new TextEncoder().encode(sessionId));
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Issues a short-lived, purpose-bound capability token. Tokens are deliberately
  * scoped so a replay URL can never be reused as an internal write credential.

@@ -10,7 +10,6 @@ const task: CodingTaskRecord = {
   baseBranch: "main",
   branch: "control-plan/0123456789abcdef",
   task: "Make the requested change",
-  executionMode: "workflow",
   state: "dispatched",
   createdAt: 1,
   updatedAt: 1,

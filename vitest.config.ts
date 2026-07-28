@@ -19,10 +19,8 @@ export default defineConfig({
         "src/index.ts",
         "src/app.ts",
         "src/cloudflare.ts",
-        "src/agents/",
         "src/channels/",
         "src/do/",
-        "src/core/types.ts",
       ],
       thresholds: {
         lines: 60,

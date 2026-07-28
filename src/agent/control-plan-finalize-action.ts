@@ -4,6 +4,7 @@ import * as v from "valibot";
 import { requireApproval } from "../approval";
 import type { ApprovalDecision, ApprovalMode } from "../approval";
 import { requiresPublicationApproval } from "./publication-policy";
+import { PublicationService, publicationTaskAccess } from "./publication-service";
 import {
   buildPushSnapshot,
   assertWorkspaceRepository,
@@ -15,10 +16,12 @@ import {
   type SandboxLike,
 } from "./finalizer";
 import type { CodingTaskRecord, CodingTaskResult } from "../do/coding-task-do";
-import { signScopedToken } from "../core/auth";
+import type { PublicationClaimResult } from "../do/publication-lease";
+import { getWorkerTracing, withCustomSpan } from "../core/tracing";
 
 type TaskStub = {
   get(): Promise<CodingTaskRecord | null>;
+  beginPublication(sessionId: string): Promise<PublicationClaimResult>;
   recordPublication(result: CodingTaskResult): Promise<CodingTaskRecord | null>;
 };
 
@@ -46,20 +49,12 @@ export function createFinalizeChangeAction(context: ControlPlanFinalizeContext) 
     authorName,
     authorEmail,
   } = context;
+  const publicationService = new PublicationService(env);
 
-  async function proxyHeaders(): Promise<Record<string, string>> {
-    if (!baseUrl) throw new Error("WORKER_URL must be configured for agent callbacks");
-    const token = await signScopedToken(
-      env.CONTROL_PLAN_PROXY_SECRET || "",
-      "proxy",
-      id,
-      5 * 60 * 1000,
-    );
-    return {
-      "Content-Type": "application/json",
-      "X-Control-Plan-Session-Id": id,
-      Authorization: `Bearer ${token}`,
-    };
+  async function publicationContext() {
+    const taskAccess = taskStub || publicationTaskAccess(env, id);
+    if (!taskAccess) throw new Error("coding task publication binding is unavailable");
+    return { sessionId: id, taskAccess, tracing: await getWorkerTracing() };
   }
 
   async function requireGitPushApproval(
@@ -110,6 +105,10 @@ export function createFinalizeChangeAction(context: ControlPlanFinalizeContext) 
         sessionId: id,
         workerUrl: baseUrl,
         approvalDOBinding: approvalDO,
+        observability: {
+          host: env.POSTHOG_HOST,
+          token: env.POSTHOG_PROJECT_TOKEN,
+        },
       },
     );
 
@@ -123,22 +122,13 @@ export function createFinalizeChangeAction(context: ControlPlanFinalizeContext) 
   }
 
   async function pushSnapshot(
-    ctx: { signal?: AbortSignal },
+    _ctx: { signal?: AbortSignal },
     snapshot: unknown,
   ): Promise<JsonValue> {
-    const response = await fetch(`${baseUrl}/proxy/git-push`, {
-      method: "POST",
-      headers: await proxyHeaders(),
-      body: JSON.stringify(snapshot),
-      signal: ctx.signal,
-    });
-    if (!response.ok) throw new Error(`Push failed: ${response.status} ${await response.text()}`);
-    const result = (await response.json()) as {
-      success?: boolean;
-      error?: string;
-    };
-    if (!result.success) throw new Error(`Push failed: ${result.error || "unknown error"}`);
-    return result as JsonValue;
+    return (await publicationService.pushGitManifest(
+      { ...(snapshot as Parameters<typeof publicationService.pushGitManifest>[0]) },
+      await publicationContext(),
+    )) as JsonValue;
   }
 
   async function createPullRequest(
@@ -167,6 +157,10 @@ export function createFinalizeChangeAction(context: ControlPlanFinalizeContext) 
           sessionId: id,
           workerUrl: baseUrl,
           approvalDOBinding: approvalDO,
+          observability: {
+            host: env.POSTHOG_HOST,
+            token: env.POSTHOG_PROJECT_TOKEN,
+          },
         },
       );
       if (decision.denied) {
@@ -177,16 +171,11 @@ export function createFinalizeChangeAction(context: ControlPlanFinalizeContext) 
       }
     }
 
-    const response = await fetch(`${baseUrl}/proxy/create-pr`, {
-      method: "POST",
-      headers: await proxyHeaders(),
-      body: JSON.stringify({ ...input, draft: input.draft !== false }),
-      signal: ctx.signal,
-    });
-    if (!response.ok) {
-      throw new Error(`PR creation failed: ${response.status} ${await response.text()}`);
-    }
-    return (await response.json()) as JsonValue;
+    void ctx;
+    return (await publicationService.createPullRequest(
+      { ...input, draft: input.draft !== false },
+      await publicationContext(),
+    )) as JsonValue;
   }
 
   return defineAction({
@@ -235,27 +224,39 @@ export function createFinalizeChangeAction(context: ControlPlanFinalizeContext) 
         force: input.force,
         draft: input.draft ?? approvalMode(env.APPROVAL_MODE) === "policy",
       };
+      const tracing = await getWorkerTracing();
       const result = await runDeterministicFinalize(request, {
         loadCheckpoint: () => loadFinalizeCheckpoint(approvalDO, id, input.branch),
         saveCheckpoint: (checkpoint) => saveFinalizeCheckpoint(approvalDO, id, checkpoint),
         async prepare() {
-          const taskSandbox = await sandboxSession();
-          const repoPath = await findWorkspaceRepo(taskSandbox);
-          if (currentTask)
-            await assertWorkspaceRepository(taskSandbox, repoPath, currentTask.repository);
-          await ensureWorkspaceCommitted(
-            taskSandbox,
-            repoPath,
-            input.commitMessage,
-            authorName,
-            authorEmail,
-          );
-          return buildPushSnapshot(
-            taskSandbox,
-            repoPath,
-            input.branch,
-            input.force,
-            resolvedBaseBranch,
+          return withCustomSpan(
+            tracing,
+            "control_plan.sandbox.prepare",
+            {
+              "control_plan.task_id": id,
+              "control_plan.repository": currentTask?.repository || "unknown",
+              "control_plan.branch": input.branch,
+            },
+            async () => {
+              const taskSandbox = await sandboxSession();
+              const repoPath = await findWorkspaceRepo(taskSandbox);
+              if (currentTask)
+                await assertWorkspaceRepository(taskSandbox, repoPath, currentTask.repository);
+              await ensureWorkspaceCommitted(
+                taskSandbox,
+                repoPath,
+                input.commitMessage,
+                authorName,
+                authorEmail,
+              );
+              return buildPushSnapshot(
+                taskSandbox,
+                repoPath,
+                input.branch,
+                input.force,
+                resolvedBaseBranch,
+              );
+            },
           );
         },
         approvePush: (snapshot) => requireGitPushApproval({}, snapshot),

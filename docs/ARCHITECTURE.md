@@ -1,223 +1,171 @@
 # Architecture
 
-**Status:** Production-candidate Control Plan execution service; Flue-native
-Workflow migration and Hermes MCP integration audited 2026-07-21.
+**Status:** Flue-native single Worker; coding tasks use finite Flue Workflows.
+Updated 2026-07-22.
 
-## Current deployment
+## Decision
 
-The code is a single Cloudflare Worker using Flue. Hermes remains the upstream
-orchestrator and calls Control Plan through remote HTTP MCP after it has already
-triaged an issue and produced a coding prompt.
+There is one deployed application, not two independent agent runtimes. Hermes
+is the conversational orchestrator. Flue owns durable model/workflow
+execution. This Worker is the trusted CodeOps boundary around Flue: it owns
+task idempotency, admission, approval, GitHub credentials, and publication.
+
+“Control Plan” is the existing service and Worker name. It is not a second
+AI control plane that competes with Hermes or re-implements Flue scheduling.
+The same Worker contains the MCP adapter, Flue Workflows, domain Durable
+Objects, GitHub boundary, and Sandbox integration.
 
 ```text
-GitHub webhook
-    |
-    v
-Control Plan Worker (Hono + Flue)
-    |- FlueControlPlanAgent Durable Object
-    |- ApprovalDurableObject
-    |- ControlPlanTaskDurableObject
-    |- ControlPlanAdmissionDurableObject
-    |- PrIndexDurableObject
-    |- GitHub App auth + credential-isolated GitHub write routes
-    |
-    v
-Cloudflare Sandbox container
-    |- git and shell
-    `- dependency install, build, and tests
+User / Slack / Hermes automation
+              |
+              v
+        Hermes Agent
+   intent, context, clarification,
+   workflow selection, reporting
+              |
+              | authenticated remote HTTP MCP
+              v
+  CodeOps Worker (Hono + Flue)
+   |- MCP adapter: auth, idempotency, admission
+   |- coding-task Workflow (new work)
+   |- pr-review / sentry-triage Workflows
+   |- task + approval + admission Durable Objects
+   |- trusted GitHub App / publication Actions
+   `- replay and run observation adapters
+              |
+              v
+       Flue private agent profile
+              |
+              v
+     Cloudflare Sandbox container
+       git, shell, files, tests
 ```
 
-## Current components
+## Ownership
 
-| Component | Responsibility | Location |
+| Layer | Owns | Does not own |
 |---|---|---|
-| Flue coding agent | Durable model loop with packaged instructions/skill and one deterministic finalization Action; retained for compatibility/rollback | `src/agents/control-plan.ts`, `src/agent/control-plan-agent-config.ts`, `src/agents/control-plan.md`, `src/skills/control-plan-coding-task/SKILL.md` |
-| Flue coding workflow | Finite task boundary, validated input, run persistence, and workflow-run observation around the same coding harness | `src/workflows/coding-task.ts` |
-| PR review workflow | Finite, read-only review of a caller-supplied PR snapshot; returns line-scoped findings and the reviewed head SHA | `src/workflows/pr-review.ts`, `src/agent/agent-profiles.ts`, `src/skills/pr-review/SKILL.md` |
-| Sentry triage workflow | Finite, read-only triage of a caller-supplied issue/event snapshot; returns evidence and one next action | `src/workflows/sentry-triage.ts`, `src/agent/agent-profiles.ts`, `src/skills/sentry-triage/SKILL.md` |
-| GitHub channel | Verify and acknowledge GitHub webhooks; no direct task dispatch policy yet | `src/channels/github.ts` |
-| Approval store | Durable approval decisions and finalize checkpoints | `src/do/approval-do.ts` |
-| Task store | Repository/base-branch/isolated-branch correlation, result metadata, stream offset | `src/do/coding-task-do.ts` |
-| Admission store | Global concurrent-task limit with expiring leases | `src/do/admission-do.ts` |
-| PR index | Durable pull-request lookup | `src/do/pr-index-do.ts` |
-| GitHub App/write boundary | Resolve installation access and publish manifests/create PRs without exposing a write token to the sandbox | `src/agent/github-app.ts`, `src/app.ts`, `src/agent/github-api-push.ts` |
-| Sandbox | Isolated repository checkout and command execution | `src/cf-sandbox/Dockerfile` |
+| Hermes | User conversation, intent, planning, clarification, channel context, reporting | GitHub credentials, sandbox execution, publication lease |
+| MCP adapter | Authentication, repository authorization, idempotency, task correlation, admission | Model reasoning or a second scheduler |
+| Flue Workflow | Finite run lifecycle, model/tool loop, structured input/output, run events | GitHub write credentials or human approval policy |
+| Task/Approval DOs | Domain correlation, publication lease, approval records, cancellation and admission bookkeeping | Full Flue event history or model context |
+| Sandbox | Repository files and OS commands | GitHub writes and PR creation |
+| Worker GitHub boundary | Installation tokens, commit/push/PR operations, branch and manifest checks | Untrusted model decisions |
 
-The Worker currently exports these Durable Object classes:
+## Workflow inventory
 
-- `Sandbox`
-- `PrIndexDurableObject`
-- `ApprovalDurableObject`
-- `ControlPlanTaskDurableObject`
-- `ControlPlanAdmissionDurableObject`
-- `FlueRegistry`
-- `FlueControlPlanAgent`
+| Workflow | Purpose | Side effects |
+|---|---|---|
+| `coding-task` | Implement one bounded repository task, run checks, and optionally publish through `finalize_change` | Sandbox writes; GitHub publication only through trusted Worker policy |
+| `pr-review` | Review a caller-supplied bounded PR snapshot | Read-only; no GitHub fetch/comment/approval |
+| `sentry-triage` | Analyze a caller-supplied bounded Sentry issue/event snapshot | Read-only; no Sentry mutation or code publication |
 
-`FLUE_REGISTRY` and `FlueRegistry` are two bindings for the same generated Flue
-class, not two independent classes.
+Coding work is a finite Workflow because it has a clear start, bounded task
+input, structured result, and terminal outcome. The private Flue Agent is an
+implementation detail of that Workflow; there is no addressable Agent runtime
+or compatibility dispatch path.
 
-## Current lifecycle
+## Coding lifecycle
 
-1. Hermes calls `spawn_coding_task` with a repository, optional base branch,
-   idempotency key, and the root-cause coding prompt.
-2. Control Plan verifies that a GitHub App installation grants access to the
-   repository, resolves/verifies the base branch, then persists the task and
-   allocates `control-plan/<task-prefix>`, then admits it under the global
-   concurrency lease.
-3. Control Plan invokes the finite `coding-task` Flue Workflow by default. The
-   workflow input contains the task ID and immutable repository/branch fields;
-   the agent initializer reads that persisted input with `getRun(id)`, resolves
-   the task DO, provisions the task-bound workspace, and sets the repository
-   directory as the agent `cwd` before Flue discovers `AGENTS.md` and workspace
-   skills. Existing tasks can use the compatibility Agent path when
-   `CONTROL_PLAN_EXECUTION_MODE=agent` is explicitly configured.
-4. Flue runs the model loop with the packaged Control Plan instructions and
-   coding-task skill. The model uses the sandbox's native shell/file tools; it
-   does not receive clone or publication tools. The Workflow's finite run
-   result is reconciled through `client.runs.get`; the task DO remains the
-   source of truth for Hermes.
-5. After verification, the model calls the `finalize_change` Action. The Action
-   commits the workspace, prepares a validated file manifest, and delegates
-   publication to the Worker boundary. A successful publication is first
-   recorded on the task DO, then the finite Workflow must return a validated
-   `published` result before reconciliation marks the task terminal. A
-   `no_change` result completes without a publication; `blocked` is a failed
-   terminal result with an explicit reason. `APPROVAL_MODE=policy` allows
-   normal `control-plan/*` pushes and draft PRs after checks; force pushes,
-   sensitive paths, non-task branches, and non-draft PRs pause for native
-   Hermes MCP elicitation. `manual` pauses every publication.
-6. When approval is required, the Hermes gateway receives the server-initiated
-   `elicitation/create` request. Control Plan records only the gateway result,
-   never a model-supplied approval hint.
-7. The Worker resolves the task's repository and branch before publishing the
-   commit through GitHub's Git Database API.
-8. The Worker creates or reuses the draft pull request and persists commit/PR result
-   metadata for Hermes polling.
-9. GitHub webhooks remain acknowledgement-only; they do not bypass Hermes.
+1. Hermes calls `spawn_coding_task` once with `owner/repo`, a self-contained
+   prompt, and optional stable idempotency key.
+2. The MCP adapter authorizes the GitHub App installation, resolves the base
+   branch, creates the durable task record and deterministic
+   `control-plan/<prefix>` branch, and acquires a global admission lease.
+3. The adapter calls Flue's ambient `invoke(codingTaskWorkflow, { input })`.
+   It does not make an HTTP request back to this Worker. The task stores the
+   returned Flue `runId` as a correlation pointer.
+4. Flue initializes the private coding profile, provisions the task-bound
+   Sandbox workspace, loads repository instructions and the coding skill, and
+   runs the model loop.
+5. The model may call `finalize_change` only after checks pass. That Action
+   validates the task/session/branch, approval policy, manifest, and atomic
+   publication lease before the Worker performs a GitHub write through the
+   internal `PublicationService`; it does not self-fetch the public Worker.
+   The signed `/proxy/*` routes remain a compatibility boundary for external
+   or diagnostic callers and use the same service.
+6. The task record stores publication metadata. `get_coding_task` uses Flue's
+   ambient `getRun(runId)` plus the task record to reconcile a validated
+   terminal result. Hermes polls until `lifecycle.terminal` is true.
+7. `published`, `no_change`, and `blocked` are explicit structured outcomes;
+   a run ending without a valid outcome is not successful completion.
+
+`created`, `dispatching`, `dispatched`, `publishing`, and
+`cancellation_requested` are active states. `publishing` means the task-owned
+GitHub lease has been acquired and cancellation cannot revoke that write.
+
+## Specialist lifecycle
+
+Hermes (or a future verified connector) assembles a bounded snapshot and calls
+`start_pr_review` or `start_sentry_triage`. The adapter validates the snapshot
+and invokes the matching Flue Workflow with ambient `invoke()`. Hermes polls
+`get_specialist_workflow`, which reads the run with ambient `getRun()` and
+returns only the allowlisted specialist workflows. The current GitHub webhook
+is acknowledgement-only, and Sentry has no direct Worker ingress yet; neither
+path silently creates coding tasks.
+
+```text
+verified event / Hermes context
+          -> bounded snapshot
+          -> specialist Workflow
+          -> structured read-only result
+          -> Hermes reports or decides whether to delegate coding
+```
 
 ## Security boundary
 
-Sandbox code is untrusted. It receives only a short-lived, repository-scoped
-GitHub App read token for the clone command and never receives a write token.
-Privileged GitHub writes happen only in the Worker after a purpose-bound,
-short-lived proxy capability, task binding, installation authorization,
-base-branch validation, manifest limits, and an atomic task-owned publication
-lease are validated. Approval is an additional policy gate for exceptional
-publication; normal policy-mode draft publication is intentionally autonomous
-but remains restricted to the task branch. Replay and internal Flue
-capabilities use different secrets and cannot be exchanged.
+The Sandbox is untrusted. It receives only a short-lived repository-scoped
+read token for checkout. It never receives a GitHub write token, approval
+decision, or direct push/PR tool. GitHub writes happen in trusted Worker code
+after task binding, branch/base validation, manifest limits, publication
+policy, and the task-owned atomic lease are checked. Exceptional operations
+also require a real ApprovalDO record and native Hermes MCP elicitation.
 
-The replay and approval UI uses signed session URLs. This is sufficient for the
-current single-operator model, but it is not a multi-user authorization model.
+MCP, replay, proxy, and Workflow capabilities use purpose-specific signed
+tokens. A replay token cannot authorize a GitHub write. The current replay and
+approval UI is single-operator oriented; it is not a general multi-user IAM
+system.
 
-## Hermes Agent target boundary
+## Durable Objects and migrations
 
-Hermes Agent is the upstream orchestrator. It owns request interpretation,
-planning, user interaction, and the decision to delegate coding work. Control
-Plan remains the coding-agent execution service: it creates a Flue session,
-holds durable task and approval state, and performs credential-isolated GitHub
-writes. Flue and the Cloudflare Sandbox remain part of the execution path.
+The Worker exports `Sandbox`, `ApprovalDurableObject`,
+`ControlPlanTaskDurableObject`, `ControlPlanAdmissionDurableObject`, the PR
+index, and Flue-generated Workflow classes. The task class is the coding-job
+domain record, not a second workflow engine.
 
-```text
-User, channel, or automation
-             |
-             v
-        Hermes Agent
-             |
-             | remote HTTP MCP tool call
-             v
-Control Plan Worker (Hono + Flue)
-    |- task/approval correlation
-    |- FlueControlPlanAgent Durable Object
-    |- Approval DO and PR index
-    `- GitHub App auth + credential-isolated GitHub write boundary
-             |
-             v
- Cloudflare Sandbox container
-```
+Migration `v8-remove-addressable-agent` deletes the old `FlueControlPlanAgent`
+namespace. It is a destructive pre-release cleanup, not a compatibility
+adapter; no new or existing task is routed through that class.
 
-Control Plan exposes a remote HTTP MCP server; Hermes configures that server as
-an MCP client and calls only its allowlisted tools. Hermes automatically
-discovers remote MCP tools, so no Hermes core fork or in-Worker Hermes client is
-needed. The Hermes HTTP Runs API is for the inverse topology—an external client
-starts and monitors Hermes work—and is not used here. The detailed contract and
-rollout gates are in
-[`HERMES-AGENT-INTEGRATION.md`](./HERMES-AGENT-INTEGRATION.md).
+Do not rename the deployed Worker or Durable Object classes casually. A new
+Worker name would create a separate deployment and orphan state. A future
+rename requires an explicit state-preserving migration and staged smoke test.
 
-### Initial MCP surface
+## External surfaces
 
-| Tool | Responsibility |
-|---|---|
-| `spawn_coding_task` | Verify GitHub App repository access, create a Control Plan task ID, and asynchronously dispatch a Flue coding session |
-| `get_coding_task` | Reconcile durable task status, lifecycle guidance, replay URL, and pending approval summary; `dispatched` and `publishing` are active and must be polled |
-| `respond_coding_approval` | Require native Hermes elicitation for non-deny decisions, then resolve the ApprovalDO record and resume polling |
-| `cancel_coding_task` | Request asynchronous Flue abort and block publication before the atomic lease; if publishing already started, report that publication is in progress |
-| `start_pr_review` | Start a PR review Workflow from a caller-supplied bounded diff; it does not fetch or write GitHub |
-| `start_sentry_triage` | Start a Sentry triage Workflow from a caller-supplied bounded snapshot; it does not query or modify Sentry |
-| `get_specialist_workflow` | Poll only the two specialist workflows; coding-task run IDs are not exposed |
+Hermes uses the authenticated `/mcp` endpoint. Flue HTTP routes and `/runs` are
+internal/diagnostic surfaces protected by scoped capabilities; application code
+uses ambient Flue primitives for same-Worker invocation and inspection. The
+replay stream proxy is intentionally the only browser-facing seam coupled to
+Flue's stream wire format.
 
-The task ID is the stable correlation key across Hermes, Flue, ApprovalDO, and
-GitHub. MCP responses are intentionally small; the replay stream remains the
-detailed operational record.
+GitHub webhooks currently verify and acknowledge only. If direct event-driven
+automation is enabled later, it must normalize and deduplicate the event,
+invoke an explicit Workflow, and document whether Hermes remains in the loop.
+It must not bypass the GitHub write boundary.
 
-### Agent versus Workflow boundary
+## Source map
 
-The default path is now a finite `defineWorkflow`, which matches the coding
-task's run-to-completion shape and gives Flue durable run records and a native
-`/runs/:runId` observation surface. The workflow still uses a Flue
-`defineAgent` initializer for the model turn, so the coding harness, packaged
-skill, Cloudflare Sandbox adapter, and deterministic `finalize_change` Action
-remain shared with the compatibility path.
-
-The Control Plan task ID is the external correlation key. The workflow `runId`
-is an internal reconciliation pointer (and optional diagnostic metadata in the
-task response); `get_coding_task` reads the workflow run with
-`client.runs.get` and settles the task DO. Cancellation first marks the task as
-cancellation-requested, then destroys the task-bound sandbox; a task that has
-already acquired the atomic publication lease remains `publishing` until the
-write settles. Reconciliation then settles cancellation as terminal `cancelled`.
-The explicit Agent path remains available for rollback and legacy records, but
-new MCP tasks use Workflow unless `CONTROL_PLAN_EXECUTION_MODE=agent` is set.
-
-PR review and Sentry triage are separate finite Workflows, not modes of the
-coding task. Hermes starts them through the dedicated MCP tools with bounded
-snapshots, then polls the Flue run ID. Their profiles intentionally have no
-sandbox, tools, Actions, or GitHub/Sentry write capability. External connectors
-may be added later to assemble snapshots, but the workflow boundary must remain
-read-only and must not reuse the coding profile.
-
-## Deployment identity
-
-The source/package name is `control-plan`. The existing Cloudflare Worker name
-remains `hermes-control-plane` until a deliberate cutover transfers Durable
-Object classes and re-creates secrets/routes for the new Worker script. Changing
-`wrangler.name` alone would create a separate deployment and orphan live state.
-
-## Release gates from the 2026-07-14 audit
-
-The architecture passes its local test/type/lint/build gates and a
-Docker-backed Lawn task. The remaining release gates are environment and
-operations checks, not an alternate issue-trigger architecture:
-
-1. Configure a real Hermes profile with the production `/mcp` URL, service
-   token, GitHub App-installed repository scope, and tool allowlist; run one
-   smoke task.
-2. Set the production `WORKER_URL` to the public HTTPS origin and configure the
-   three purpose-specific capability secrets plus the GitHub App credentials.
-   GitHub installation access and task-bound routing are both enforced at
-   runtime.
-3. Sandbox uses `@cloudflare/sandbox` and `docker.io/cloudflare/sandbox`
-   `0.12.3`, with RPC transport and an explicit persistent session per Flue
-   harness; implicit default sessions remain disabled. The migrated Docker path
-   and a production read-only Lawn MCP smoke task both pass; approval/PR
-   publication still needs its separate staged smoke test.
-4. The rename and local routes pass the Wrangler dry run, but the
-   state-preserving Durable Object rename and live route still need a staged
-   deploy and a real session/approval/PR smoke test before traffic is moved.
-
-Primary platform references:
-
-- [Hermes Agent programmatic integration](https://hermes-agent.nousresearch.com/docs/developer-guide/programmatic-integration)
-- [Hermes Agent API server](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server)
-- [Cloudflare Sandbox 2026 migration guide](https://developers.cloudflare.com/sandbox/guides/2026-deprecation/)
-- [Cloudflare Durable Object migrations](https://developers.cloudflare.com/durable-objects/reference/durable-objects-migrations/)
+- MCP adapter: `src/mcp/control-plan.ts`, `src/mcp/specialist-workflows.ts`
+- Workflows: `src/workflows/coding-task.ts`, `src/workflows/pr-review.ts`,
+  `src/workflows/sentry-triage.ts`
+- Domain state: `src/do/coding-task-do.ts`, `src/do/approval-do.ts`,
+  `src/do/admission-do.ts`
+- Coding profile and skill: `src/agent/control-plan-agent-config.ts`,
+  `src/agents/control-plan.md`, `src/skills/control-plan-coding-task/SKILL.md`
+- Trusted publication: `src/agent/control-plan-finalize-action.ts`,
+  `src/agent/publication-service.ts`, `src/app.ts`,
+  `src/agent/github-api-push.ts`
+- Custom trace spans: `src/core/tracing.ts` around admission, Flue invoke/run
+  inspection, Sandbox setup/prepare, and GitHub publication.
+- Verified event ingress: `src/channels/github.ts`

@@ -203,16 +203,16 @@ describe("push manifest validation", () => {
   });
 
   it("keeps GitHub write credentials out of the agent sandbox path", () => {
-    const agent = fs.readFileSync(
-      path.join(__dirname, "..", "src", "agents", "control-plan.ts"),
+    const workflow = fs.readFileSync(
+      path.join(__dirname, "..", "src", "workflows", "coding-task.ts"),
       "utf8",
     );
 
-    expect(agent).not.toContain("GITHUB_WRITE_TOKEN");
-    expect(agent).not.toContain("GITHUB_APP_PRIVATE_KEY");
-    expect(agent).not.toContain("authUrl");
-    expect(agent).not.toContain("git remote set-url origin");
-    expect(agent).not.toContain("git -c http.version=HTTP/1.1 push");
+    expect(workflow).not.toContain("GITHUB_WRITE_TOKEN");
+    expect(workflow).not.toContain("GITHUB_APP_PRIVATE_KEY");
+    expect(workflow).not.toContain("authUrl");
+    expect(workflow).not.toContain("git remote set-url origin");
+    expect(workflow).not.toContain("git -c http.version=HTTP/1.1 push");
   });
 
   it("rejects path traversal and oversized files", () => {

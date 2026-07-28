@@ -16,10 +16,11 @@ Control Plan is the coding-agent execution service:
 - **Task admission** — repository-scoped durable task records, deterministic
   branches, result metadata, and a bounded concurrency lease
 
-The remote HTTP MCP boundary is implemented and verified locally and against a
-production Hermes host: Hermes calls it to spawn and manage coding tasks, and
-Control Plan dispatches those tasks to Flue. Local Docker E2E covers two
-repositories; full production terminal-task E2E remains an operator smoke test.
+The remote HTTP MCP boundary is implemented and verified locally plus at the
+deployed Worker boundary. The CodeOps Worker invokes finite Flue Workflows
+in-process. Local Docker E2E covers two repositories; connecting a real
+production Hermes host and completing a terminal write task remain operator
+smoke tests.
 The
 Hermes HTTP Runs API has the opposite direction (an external client controls
 Hermes), so it is not the boundary for this integration. See
@@ -45,6 +46,7 @@ for autonomous coding agents. Read it before changing the repository.
 ```bash
 bun install
 bun run test
+bun run test:worker   # Docker-backed workerd smoke test
 npx flue build --target cloudflare
 npx wrangler deploy
 ```

@@ -1,29 +1,30 @@
 import { describe, it, expect } from "vitest";
-import { signToken, verifyToken } from "../src/core/auth";
 import { classifyCommand } from "../src/approval/classifier";
 import { checkHardline } from "../src/approval/hardline";
 import * as fs from "fs";
 import * as path from "path";
 
-const SECRET = "test-integration-secret";
-
 function readAppSource(): string {
   return fs.readFileSync(path.join(__dirname, "..", "src", "app.ts"), "utf-8");
 }
-function readAgentSource(): string {
-  const agent = fs.readFileSync(
-    path.join(__dirname, "..", "src", "agents", "control-plan.ts"),
+function readCodingSurface(): string {
+  const workflow = fs.readFileSync(
+    path.join(__dirname, "..", "src", "workflows", "coding-task.ts"),
     "utf-8",
   );
   const config = fs.readFileSync(
     path.join(__dirname, "..", "src", "agent", "control-plan-agent-config.ts"),
     "utf-8",
   );
+  const profile = fs.readFileSync(
+    path.join(__dirname, "..", "src", "agent", "agent-profiles.ts"),
+    "utf-8",
+  );
   const capabilities = fs.readFileSync(
     path.join(__dirname, "..", "src", "agent", "control-plan-finalize-action.ts"),
     "utf-8",
   );
-  return `${agent}\n${config}\n${capabilities}`;
+  return `${workflow}\n${config}\n${profile}\n${capabilities}`;
 }
 function readCfSource(): string {
   return fs.readFileSync(path.join(__dirname, "..", "src", "cloudflare.ts"), "utf-8");
@@ -46,32 +47,6 @@ function readFinalizeActionSource(): string {
 function readTaskDoSource(): string {
   return fs.readFileSync(path.join(__dirname, "..", "src", "do", "coding-task-do.ts"), "utf-8");
 }
-
-describe("Token lifecycle", () => {
-  it("signs token as 64-char hex", async () => {
-    const t = await signToken(SECRET, "sess-1");
-    expect(t.length).toBe(64);
-  });
-
-  it("verifies valid (secret, sessionId, token) tuple", async () => {
-    const t = await signToken(SECRET, "sess-1");
-    expect(await verifyToken(SECRET, "sess-1", t)).toBe(true);
-  });
-
-  it("rejects wrong sessionId", async () => {
-    const t = await signToken(SECRET, "sess-1");
-    expect(await verifyToken(SECRET, "sess-2", t)).toBe(false);
-  });
-
-  it("rejects wrong secret", async () => {
-    const t = await signToken(SECRET, "sess-1");
-    expect(await verifyToken("wrong", "sess-1", t)).toBe(false);
-  });
-
-  it("rejects empty token", async () => {
-    expect(await verifyToken(SECRET, "sess-1", "")).toBe(false);
-  });
-});
 
 describe("Classifier and hardline", () => {
   it("safe cmd passes classifier", () => {
@@ -143,8 +118,8 @@ describe("Approval event contract (Hermes Agent-compatible)", () => {
 
 describe("Route contract", () => {
   it("replay URL format", () => {
-    const u = new URL("http://localhost:8787/sessions/test/replay?token=abc");
-    expect(u.pathname).toBe("/sessions/test/replay");
+    const u = new URL("http://localhost:8787/replay/test?token=abc");
+    expect(u.pathname).toBe("/replay/test");
     expect(u.searchParams.get("token")).toBe("abc");
   });
 
@@ -198,9 +173,9 @@ describe("Source audit: app.ts", () => {
   it("does not ship a localhost Worker callback URL", () => {
     expect(readWranglerSource()).not.toContain('"WORKER_URL"');
   });
-  it("protects the raw Flue agent mount", () => {
-    expect(src).toContain('app.use("/agents/*"');
-    expect(src).toContain("CONTROL_PLAN_INTERNAL_SECRET");
+  it("does not expose an addressable Flue Agent mount", () => {
+    expect(src).not.toContain('app.use("/agents/*"');
+    expect(src).not.toContain("FLUE_CONTROL_PLAN_AGENT");
   });
   it("REPLAY_HTML inline", () => {
     expect(src).toContain("Session Replay");
@@ -215,12 +190,8 @@ describe("Source audit: app.ts", () => {
   });
 });
 
-describe("Source audit: agent tools", () => {
-  const src = readAgentSource();
-  const agentModule = fs.readFileSync(
-    path.join(__dirname, "..", "src", "agents", "control-plan.ts"),
-    "utf-8",
-  );
+describe("Source audit: coding workflow surface", () => {
+  const src = readCodingSurface();
   it("Flue-native instructions and skill are imported", () => {
     expect(src).toContain('with { type: "markdown" }');
     expect(src).toContain('with { type: "skill" }');
@@ -244,11 +215,8 @@ describe("Source audit: agent tools", () => {
   it("APPROVAL_MODE env respected", () => {
     expect(src).toContain("APPROVAL_MODE");
   });
-  it("Agent module keeps its own scoped route gate", () => {
-    expect(agentModule).toContain("export const route");
-    expect(agentModule).toContain("verifyScopedToken(");
-    expect(agentModule).toContain('"agent"');
-    expect(agentModule).toContain('return c.json({ error: "unauthorized" }, 401)');
+  it("does not expose a compatibility Agent route", () => {
+    expect(readAppSource()).not.toContain("/agents/");
   });
 });
 
@@ -361,6 +329,10 @@ describe("Source audit: wrangler.jsonc", () => {
   it("workflow Durable Object migration exists", () => {
     expect(src).toContain('"v6-coding-task-workflow"');
     expect(src).toContain('"FlueCodingTaskWorkflow"');
+  });
+  it("removes the obsolete addressable Agent class", () => {
+    expect(src).toContain('"v8-remove-addressable-agent"');
+    expect(src).toContain('"deleted_classes": ["FlueControlPlanAgent"]');
   });
 });
 

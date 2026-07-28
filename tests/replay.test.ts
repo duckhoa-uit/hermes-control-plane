@@ -1,38 +1,44 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { signToken, verifyToken } from "../src/core/auth";
+import { signScopedToken, verifyScopedToken } from "../src/core/auth";
 
 const MOCK_SECRET = "test-replay-secret";
 let token: string;
 
 beforeAll(async () => {
-  token = await signToken(MOCK_SECRET, "test-session-1");
+  token = await signScopedToken(MOCK_SECRET, "replay", "test-session-1", 60_000);
 });
 
 describe("replay auth", () => {
-  it("generates valid HMAC token for session", async () => {
-    const tok = await signToken(MOCK_SECRET, "test-session-1");
+  it("generates a scoped HMAC capability for a replay session", async () => {
+    const tok = await signScopedToken(MOCK_SECRET, "replay", "test-session-1", 60_000);
     expect(tok).toBeTypeOf("string");
-    expect(tok.length).toBe(64);
+    expect(tok).toContain(".");
   });
 
   it("verifies valid token", async () => {
-    const ok = await verifyToken(MOCK_SECRET, "test-session-1", token);
+    const ok = await verifyScopedToken(MOCK_SECRET, "replay", "test-session-1", token);
     expect(ok).toBe(true);
   });
 
   it("rejects wrong token", async () => {
-    const ok = await verifyToken(MOCK_SECRET, "test-session-1", "bad");
+    const ok = await verifyScopedToken(MOCK_SECRET, "replay", "test-session-1", "bad");
     expect(ok).toBe(false);
   });
 
   it("rejects token for different session id", async () => {
-    const ok = await verifyToken(MOCK_SECRET, "test-session-2", token);
+    const ok = await verifyScopedToken(MOCK_SECRET, "replay", "test-session-2", token);
     expect(ok).toBe(false);
   });
 
   it("rejects tampered token", async () => {
-    const tampered = token.slice(0, 32) + "0".repeat(32);
-    const ok = await verifyToken(MOCK_SECRET, "test-session-1", tampered);
+    const [payload, signature] = token.split(".");
+    const tampered = `${payload}.${"0".repeat(signature.length)}`;
+    const ok = await verifyScopedToken(MOCK_SECRET, "replay", "test-session-1", tampered);
+    expect(ok).toBe(false);
+  });
+
+  it("rejects a capability for another purpose", async () => {
+    const ok = await verifyScopedToken(MOCK_SECRET, "proxy", "test-session-1", token);
     expect(ok).toBe(false);
   });
 });
@@ -40,11 +46,11 @@ describe("replay auth", () => {
 describe("replay URL generation", () => {
   it("produces a URL with token query param", async () => {
     const sessionId = "replay-test-session";
-    const tok = await signToken(MOCK_SECRET, sessionId);
+    const tok = await signScopedToken(MOCK_SECRET, "replay", sessionId, 60_000);
     const base = "http://localhost:8787";
-    const url = `${base}/sessions/${sessionId}/replay?token=${tok}`;
+    const url = `${base}/replay/${sessionId}?token=${tok}`;
 
-    expect(url).toContain("/sessions/replay-test-session/replay");
+    expect(url).toContain("/replay/replay-test-session");
     expect(url).toContain("token=");
     expect(url).toContain("http://localhost:8787");
 

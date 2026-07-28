@@ -43,6 +43,3 @@ export const sentryTriageOutput = v.object({
   nextAction: v.pipe(v.string(), v.minLength(1), v.maxLength(4000)),
   blockedReason: v.optional(v.pipe(v.string(), v.maxLength(2000))),
 });
-
-export type PrReviewInput = v.InferOutput<typeof prReviewInput>;
-export type SentryTriageInput = v.InferOutput<typeof sentryTriageInput>;

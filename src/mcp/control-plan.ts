@@ -1,30 +1,28 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ElicitResultSchema } from "@modelcontextprotocol/sdk/types.js";
-import { createFlueClient } from "@flue/sdk";
 import { z } from "zod";
 import * as v from "valibot";
 import { signScopedToken } from "../core/auth";
 import { GitHubApp, GitHubAppError } from "../agent/github-app";
-import type { CodingTaskExecutionMode, CodingTaskRecord } from "../do/coding-task-do";
-import {
-  codingTaskId,
-  derivedIdempotencyKey,
-  taskLifecycle,
-  taskStateFromHistory,
-  taskBranch,
-} from "./task-utils";
+import type { CodingTaskRecord } from "../do/coding-task-do";
+import { codingTaskId, derivedIdempotencyKey, taskLifecycle, taskBranch } from "./task-utils";
 import {
   codingTaskWorkflowOutput,
   type CodingTaskWorkflowOutput,
 } from "../core/coding-task-contract";
-import { getSpecialistWorkflow, startSpecialistWorkflow } from "./specialist-workflows";
-
-type InternalFetch = typeof fetch;
+import {
+  getSpecialistWorkflow,
+  startSpecialistWorkflow,
+  type WorkflowRuntime,
+} from "./specialist-workflows";
+import { resolveWorkflowRuntime } from "./workflow-runtime";
+import { withCustomSpan, type WorkerTracing } from "../core/tracing";
 
 export type ControlPlanMcpOptions = {
   env: Env;
   origin: string;
-  fetch: InternalFetch;
+  runtime?: WorkflowRuntime;
+  tracing?: WorkerTracing;
 };
 
 const taskStateSchema = z.enum([
@@ -51,13 +49,10 @@ const codingTaskToolOutputSchema = z.object({
   baseBranch: z.string(),
   branch: z.string(),
   task: z.string(),
-  executionMode: z.enum(["agent", "workflow"]).optional(),
   state: taskStateSchema,
   createdAt: z.number(),
   updatedAt: z.number(),
   replayUrl: z.string(),
-  submissionId: z.string().optional(),
-  streamOffset: z.string().optional(),
   summary: z.string().optional(),
   error: z.string().optional(),
   outcome: z.enum(["published", "no_change", "blocked"]).optional(),
@@ -111,6 +106,7 @@ export function isAuthorizedMcpRequest(request: Request, env: Env): boolean {
   return Boolean(token) && request.headers.get("Authorization") === `Bearer ${token}`;
 }
 
+// oxlint-disable-next-line max-lines-per-function -- MCP tool registration is one public contract.
 export async function createControlPlanMcpHandler(options: ControlPlanMcpOptions) {
   const { createMcpHandler } = await import("agents/mcp");
   const server = new McpServer(
@@ -188,7 +184,6 @@ export async function createControlPlanMcpHandler(options: ControlPlanMcpOptions
       const stub = taskStub(options.env, id);
       const sessionId = `control-plan-${id}`;
       const branch = taskBranch(id);
-      const executionMode = configuredExecutionMode(options.env.CONTROL_PLAN_EXECUTION_MODE);
       const replayUrl = await signedReplayUrl(options.env, options.origin, sessionId);
       const created = await stub.create({
         id,
@@ -198,9 +193,7 @@ export async function createControlPlanMcpHandler(options: ControlPlanMcpOptions
         branch,
         task,
         replayUrl,
-        executionMode,
       });
-      const taskExecutionMode = created.task.executionMode ?? executionMode;
 
       if (!created.created && created.conflict) {
         return toolError(
@@ -225,7 +218,12 @@ export async function createControlPlanMcpHandler(options: ControlPlanMcpOptions
 
       const admission = admissionStub(options.env);
       const limit = parsePositiveInt(options.env.MAX_CONCURRENT_SESSIONS, 10);
-      const slot = await admission.tryAcquire({ taskId: id, limit });
+      const slot = await withCustomSpan(
+        options.tracing,
+        "control_plan.admission.acquire",
+        { "control_plan.task_id": id, "control_plan.limit": limit },
+        () => admission.tryAcquire({ taskId: id, limit }),
+      );
       if (!slot.admitted) {
         await stub.releaseDispatch();
         return toolError(
@@ -241,38 +239,19 @@ export async function createControlPlanMcpHandler(options: ControlPlanMcpOptions
       }
 
       try {
-        const client = createFlueClient({
-          baseUrl: options.origin,
-          fetch: options.fetch,
-          token:
-            taskExecutionMode === "workflow"
-              ? await internalWorkflowToken(options.env)
-              : await internalAgentToken(options.env, sessionId),
-        });
-        if (taskExecutionMode === "workflow") {
-          const run = await client.workflows.invoke("coding-task", {
-            input: {
-              taskId: id,
-              repository,
-              baseBranch: resolvedBaseBranch,
-              branch,
-              task,
-            },
-          });
-          await stub.bindWorkflowRun(run.runId);
-          const admitted = await stub.markDispatched({
-            submissionId: run.runId,
-            streamOffset: "-1",
-          });
-          return taskToolResult(admitted ?? created.task);
-        }
-        const dispatch = await client.agents.send("control-plan", sessionId, {
-          message: codingPrompt(repository, resolvedBaseBranch, branch, task),
-        });
-        const admitted = await stub.markDispatched({
-          submissionId: dispatch.submissionId,
-          streamOffset: dispatch.offset,
-        });
+        const run = await invokeCodingTaskWorkflow(
+          options.runtime,
+          {
+            taskId: id,
+            repository,
+            baseBranch: resolvedBaseBranch,
+            branch,
+            task,
+          },
+          options.tracing,
+        );
+        await stub.bindWorkflowRun(run.runId);
+        const admitted = await stub.markDispatched();
         return taskToolResult(admitted ?? created.task);
       } catch (error) {
         const failed = await stub.markFailed(String(error));
@@ -285,7 +264,7 @@ export async function createControlPlanMcpHandler(options: ControlPlanMcpOptions
     "get_coding_task",
     {
       description:
-        "Reconcile one durable coding task and return its state, replay URL, approvals, verification, and publication result. Use with a taskId returned by spawn_coding_task. dispatched, publishing, and cancellation_requested are active non-terminal states; poll every 10-20 seconds until completed, failed, or cancelled. If approvals is non-empty, call respond_coding_approval and then poll again. Do not spawn a duplicate while lifecycle.terminal is false.",
+        "Reconcile one durable coding task and return its state, replay URL, approvals, verification, and publication result. Use with a taskId returned by spawn_coding_task. Follow lifecycle.nextAction and pollAfterMs rather than inferring completion from state names. If approvals is non-empty, pass the selected approval.id as approvalId to respond_coding_approval and then poll again. Do not spawn a duplicate while lifecycle.terminal is false.",
       title: "Get coding task status",
       inputSchema: z.object({
         taskId: z
@@ -308,7 +287,7 @@ export async function createControlPlanMcpHandler(options: ControlPlanMcpOptions
     "respond_coding_approval",
     {
       description:
-        "Resolve one pending Control Plan publication approval for a coding task. Use only when get_coding_task returns the matching approvalId. For once, session, or always, the decision is a request that must be confirmed through native Hermes elicitation; deny resolves immediately. After this tool returns, poll get_coding_task again because approval does not make the task terminal.",
+        "Resolve one pending Control Plan publication approval for a coding task. Use only when get_coding_task returns a pending approval; pass approval.id as approvalId. A non-deny decision is only a request and must be confirmed through native Hermes form-mode elicitation; an accepted request resolves this one approval as once, while deny resolves immediately. After this tool returns, poll get_coding_task again because approval does not make the task terminal.",
       title: "Respond to coding approval",
       inputSchema: z.object({
         taskId: z
@@ -323,7 +302,7 @@ export async function createControlPlanMcpHandler(options: ControlPlanMcpOptions
         decision: z
           .enum(["once", "session", "always", "deny"])
           .describe(
-            "Requested approval scope; non-deny values still require native Hermes confirmation.",
+            "Requested decision hint. Non-deny values require native Hermes confirmation and an accepted request resolves only this approval.",
           ),
       }),
       outputSchema: z.object({
@@ -427,28 +406,11 @@ function registerCodingCancellationTool(server: McpServer, options: ControlPlanM
       if (task.state === "completed" || task.state === "failed" || task.state === "cancelled") {
         return taskToolResult(task, { cancellation: "already_terminal" });
       }
-      if (task.executionMode === "workflow") {
-        const cancelled =
-          (await taskStub(options.env, taskId).markCancelled("Workflow cancellation requested")) ??
-          task;
-        return taskToolResult(cancelled, {
-          cancellation: "requested_and_sandbox_destroyed",
-        });
-      }
-      let abortRequested = false;
-      try {
-        const client = createFlueClient({
-          baseUrl: options.origin,
-          fetch: options.fetch,
-          token: await internalAgentToken(options.env, task.sessionId),
-        });
-        const result = await client.agents.abort("control-plan", task.sessionId);
-        abortRequested = result.aborted;
-      } catch {
-        // Durable task state remains cancellation_requested if transport abort is unavailable.
-      }
-      return taskToolResult(task, {
-        cancellation: abortRequested ? "requested_and_aborted" : "requested",
+      const cancelled =
+        (await taskStub(options.env, taskId).markCancelled("Workflow cancellation requested")) ??
+        task;
+      return taskToolResult(cancelled, {
+        cancellation: "requested_and_sandbox_destroyed",
       });
     },
   );
@@ -641,39 +603,9 @@ async function refreshTask(
   options: ControlPlanMcpOptions,
 ): Promise<CodingTaskRecord | null> {
   const stub = taskStub(options.env, taskId);
-  let task = await stub.get();
-  if (task?.executionMode === "workflow" && task.workflowRunId) {
+  const task = await stub.get();
+  if (task?.workflowRunId) {
     return refreshWorkflowTask(task, options);
-  }
-  if (
-    !task ||
-    (task.state !== "dispatched" &&
-      task.state !== "publishing" &&
-      task.state !== "cancellation_requested") ||
-    !task.streamOffset
-  ) {
-    return task;
-  }
-
-  const response = await options.fetch(
-    new Request(`${options.origin}/agents/control-plan/${task.sessionId}?view=history`, {
-      headers: {
-        Authorization: `Bearer ${await internalAgentToken(options.env, task.sessionId)}`,
-      },
-    }),
-  );
-  if (!response.ok) return task;
-
-  const history = (await response.json().catch(() => ({}))) as Parameters<
-    typeof taskStateFromHistory
-  >[0];
-  const update = taskStateFromHistory(history, task.submissionId);
-  if (update.offset && update.offset !== task.streamOffset) {
-    task = (await stub.advanceStreamOffset(update.offset)) ?? task;
-  }
-  if (update.state === "aborted") return (await stub.markCancelled(update.summary)) ?? task;
-  if (update.state === "completed" || update.state === "failed") {
-    return (await stub.markTerminal(update.state, update.summary)) ?? task;
   }
   return task;
 }
@@ -684,12 +616,13 @@ async function refreshWorkflowTask(
 ): Promise<CodingTaskRecord> {
   if (!task.workflowRunId) return task;
   try {
-    const client = createFlueClient({
-      baseUrl: options.origin,
-      fetch: options.fetch,
-      token: await internalWorkflowToken(options.env),
-    });
-    const run = await client.runs.get(task.workflowRunId);
+    const run = await withCustomSpan(
+      options.tracing,
+      "control_plan.flue.get_run",
+      { "control_plan.task_id": task.id, "control_plan.run_id": task.workflowRunId },
+      () => resolveWorkflowRuntime(options.runtime).getRun(task.workflowRunId!),
+    );
+    if (!run) return task;
     if (run.status === "active") return task;
     if (task.state === "cancellation_requested") {
       return (
@@ -732,12 +665,22 @@ async function refreshWorkflowTask(
   }
 }
 
-async function openApprovals(sessionId: string, options: ControlPlanMcpOptions): Promise<unknown> {
+async function openApprovals(
+  sessionId: string,
+  options: ControlPlanMcpOptions,
+): Promise<unknown[]> {
   const stub = options.env.APPROVAL_DO.get(options.env.APPROVAL_DO.idFromName("approvals"));
   const response = await stub.fetch(
     new Request(`${options.origin}/list-open?session_id=${encodeURIComponent(sessionId)}`),
   );
-  return response.ok ? response.json() : [];
+  if (!response.ok) return [];
+  return normalizeOpenApprovals(await response.json().catch(() => ({})));
+}
+
+export function normalizeOpenApprovals(value: unknown): unknown[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  const approvals = (value as { approvals?: unknown }).approvals;
+  return Array.isArray(approvals) ? approvals : [];
 }
 
 async function approvalById(id: string, options: ControlPlanMcpOptions): Promise<any> {
@@ -773,26 +716,6 @@ async function signedReplayUrl(env: Env, origin: string, sessionId: string): Pro
   return `${origin}/replay/${sessionId}?token=${token}`;
 }
 
-async function internalAgentToken(env: Env, sessionId: string): Promise<string> {
-  return signScopedToken(env.CONTROL_PLAN_INTERNAL_SECRET || "", "agent", sessionId, 5 * 60 * 1000);
-}
-
-export async function internalWorkflowToken(
-  env: Env,
-  workflowName = "coding-task",
-): Promise<string> {
-  return signScopedToken(
-    env.CONTROL_PLAN_INTERNAL_SECRET || "",
-    "workflow",
-    workflowName,
-    5 * 60 * 1000,
-  );
-}
-
-function configuredExecutionMode(value: string | undefined): CodingTaskExecutionMode {
-  return value === "agent" ? "agent" : "workflow";
-}
-
 function workflowSummary(value: unknown): string | undefined {
   if (typeof value === "string") return value;
   if (value && typeof value === "object") {
@@ -802,6 +725,30 @@ function workflowSummary(value: unknown): string | undefined {
   return value === undefined ? undefined : JSON.stringify(value);
 }
 
+export async function invokeCodingTaskWorkflow(
+  runtime: WorkflowRuntime | undefined,
+  input: {
+    taskId: string;
+    repository: string;
+    baseBranch: string;
+    branch: string;
+    task: string;
+  },
+  tracing?: WorkerTracing,
+): Promise<{ runId: string }> {
+  const workflow = (await import("../workflows/coding-task")).default;
+  return withCustomSpan(
+    tracing,
+    "control_plan.flue.invoke",
+    {
+      "control_plan.task_id": input.taskId,
+      "control_plan.repository": input.repository,
+      "control_plan.workflow": "coding-task",
+    },
+    () => resolveWorkflowRuntime(runtime).invoke(workflow, { input }),
+  );
+}
+
 function parseWorkflowOutput(value: unknown): CodingTaskWorkflowOutput | null {
   const parsed = v.safeParse(codingTaskWorkflowOutput, value);
   if (!parsed.success) return null;
@@ -809,24 +756,6 @@ function parseWorkflowOutput(value: unknown): CodingTaskWorkflowOutput | null {
     return null;
   }
   return parsed.output;
-}
-
-function codingPrompt(
-  repository: string,
-  baseBranch: string,
-  branch: string,
-  task: string,
-): string {
-  const directory = repository.split("/")[1];
-  return [
-    `Work only on https://github.com/${repository}.git, based on ${baseBranch}.`,
-    `The task workspace is already provisioned at /workspace/${directory}; do not run git clone or change the repository remote.`,
-    `The Control Plan publication branch is fixed: ${branch}. Pass exactly this branch to finalize_change.`,
-    "Follow the repository's instructions, make the requested change, and run the relevant checks.",
-    "Use finalize_change only after tests pass and only when a commit/PR is actually requested.",
-    "Task:",
-    task,
-  ].join("\n\n");
 }
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {

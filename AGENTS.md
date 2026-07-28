@@ -15,12 +15,12 @@
 ## Architecture
 
 ```
-Hermes Agent → /mcp → Control Plan task service → FlueControlPlanAgent DO
-                                                  ↓
-                                       Pi harness loop (model → tools → model)
-                                                  ↓
-                                       CF Sandbox container
-                                       (git clone, bash, read/write)
+Hermes Agent → /mcp → CodeOps task adapter → coding-task Flue Workflow
+                                              ↓
+                                   private Flue agent profile
+                                              ↓
+                                   CF Sandbox container
+                                   (git clone, bash, read/write)
 
 GitHub Webhook → /channels/github/webhook → HMAC verify → log/ack (intentionally not a coding trigger)
 ```
@@ -35,18 +35,16 @@ No VPS, no E2B, no OpenCode, no Bun launcher. Single CF Worker.
 
 | File | Purpose |
 |---|---|
-| `src/agents/control-plan.ts` | Flue coding-agent definition (defineAgent, tools, sandbox) |
+| `src/workflows/coding-task.ts` | Finite Flue coding Workflow and private agent profile |
 | `src/app.ts` | Hono app with health, MCP, proxy routes, and flue() mount |
-| `src/mcp/control-plan.ts` | Hermes-facing MCP tools and Flue dispatch |
-| `src/do/coding-task-do.ts` | Per-task durable correlation and lifecycle record |
+| `src/mcp/control-plan.ts` | Hermes-facing MCP tools, ambient Workflow invoke, and run reconciliation |
+| `src/mcp/specialist-workflows.ts` | Ambient specialist Workflow invoke/poll adapter |
+| `src/do/coding-task-do.ts` | Per-task durable domain correlation, publication lease, and lifecycle record |
 | `src/do/admission-do.ts` | Global concurrent-task admission lease |
 | `src/channels/github.ts` | Verified GitHub webhook ingress; dispatch is not wired yet |
 | `src/cloudflare.ts` | Worker-level DO exports (Sandbox, task, approval, and PR index) |
 | `src/do/pr-index-do.ts` | PR Index DurableObject |
-| `src/agent/pr-lifecycle.ts` | GitHub push/PR via Octokit |
 | `src/agent/github-app.ts` | GitHub App installation authorization and short-lived repo-scoped tokens |
-| `src/agent/state-bridge.ts` | Flue lifecycle → Control Plan state machine |
-| `src/core/state-machine.ts` | Session state machine (11 states) |
 | `src/cf-sandbox/Dockerfile` | Container image for agent sandbox |
 
 ## Commands

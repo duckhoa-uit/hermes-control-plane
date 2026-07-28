@@ -1,16 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
-import { getSpecialistWorkflow, startSpecialistWorkflow } from "../src/mcp/specialist-workflows";
+import {
+  getSpecialistWorkflow,
+  startSpecialistWorkflow,
+  type WorkflowRuntime,
+} from "../src/mcp/specialist-workflows";
 import { registerSpecialistWorkflowTools } from "../src/mcp/control-plan";
 
 const env = {
   CONTROL_PLAN_INTERNAL_SECRET: "internal-secret",
 } as Env;
 
-function options(fetch: typeof globalThis.fetch) {
+function options(runtime: WorkflowRuntime) {
   return {
     env,
     origin: "https://control-plan.example",
-    fetch,
+    fetch: globalThis.fetch,
+    runtime,
   };
 }
 
@@ -20,7 +25,10 @@ describe("specialist workflow MCP bridge", () => {
     const server = { registerTool } as never;
     registerSpecialistWorkflowTools(
       server,
-      options(async () => Response.json({})),
+      options({
+        invoke: async () => ({ runId: "unused" }),
+        getRun: async () => null,
+      }),
     );
     expect(registerTool.mock.calls.map(([name]) => name)).toEqual([
       "start_pr_review",
@@ -54,11 +62,14 @@ describe("specialist workflow MCP bridge", () => {
   });
 
   it("starts an allowlisted PR review with bounded input", async () => {
-    const requests: Request[] = [];
+    let received: { workflow: unknown; request: { input: unknown } } | undefined;
     const result = await startSpecialistWorkflow(
-      options(async (input, init) => {
-        requests.push(new Request(input, init));
-        return Response.json({ runId: "run-pr-1" });
+      options({
+        invoke: async (workflow, request) => {
+          received = { workflow, request };
+          return { runId: "run-pr-1" };
+        },
+        getRun: async () => null,
       }),
       "pr-review",
       {
@@ -71,19 +82,20 @@ describe("specialist workflow MCP bridge", () => {
     );
 
     expect(result).toEqual({ runId: "run-pr-1" });
-    expect(requests).toHaveLength(1);
-    expect(new URL(requests[0].url).pathname).toBe("/workflows/pr-review");
-    expect(await requests[0].json()).toMatchObject({ pullRequest: 42 });
-    expect(requests[0].headers.get("Authorization")).toMatch(/^Bearer /);
+    expect(received?.request.input).toMatchObject({ pullRequest: 42 });
+    expect(received?.workflow).toBeDefined();
   });
 
   it("rejects invalid snapshot input before dispatch", async () => {
     let calls = 0;
     await expect(
       startSpecialistWorkflow(
-        options(async () => {
-          calls += 1;
-          return Response.json({ runId: "should-not-run" });
+        options({
+          invoke: async () => {
+            calls += 1;
+            return { runId: "should-not-run" };
+          },
+          getRun: async () => null,
         }),
         "sentry-triage",
         { organization: "org" },
@@ -92,19 +104,16 @@ describe("specialist workflow MCP bridge", () => {
     expect(calls).toBe(0);
   });
 
-  it("reads only specialist runs and tries the workflow-scoped route token", async () => {
-    const requests: Request[] = [];
+  it("reads only allowlisted specialist runs through ambient Flue inspection", async () => {
     const run = await getSpecialistWorkflow(
-      options(async (input, init) => {
-        const request = new Request(input, init);
-        requests.push(request);
-        if (requests.length === 1) return new Response("forbidden", { status: 401 });
-        return Response.json({
+      options({
+        invoke: async () => ({ runId: "unused" }),
+        getRun: async () => ({
           runId: "run-sentry-1",
           workflowName: "sentry-triage",
           status: "completed",
           result: { severity: "high" },
-        });
+        }),
       }),
       "run-sentry-1",
     );
@@ -117,24 +126,19 @@ describe("specialist workflow MCP bridge", () => {
       nextAction: "report",
       result: { severity: "high" },
     });
-    expect(requests).toHaveLength(2);
-    expect(new URL(requests[0].url).search).toBe("?meta");
-    expect(new URL(requests[1].url).search).toBe("?meta");
-    expect(requests[0].headers.get("Authorization")).not.toBe(
-      requests[1].headers.get("Authorization"),
-    );
   });
 
   it("does not expose coding-task runs through the specialist poller", async () => {
     const run = await getSpecialistWorkflow(
-      options(async () =>
-        Response.json({
+      options({
+        invoke: async () => ({ runId: "unused" }),
+        getRun: async () => ({
           runId: "run-coding-1",
           workflowName: "coding-task",
           status: "completed",
           result: { outcome: "published" },
         }),
-      ),
+      }),
       "run-coding-1",
     );
     expect(run).toBeNull();

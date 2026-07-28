@@ -25,6 +25,10 @@ npx flue build --target cloudflare
 npx wrangler deploy --dry-run
 ```
 
+For a Docker-backed Worker runtime smoke test, run `bun run test:worker`.
+This builds the Flue bundle first and then exercises the built Worker through
+Wrangler's `createTestHarness()`.
+
 ## Environment
 
 Copy `.dev.vars.example` → `.dev.vars` for local dev. Production secrets and
@@ -32,7 +36,8 @@ deployment vars are documented in [`docs/DEPLOYMENT.md`](DEPLOYMENT.md).
 
 ## Architecture
 
-Hermes Agent calls the Control Plan remote HTTP MCP server; Control Plan
-dispatches to the Flue Durable Object and Cloudflare Sandbox `0.12.3`.
+Hermes Agent calls the authenticated remote HTTP MCP server; the Worker invokes
+finite Flue Workflows in-process and their private profiles use Cloudflare
+Sandbox `0.12.4`.
 See [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) and
 [`docs/HERMES-AGENT-INTEGRATION.md`](HERMES-AGENT-INTEGRATION.md).

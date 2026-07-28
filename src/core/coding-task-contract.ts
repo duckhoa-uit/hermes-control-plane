@@ -29,5 +29,4 @@ export const codingTaskWorkflowOutput = v.object({
   ),
 });
 
-export type CodingTaskModelResult = v.InferOutput<typeof codingTaskModelResult>;
 export type CodingTaskWorkflowOutput = v.InferOutput<typeof codingTaskWorkflowOutput>;

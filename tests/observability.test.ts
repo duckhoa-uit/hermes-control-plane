@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { configureObservability, trackApproval } from "../src/core/observability";
+import { trackApproval } from "../src/core/observability";
 
 describe("observability.trackApproval", () => {
   const originalFetch = globalThis.fetch;
@@ -22,17 +22,18 @@ describe("observability.trackApproval", () => {
   it("posts a PostHog capture payload when configured", async () => {
     const spy = vi.fn().mockResolvedValue(new Response("ok"));
     globalThis.fetch = spy as any;
-    configureObservability("https://ph.example.com", "phc_token");
-
-    trackApproval({
-      event: "approval_resolved",
-      approvalId: "a2",
-      sessionId: "s2",
-      type: "git_push",
-      decision: "once",
-      actor: "user@x",
-      latencyMs: 1234,
-    });
+    trackApproval(
+      {
+        event: "approval_resolved",
+        approvalId: "a2",
+        sessionId: "s2",
+        type: "git_push",
+        decision: "once",
+        actor: "user@x",
+        latencyMs: 1234,
+      },
+      { host: "https://ph.example.com", token: "phc_token" },
+    );
 
     expect(spy).toHaveBeenCalledOnce();
     const [url, init] = spy.mock.calls[0]!;
@@ -55,14 +56,15 @@ describe("observability.trackApproval", () => {
   it("defaults missing fields when posting", () => {
     const spy = vi.fn().mockResolvedValue(new Response("ok"));
     globalThis.fetch = spy as any;
-    configureObservability("https://ph.example.com", "phc_token");
-
-    trackApproval({
-      event: "approval_timeout",
-      approvalId: "a3",
-      sessionId: "s3",
-      type: "exec",
-    });
+    trackApproval(
+      {
+        event: "approval_timeout",
+        approvalId: "a3",
+        sessionId: "s3",
+        type: "exec",
+      },
+      { host: "https://ph.example.com", token: "phc_token" },
+    );
 
     const body = JSON.parse((spy.mock.calls[0]![1] as any).body);
     expect(body.properties.decision).toBe("n/a");
@@ -72,32 +74,54 @@ describe("observability.trackApproval", () => {
 
   it("swallows fetch rejection without throwing", async () => {
     globalThis.fetch = vi.fn().mockRejectedValue(new Error("network")) as any;
-    configureObservability("https://ph.example.com", "phc_token");
     expect(() =>
-      trackApproval({
-        event: "hardline_block",
-        approvalId: "a4",
-        sessionId: "s4",
-        type: "exec",
-      }),
+      trackApproval(
+        {
+          event: "hardline_block",
+          approvalId: "a4",
+          sessionId: "s4",
+          type: "exec",
+        },
+        { host: "https://ph.example.com", token: "phc_token" },
+      ),
     ).not.toThrow();
     // Give the rejected promise time to settle
     await new Promise((r) => setTimeout(r, 0));
   });
 
-  it("configureObservability ignores empty values", () => {
-    // Reset by reconfiguring with valid values first, then attempting empty override
-    configureObservability("https://ph.example.com", "phc_token");
-    configureObservability("", "");
-    // Still posts because previous valid config persists (no-op on empty)
+  it("does not retain observability state between calls", () => {
     const spy = vi.fn().mockResolvedValue(new Response("ok"));
     globalThis.fetch = spy as any;
-    trackApproval({
-      event: "approval_requested",
-      approvalId: "a5",
-      sessionId: "s5",
-      type: "exec",
-    });
-    expect(spy).toHaveBeenCalledOnce();
+    trackApproval(
+      {
+        event: "approval_requested",
+        approvalId: "a5",
+        sessionId: "s5",
+        type: "exec",
+      },
+      { host: "", token: "" },
+    );
+    // Empty configuration is a no-op and does not leak state from another call.
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("hands the delivery promise to waitUntil when a runtime provides it", async () => {
+    const spy = vi.fn().mockResolvedValue(new Response("ok"));
+    globalThis.fetch = spy as any;
+    const waitUntil = vi.fn();
+
+    const request = trackApproval(
+      {
+        event: "approval_requested",
+        approvalId: "a6",
+        sessionId: "s6",
+        type: "exec",
+      },
+      { host: "https://ph.example.com", token: "phc_token", waitUntil },
+    );
+
+    expect(request).toBeDefined();
+    expect(waitUntil).toHaveBeenCalledWith(request);
+    await request;
   });
 });

@@ -15,17 +15,18 @@ with a service token and calls a small, allowlisted tool surface:
 | `spawn_coding_task` | repository, task, optional base branch, idempotency key | Control Plan task ID, non-terminal state, replay URL, lifecycle guidance |
 | `get_coding_task` | task ID | reconciled state, lifecycle guidance, current summary, pending approval, PR/result when available |
 | `respond_coding_approval` | task ID, approval ID, decision hint | starts a native Hermes elicitation; only the gateway's accept/decline result is recorded |
-| `cancel_coding_task` | task ID | cancellation-requested state plus Flue abort request, or a publication-in-progress result |
+| `cancel_coding_task` | task ID | cancellation-requested state plus Workflow sandbox cleanup, or a publication-in-progress result |
 | `start_pr_review` | repository, PR number, base/head SHAs, bounded diff/context already fetched by the caller | specialist Workflow run ID and polling instructions; no GitHub fetch or write |
 | `start_sentry_triage` | organization, project, issue ID, bounded event/telemetry/context already fetched by the caller | specialist Workflow run ID and polling instructions; no Sentry query or write |
 | `get_specialist_workflow` | specialist Workflow run ID | structured result or active polling state; coding runs are not exposed |
 
-Hermes presents these as MCP tools (for example,
-`mcp_control_plan_spawn_coding_task`). Hermes remains responsible for task
-interpretation and clarification. For privileged publication, Control Plan
-issues MCP `elicitation/create`; the Hermes gateway renders that request in
-its native approval surface and returns the operator's accept/decline result.
-The model's `decision` argument is never treated as proof of human approval.
+Hermes Agent `v2026.7.20+` presents these as MCP tools using a double-underscore
+boundary (for example, `mcp__control_plan__spawn_coding_task`). Hermes remains
+responsible for task interpretation and clarification. For privileged
+publication, Control Plan issues form-mode MCP `elicitation/create`; the Hermes
+gateway renders that request in its native approval surface and returns the
+operator's accept/decline result. The model's `decision` argument is never
+treated as proof of human approval.
 
 Do **not** use the Hermes HTTP Runs API for this boundary. It lets an external
 client start and monitor Hermes runs, which reverses the desired ownership. ACP
@@ -37,8 +38,8 @@ call, not an IDE or process-host protocol.
 | Concern | Owner |
 |---|---|
 | User request, planning, delegation, memory, and communication | Hermes Agent |
-| Coding task lifecycle, idempotencyré, repository policy, and task correlation | Control Plan |
-| Durable model/tool loop | Flue `FlueControlPlanAgent` Durable Object |
+| Coding task lifecycle, idempotency, repository policy, and task correlation | CodeOps Worker task/approval Durable Objects |
+| Durable model/tool loop | Flue `coding-task` Workflow and its private agent profile |
 | Git, shell, dependency install, and tests | Cloudflare Sandbox container |
 | Approval persistence and enforcement | Control Plan ApprovalDO |
 | GitHub App installation authorization, token minting, commit publication, and PR creation | Control Plan Worker |
@@ -59,7 +60,12 @@ mcp_servers:
     url: "https://control-plan.khoa.lol/mcp"
     headers:
       Authorization: "Bearer ${CONTROL_PLAN_MCP_TOKEN}"
-    timeout: 300
+    timeout: 360
+    connect_timeout: 60
+    supports_parallel_tool_calls: false
+    elicitation:
+      enabled: true
+      timeout: 300
     tools:
       include:
         - spawn_coding_task
@@ -71,18 +77,40 @@ mcp_servers:
         - get_specialist_workflow
       resources: false
       prompts: false
+
+skills:
+  external_dirs:
+    - "/absolute/path/to/hermes-control-plan/integrations/hermes/skills"
 ```
 
-Current Hermes releases support per-server `tools.include` filtering. Hermes
-registers the selected tools with the `mcp_control_plan_*` prefix. Keep the
-coding lifecycle tools enabled together; specialist tools are independently
-read-only and use their own Flue run IDs.
+The checked-in
+[`integrations/hermes/config.example.yaml`](../integrations/hermes/config.example.yaml)
+is the copyable source for this block. Hermes expands `${...}` values from its
+active secret environment. The MCP tool timeout intentionally exceeds the
+elicitation timeout so a valid operator response is not cancelled at the same
+deadline. Parallel calls are disabled for this server so Hermes serializes
+task lifecycle mutations.
 
-Install the versioned workflow skill from
-[`integrations/hermes/skills/control-plan-delegation/SKILL.md`](../integrations/hermes/skills/control-plan-delegation/SKILL.md)
-into `~/.hermes/skills/` on the Hermes host, or expose its parent directory via
-`skills.external_dirs`. Restart Hermes or run `/reset` after installation so
-the skill is loaded in new sessions.
+Use Hermes Agent `v2026.7.20` or newer. That release uses the
+`mcp__<server>__<tool>` registry convention and supports the form-mode
+elicitation required by Control Plan. Older documentation showing the legacy
+single-underscore convention is stale for this integration. Keep the four
+coding lifecycle tools enabled together; specialist tools use separate Flue
+run IDs.
+
+Expose the complete
+[`integrations/hermes/skills`](../integrations/hermes/skills) directory through
+`skills.external_dirs`, or copy all three skill directories into
+`~/.hermes/skills/`:
+
+- `control-plan-delegation` for implementation work;
+- `control-plan-pr-review` for bounded, read-only PR review;
+- `control-plan-sentry-triage` for bounded, read-only incident triage.
+
+Run `/reload-skills` in an existing Hermes session or start a new session after
+installation. The integration directory is not at a tap's default `skills/`
+path; follow its [installation README](../integrations/hermes/README.md) if
+using a custom tap.
 
 Use a dedicated `CONTROL_PLAN_MCP_TOKEN` secret. Do not reuse the GitHub
 webhook secret, signed replay tokens, or a GitHub token for this boundary.
@@ -92,20 +120,19 @@ webhook secret, signed replay tokens, or a GitHub token for this boundary.
 ```text
 Hermes receives a coding request
   -> Hermes calls spawn_coding_task
-  -> Control Plan validates GitHub App access and asynchronously invokes the `coding-task` Flue Workflow
+  -> CodeOps Worker validates GitHub App access and invokes the `coding-task` Flue Workflow with ambient `invoke()`
   -> Flue works in its per-task Cloudflare Sandbox
   -> Control Plan applies publication policy and, when required, sends native MCP elicitation
   -> Control Plan atomically claims the task's publication lease before any GitHub write
   -> Control Plan writes the commit/PR through its GitHub API boundary
   -> Control Plan records publication, then reconciles the validated Workflow result
-  -> Hermes polls get_coding_task every 10-20 seconds
+  -> Hermes follows lifecycle.nextAction and lifecycle.pollAfterMs
   -> Hermes responds to any open approval, then resumes polling
   -> Hermes reports a completed, failed, or cancelled terminal result
 ```
 
-`get_coding_task` is the reconciliation source of truth. New tasks persist the
-Flue Workflow `runId` and reconcile it through the Flue Runs API; legacy tasks
-may still use the Agent history seam. Replay/SSE is a diagnostic and operator
+`get_coding_task` is the reconciliation source of truth. Tasks persist the
+Flue Workflow `runId` and reconcile it through ambient `getRun()`. Replay/SSE is a diagnostic and operator
 interface, not the only record of task completion.
 `created`, `dispatching`, `dispatched`, `publishing`, and
 `cancellation_requested` are non-terminal states. `publishing` means the task's
@@ -132,6 +159,8 @@ contract explicit to the upstream orchestrator.
    and lifecycle state. The task branch is enforced at both the agent tool and
    GitHub proxy boundaries, so profiles cannot cross-publish repositories.
 4. Require `respond_coding_approval` to identify a still-open ApprovalDO record.
+   Hermes passes the selected approval record's `id` as the tool's
+   `approvalId`.
    Any non-deny decision must complete native MCP elicitation; a model-supplied
    `once`, `session`, or `always` value alone cannot authorize a write.
 5. Use `APPROVAL_MODE=policy` in production. Normal task-branch pushes and
@@ -142,17 +171,14 @@ contract explicit to the upstream orchestrator.
 6. Load and test the Control Plan delegation skill against the configured
    Hermes gateway; do not rely on a one-off prompt for production behavior.
 7. Test the MCP protocol and tool schemas against a pinned Hermes Agent release.
-8. Run one real Docker-backed task against `duckhoa-uit/lawn` before staging or
+8. Run one real Docker-backed task against `duckhoa-uit/lawn` locally before
    production deployment. The task must clone the repository, make a narrow
    change, run its repository checks, request/receive any needed approval, and
    return a verifiable result.
 
-Control Plan currently defaults new MCP tasks to the finite `coding-task`
-Workflow. Set `CONTROL_PLAN_EXECUTION_MODE=agent` only for rollback or legacy
-compatibility; the durable task record preserves the mode chosen at creation.
-The Workflow uses the same Flue Agent initializer and deterministic
-`finalize_change` Action, so publication policy and approval boundaries do not
-depend on the dispatch surface.
+All MCP coding tasks use the finite `coding-task` Workflow. The Workflow uses
+the private Flue Agent initializer and deterministic `finalize_change` Action,
+so publication policy and approval boundaries have one dispatch surface.
 
 PR review and Sentry triage are separate snapshot Workflows. They are
 read-only by construction: callers provide bounded PR diff or Sentry telemetry,
@@ -161,9 +187,11 @@ connector. Keep them separate from `coding-task`; a review/triage result may
 recommend a change, but it must not implicitly create a branch or PR.
 
 Control Plan currently pins `@cloudflare/sandbox` and its Docker base image to
-`0.12.3`. Every task sandbox uses RPC transport with one explicit persistent
+`0.12.4`. Every task sandbox uses RPC transport with one explicit persistent
 session per Flue harness; implicit default sessions remain disabled. This is
 required by Cloudflare's post-2026-07-09 Sandbox SDK migration.
+Each sandbox is labelled with a non-secret workload, task, and repository
+identifier for Container analytics and observability.
 
 Private repositories require the GitHub App to be installed on the repository.
 Control Plan mints a read installation token scoped to that repository and
@@ -186,3 +214,4 @@ it must not bypass Hermes by accident.
 - [Hermes Agent MCP documentation](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp)
 - [Hermes Agent MCP configuration reference](https://hermes-agent.nousresearch.com/docs/reference/mcp-config-reference)
 - [Using MCP with Hermes](https://hermes-agent.nousresearch.com/docs/guides/use-mcp-with-hermes)
+- [Hermes Agent skills](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills)

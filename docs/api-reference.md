@@ -1,12 +1,12 @@
-<!-- AUTO-GENERATED FILE. Do not edit by hand.
-     Source of truth: src/app.ts, src/agents/control-plan.ts, src/workflows/*.ts, src/channels/github.ts
-     This reference is maintained with the current Control Plan route surface.
+<!-- API reference checked against the current route source.
+     Source of truth: src/app.ts, src/workflows/*.ts, src/channels/github.ts
+     Keep this document synchronized when those routes change.
 -->
 
 # HTTP API reference
 
-Control Plan is a Cloudflare Worker. Hermes Agent uses the authenticated
-`/mcp` endpoint; Flue mounts the agent and GitHub channel routes below.
+The CodeOps Worker is a Cloudflare Worker. Hermes Agent uses the authenticated
+`/mcp` endpoint; Flue mounts Workflow and GitHub channel routes below.
 
 ## Worker routes
 
@@ -14,8 +14,6 @@ Control Plan is a Cloudflare Worker. Hermes Agent uses the authenticated
 |---|---|---|
 | GET | `/health` | Unauthenticated liveness check. |
 | ALL | `/mcp` | Remote HTTP MCP for Hermes Agent. Requires `Authorization: Bearer <CONTROL_PLAN_MCP_TOKEN>`. |
-| POST | `/agents/control-plan/:id` | Internal Flue dispatch only; requires a short-lived internal capability (enforced by both the Worker mount and the Agent route). |
-| GET | `/agents/control-plan/:id` | Internal Flue history/updates only; requires a short-lived internal capability (enforced by both the Worker mount and the Agent route). |
 | POST | `/workflows/coding-task` | Internal finite coding Workflow invocation; requires the scoped workflow capability. |
 | POST | `/workflows/pr-review` | Internal finite, read-only PR review Workflow; requires the `pr-review` scoped workflow capability. |
 | POST | `/workflows/sentry-triage` | Internal finite, read-only Sentry triage Workflow; requires the `sentry-triage` scoped workflow capability. |
@@ -33,14 +31,14 @@ Control Plan is a Cloudflare Worker. Hermes Agent uses the authenticated
 
 The MCP server exposes the four coding lifecycle tools plus three read-only
 specialist workflow tools. Hermes sees them with its MCP server prefix (for
-example, `mcp_control_plan_spawn_coding_task`).
+example, `mcp__control_plan__spawn_coding_task` on Hermes Agent `v2026.7.20+`).
 
 | Tool | Purpose |
 |---|---|
 | `spawn_coding_task` | Verify GitHub App installation access and repository branch, allocate an isolated task branch, persist an idempotent task, and asynchronously dispatch Flue under the concurrency lease. |
 | `get_coding_task` | Reconcile Flue run/history settlements and return durable task state, lifecycle guidance, repository/branch, summary, replay URL, result metadata, and open approvals. `dispatched` and `publishing` are active; poll until terminal. |
 | `respond_coding_approval` | Resolve a pending ApprovalDO record belonging to the task; non-deny requests first invoke native MCP `elicitation/create` in Hermes, then require further task polling. |
-| `cancel_coding_task` | Persist cancellation, asynchronously request Flue abort, and block later GitHub publication; if `publishing` is already active, report that publication is in progress. Poll until terminal `cancelled`. |
+| `cancel_coding_task` | Persist cancellation, clean up the Workflow sandbox, and block later GitHub publication; if `publishing` is already active, report that publication is in progress. Poll until terminal `cancelled`. |
 | `start_pr_review` | Start a PR review Workflow from a caller-supplied bounded diff snapshot; it does not fetch GitHub and never writes to GitHub. |
 | `start_sentry_triage` | Start a Sentry triage Workflow from a caller-supplied bounded issue/event snapshot; it does not query or modify Sentry. |
 | `get_specialist_workflow` | Poll only `pr-review` or `sentry-triage` runs; coding-task runs are rejected. |

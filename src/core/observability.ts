@@ -1,7 +1,9 @@
 // ============================================================
 // Lightweight PostHog observability forwarder
 // ============================================================
-// Non-blocking fire-and-forget event emission.
+// Non-blocking event emission. The destination is passed per call so a
+// request cannot leak configuration into another Worker request through
+// module-global mutable state.
 
 export interface ApprovalMetrics {
   event: "approval_requested" | "approval_resolved" | "approval_timeout" | "hardline_block";
@@ -13,21 +15,22 @@ export interface ApprovalMetrics {
   latencyMs?: number;
 }
 
-let posthogHost: string | null = null;
-let posthogToken: string | null = null;
+export type ObservabilityConfig = {
+  host?: string;
+  token?: string;
+  waitUntil?: (promise: Promise<unknown>) => void;
+};
 
-export function configureObservability(host: string, token: string): void {
-  if (host && token) {
-    posthogHost = host;
-    posthogToken = token;
-  }
-}
-
-export function trackApproval(metrics: ApprovalMetrics): void {
-  if (!posthogHost || !posthogToken) return;
+export function trackApproval(
+  metrics: ApprovalMetrics,
+  config: ObservabilityConfig = {},
+): Promise<void> | undefined {
+  const host = config.host?.trim();
+  const token = config.token?.trim();
+  if (!host || !token) return undefined;
 
   const payload = {
-    api_key: posthogToken,
+    api_key: token,
     event: "hermes_approval",
     properties: {
       distinct_id: metrics.sessionId,
@@ -41,12 +44,20 @@ export function trackApproval(metrics: ApprovalMetrics): void {
     },
   };
 
-  // Fire and forget — don't block the agent
-  fetch(`${posthogHost}/capture/`, {
+  const request = fetch(`${host.replace(/\/$/, "")}/capture/`, {
     method: "POST",
     body: JSON.stringify(payload),
     headers: { "Content-Type": "application/json" },
-  }).catch(() => {
-    // Silently ignore — observability must not break the agent
-  });
+  })
+    .then(() => undefined)
+    .catch(() => {
+      // Silently ignore — observability must not break the agent
+    });
+
+  if (config.waitUntil) {
+    config.waitUntil(request);
+  } else {
+    void request;
+  }
+  return request;
 }

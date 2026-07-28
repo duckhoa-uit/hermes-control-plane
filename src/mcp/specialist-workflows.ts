@@ -1,7 +1,7 @@
-import { createFlueClient } from "@flue/sdk";
 import * as v from "valibot";
-import { signScopedToken } from "../core/auth";
 import { prReviewInput, sentryTriageInput } from "../core/specialist-workflow-contract";
+import { resolveWorkflowRuntime, type WorkflowRuntime } from "./workflow-runtime";
+import { withCustomSpan, type WorkerTracing } from "../core/tracing";
 
 export const specialistWorkflowNames = ["pr-review", "sentry-triage"] as const;
 export type SpecialistWorkflowName = (typeof specialistWorkflowNames)[number];
@@ -10,6 +10,8 @@ const inputSchemas = {
   "pr-review": prReviewInput,
   "sentry-triage": sentryTriageInput,
 } as const;
+
+export type { WorkflowRuntime } from "./workflow-runtime";
 
 export type SpecialistRunView = {
   runId: string;
@@ -27,38 +29,39 @@ export function isSpecialistWorkflowName(value: string): value is SpecialistWork
 }
 
 export async function startSpecialistWorkflow(
-  options: { env: Env; origin: string; fetch: typeof fetch },
+  options: { runtime?: WorkflowRuntime; tracing?: WorkerTracing },
   workflow: SpecialistWorkflowName,
   input: unknown,
 ): Promise<{ runId: string }> {
   const parsed = v.safeParse(inputSchemas[workflow], input);
   if (!parsed.success) throw new Error(`Invalid ${workflow} workflow input`);
-  const client = createFlueClient({
-    baseUrl: options.origin,
-    fetch: options.fetch,
-    token: await internalWorkflowToken(options.env, workflow),
-  });
-  return client.workflows.invoke(workflow, { input: parsed.output });
+  return withCustomSpan(
+    options.tracing,
+    "control_plan.flue.invoke",
+    { "control_plan.workflow": workflow },
+    async () => {
+      if (options.runtime) {
+        return options.runtime.invoke({ workflow } as never, { input: parsed.output });
+      }
+      const definition =
+        workflow === "pr-review"
+          ? (await import("../workflows/pr-review")).default
+          : (await import("../workflows/sentry-triage")).default;
+      return resolveWorkflowRuntime().invoke(definition, { input: parsed.output });
+    },
+  );
 }
 
 export async function getSpecialistWorkflow(
-  options: { env: Env; origin: string; fetch: typeof fetch },
+  options: { runtime?: WorkflowRuntime; tracing?: WorkerTracing },
   runId: string,
 ): Promise<SpecialistRunView | null> {
-  let run: Awaited<ReturnType<ReturnType<typeof createFlueClient>["runs"]["get"]>> | undefined;
-  for (const workflow of specialistWorkflowNames) {
-    const client = createFlueClient({
-      baseUrl: options.origin,
-      fetch: options.fetch,
-      token: await internalWorkflowToken(options.env, workflow),
-    });
-    try {
-      run = await client.runs.get(runId);
-      break;
-    } catch {
-      // The Flue run route is workflow-scoped; try the other allowlisted profile.
-    }
-  }
+  const run = await withCustomSpan(
+    options.tracing,
+    "control_plan.flue.get_run",
+    { "control_plan.run_id": runId },
+    () => resolveWorkflowRuntime(options.runtime).getRun(runId),
+  );
   if (!run || !isSpecialistWorkflowName(run.workflowName)) return null;
   const terminal = run.status !== "active";
   return {
@@ -70,13 +73,4 @@ export async function getSpecialistWorkflow(
     ...(terminal ? {} : { pollAfterMs: 5_000 }),
     ...(run.status === "completed" ? { result: run.result } : { error: run.error }),
   };
-}
-
-async function internalWorkflowToken(env: Env, workflow = "pr-review"): Promise<string> {
-  return signScopedToken(
-    env.CONTROL_PLAN_INTERNAL_SECRET || "",
-    "workflow",
-    workflow,
-    5 * 60 * 1000,
-  );
 }

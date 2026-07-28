@@ -1,0 +1,26 @@
+mcp_servers:
+  control_plan:
+    url: "https://control-plan.khoa.lol/mcp"
+    headers:
+      Authorization: "Bearer ${CONTROL_PLAN_MCP_TOKEN}"
+    timeout: 360
+    connect_timeout: 60
+    supports_parallel_tool_calls: false
+    elicitation:
+      enabled: true
+      timeout: 300
+    tools:
+      include:
+        - spawn_coding_task
+        - get_coding_task
+        - respond_coding_approval
+        - cancel_coding_task
+        - start_pr_review
+        - start_sentry_triage
+        - get_specialist_workflow
+      resources: false
+      prompts: false
+
+skills:
+  external_dirs:
+    - "/absolute/path/to/hermes-control-plan/integrations/hermes/skills"

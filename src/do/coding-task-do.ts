@@ -3,6 +3,7 @@ import { getSandbox } from "@cloudflare/sandbox";
 import { claimPublication, type PublicationClaimResult } from "./publication-lease";
 import type { CodingTaskWorkflowOutput } from "../core/coding-task-contract";
 import { settleCodingTaskRecord } from "../core/coding-task-settlement";
+import { getWorkerTracing, withCustomSpan } from "../core/tracing";
 
 export type CodingTaskState =
   | "created"
@@ -13,8 +14,6 @@ export type CodingTaskState =
   | "failed"
   | "cancellation_requested"
   | "cancelled";
-
-export type CodingTaskExecutionMode = "agent" | "workflow";
 
 export type CodingTaskResult = {
   branch: string;
@@ -30,13 +29,10 @@ export interface CodingTaskRecord {
   baseBranch: string;
   branch: string;
   task: string;
-  executionMode?: CodingTaskExecutionMode;
   state: CodingTaskState;
   createdAt: number;
   updatedAt: number;
   replayUrl: string;
-  submissionId?: string;
-  streamOffset?: string;
   summary?: string;
   error?: string;
   outcome?: CodingTaskWorkflowOutput["outcome"];
@@ -56,7 +52,6 @@ export interface CreateCodingTaskInput {
   branch: string;
   task: string;
   replayUrl: string;
-  executionMode?: CodingTaskExecutionMode;
 }
 
 const TASK_KEY = "task";
@@ -64,6 +59,7 @@ const MAX_TASK_LIFETIME_MS = 3 * 60 * 60 * 1000;
 const SANDBOX_SLEEP_AFTER = "5m";
 const SANDBOX_DESTROY_TIMEOUT_MS = 15_000;
 
+// The class is the coding-job domain record; Flue owns workflow orchestration.
 export class ControlPlanTaskDurableObject extends DurableObject<Env> {
   async create(
     input: CreateCodingTaskInput,
@@ -82,7 +78,7 @@ export class ControlPlanTaskDurableObject extends DurableObject<Env> {
             "idempotency key is already bound to a different repository, base branch, or task prompt",
         };
       }
-      if (existing.branch && existing.branch !== input.branch) {
+      if (existing.branch !== input.branch) {
         return {
           task: existing,
           created: false,
@@ -90,25 +86,12 @@ export class ControlPlanTaskDurableObject extends DurableObject<Env> {
             "idempotency key is already bound to a different repository, branch, base branch, or task prompt",
         };
       }
-      if (!existing.branch || !existing.executionMode) {
-        const migrated = {
-          ...existing,
-          branch: existing.branch || input.branch,
-          // Records created before Workflow support are Agent records. Keep
-          // idempotent retries on the original execution surface.
-          executionMode: existing.executionMode ?? "agent",
-          updatedAt: Date.now(),
-        };
-        await this.ctx.storage.put(TASK_KEY, migrated);
-        return { task: migrated, created: false };
-      }
       return { task: existing, created: false };
     }
 
     const now = Date.now();
     const task: CodingTaskRecord = {
       ...input,
-      executionMode: input.executionMode ?? "agent",
       state: "created",
       createdAt: now,
       updatedAt: now,
@@ -122,10 +105,7 @@ export class ControlPlanTaskDurableObject extends DurableObject<Env> {
     return (await this.ctx.storage.get<CodingTaskRecord>(TASK_KEY)) ?? null;
   }
 
-  async markDispatched(input: {
-    submissionId?: string;
-    streamOffset?: string;
-  }): Promise<CodingTaskRecord | null> {
+  async markDispatched(): Promise<CodingTaskRecord | null> {
     return this.update((task) => ({
       ...task,
       state:
@@ -136,8 +116,6 @@ export class ControlPlanTaskDurableObject extends DurableObject<Env> {
         task.state === "cancelled"
           ? task.state
           : "dispatched",
-      submissionId: input.submissionId,
-      streamOffset: input.streamOffset,
     }));
   }
 
@@ -205,11 +183,6 @@ export class ControlPlanTaskDurableObject extends DurableObject<Env> {
     });
   }
 
-  /** Backward-compatible method name for callers compiled against the old Action contract. */
-  async markFinalized(result: CodingTaskResult): Promise<CodingTaskRecord | null> {
-    return this.recordPublication(result);
-  }
-
   async settleWorkflow(output: CodingTaskWorkflowOutput): Promise<CodingTaskRecord | null> {
     const task = await this.update((current) => settleCodingTaskRecord(current, output));
     if (task?.state === "completed" || task?.state === "failed" || task?.state === "cancelled") {
@@ -250,7 +223,9 @@ export class ControlPlanTaskDurableObject extends DurableObject<Env> {
     return task;
   }
 
-  async markCancelled(summary = "Flue submission aborted"): Promise<CodingTaskRecord | null> {
+  async markCancelled(
+    summary = "Workflow cancellation requested",
+  ): Promise<CodingTaskRecord | null> {
     const task = await this.update((current) => {
       if (
         current.state === "completed" ||
@@ -310,13 +285,6 @@ export class ControlPlanTaskDurableObject extends DurableObject<Env> {
     await this.markFailed("coding task exceeded maximum lifetime");
   }
 
-  async advanceStreamOffset(streamOffset: string): Promise<CodingTaskRecord | null> {
-    return this.update((task) => {
-      if (task.state !== "dispatched" && task.state !== "cancellation_requested") return task;
-      return { ...task, streamOffset };
-    });
-  }
-
   async requestCancellation(): Promise<CodingTaskRecord | null> {
     return this.update((task) => {
       if (
@@ -345,7 +313,12 @@ export class ControlPlanTaskDurableObject extends DurableObject<Env> {
     const binding = (this.env as Partial<Env>).CONTROL_PLAN_ADMISSION_DO;
     if (!binding || !taskId) return;
     const admission = binding.get(binding.idFromName("global"));
-    await admission.release(taskId);
+    await withCustomSpan(
+      await getWorkerTracing(),
+      "control_plan.admission.release",
+      { "control_plan.task_id": taskId },
+      () => admission.release(taskId),
+    );
   }
 
   private async cleanupSandbox(task: CodingTaskRecord): Promise<void> {

@@ -4,7 +4,7 @@
 
 import { classifyCommand } from "./classifier";
 import { checkHardline } from "./hardline";
-import { trackApproval } from "../core/observability";
+import { trackApproval, type ObservabilityConfig } from "../core/observability";
 
 export type ApprovalDecision = {
   id: string;
@@ -56,6 +56,7 @@ export async function requireApproval(
     sessionId?: string;
     workerUrl?: string;
     approvalDOBinding?: any;
+    observability?: ObservabilityConfig;
   },
 ): Promise<ApprovalDecision> {
   const startTime = Date.now();
@@ -67,14 +68,17 @@ export async function requireApproval(
     const block = checkHardline(payload.command);
     if (block) {
       const id = "hardline_" + generateApprovalId();
-      trackApproval({
-        event: "hardline_block",
-        approvalId: id,
-        sessionId,
-        type: payload.type,
-        decision: "hardline_blocked",
-        actor: "hardline",
-      });
+      void trackApproval(
+        {
+          event: "hardline_block",
+          approvalId: id,
+          sessionId,
+          type: payload.type,
+          decision: "hardline_blocked",
+          actor: "hardline",
+        },
+        options?.observability,
+      );
       return { id, decision: "hardline_blocked", denied: true };
     }
   }
@@ -90,15 +94,18 @@ export async function requireApproval(
     const classification = classifyCommand(payload.command);
     if (!classification) {
       const id = generateApprovalId();
-      trackApproval({
-        event: "approval_resolved",
-        approvalId: id,
-        sessionId,
-        type: payload.type,
-        decision: "auto_approved",
-        actor: "classifier",
-        latencyMs: Date.now() - startTime,
-      });
+      void trackApproval(
+        {
+          event: "approval_resolved",
+          approvalId: id,
+          sessionId,
+          type: payload.type,
+          decision: "auto_approved",
+          actor: "classifier",
+          latencyMs: Date.now() - startTime,
+        },
+        options?.observability,
+      );
       return { id, decision: "auto_approved", denied: false };
     }
     payload.pattern = classification.pattern;
@@ -110,12 +117,15 @@ export async function requireApproval(
   // data events; ApprovalDO remains the durable source of truth.
   const id = generateApprovalId();
 
-  trackApproval({
-    event: "approval_requested",
-    approvalId: id,
-    sessionId,
-    type: payload.type,
-  });
+  void trackApproval(
+    {
+      event: "approval_requested",
+      approvalId: id,
+      sessionId,
+      type: payload.type,
+    },
+    options?.observability,
+  );
 
   const doBinding = options?.approvalDOBinding;
 
@@ -156,15 +166,18 @@ export async function requireApproval(
   // persisted DO state as a fallback for missed wake-up messages.
   const decision = await waitForResolutionViaWs(stub, id, ctx.signal);
 
-  trackApproval({
-    event: decision.decision === "timeout" ? "approval_timeout" : "approval_resolved",
-    approvalId: id,
-    sessionId,
-    type: payload.type,
-    decision: decision.decision,
-    actor: decision.actor || "system",
-    latencyMs: Date.now() - startTime,
-  });
+  void trackApproval(
+    {
+      event: decision.decision === "timeout" ? "approval_timeout" : "approval_resolved",
+      approvalId: id,
+      sessionId,
+      type: payload.type,
+      decision: decision.decision,
+      actor: decision.actor || "system",
+      latencyMs: Date.now() - startTime,
+    },
+    options?.observability,
+  );
 
   return decision;
 }
@@ -188,8 +201,8 @@ async function waitForResolutionViaWs(
     const finish = (decision: ApprovalDecision) => {
       if (settled) return;
       settled = true;
-      clearInterval(pollTimer);
-      clearTimeout(deadlineTimer);
+      globalThis.clearInterval(pollInterval);
+      globalThis.clearTimeout(deadlineTimeout);
       signal?.removeEventListener("abort", onAbort);
       try {
         ws?.close();
@@ -231,8 +244,8 @@ async function waitForResolutionViaWs(
     };
 
     const onAbort = () => finish({ id, decision: "timeout", actor: "abort", denied: true });
-    const pollTimer = setInterval(() => void pollOnce(), 1000);
-    const deadlineTimer = setTimeout(
+    const pollInterval = setInterval(() => void pollOnce(), 1000);
+    const deadlineTimeout = setTimeout(
       () => finish({ id, decision: "timeout", actor: "deadline", denied: true }),
       APPROVAL_TIMEOUT_MS,
     );
