@@ -32,9 +32,25 @@ import {
   type CreatePullRequestInput,
 } from "./agent/publication-service";
 import type { WorkerTracing } from "./core/tracing";
+import { createLogger, requestIdFrom, requestIdHeader } from "./core/logger";
 
-type AppEnv = { Bindings: Env };
+type AppEnv = { Bindings: Env; Variables: { requestId: string } };
 const app = new Hono<AppEnv>();
+const logger = createLogger({ service: "control-plan.worker" });
+
+app.use("*", async (c, next) => {
+  const requestId = requestIdFrom(c.req.raw.headers);
+  c.set("requestId", requestId);
+  c.header(requestIdHeader(), requestId);
+  await next();
+  logger.info("request completed", {
+    event: "http.request.completed",
+    requestId,
+    method: c.req.method,
+    route: c.req.path,
+    status: c.res.status,
+  });
+});
 function requestTracing(context: { executionCtx: unknown }) {
   try {
     return (context.executionCtx as { tracing?: WorkerTracing }).tracing;
@@ -59,6 +75,7 @@ app.all("/mcp", async (c) => {
     env: c.env,
     origin: new URL(c.req.url).origin,
     tracing: requestTracing(c),
+    requestId: c.get("requestId"),
   });
   return handler(c.req.raw, c.env, c.executionCtx as never);
 });
@@ -224,6 +241,22 @@ app.post("/approvals/:id", async (c) => {
   return c.json(await resp.json());
 });
 
+app.get("/tasks/:id/events", async (c) => {
+  const taskId = c.req.param("id");
+  const afterSeq = parseEventCursor(c.req.query("after"), 0);
+  const limit = parseEventCursor(c.req.query("limit"), 100);
+  const token = c.req.query("token") || "";
+  const binding = (c.env as Partial<Env>).CONTROL_PLAN_TASK_DO;
+  if (!binding) return c.json({ error: "task events unavailable" }, 503);
+  const stub = binding.get(binding.idFromName(taskId));
+  const task = await stub.get();
+  if (!task || task.id !== taskId) return c.json({ error: "not found" }, 404);
+  if (!(await verifyReplayCapability(c, task.sessionId, token))) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  return c.json(await stub.getEvents(afterSeq, limit));
+});
+
 app.get("/sessions/:id/approvals/open", async (c) => {
   const sessionId = c.req.param("id");
   const token = c.req.query("token") || "";
@@ -296,6 +329,12 @@ async function taskForProxy(env: Env, sessionId: string): Promise<CodingTaskReco
 
   return null;
 }
+export function parseEventCursor(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.trunc(parsed) : fallback;
+}
+
 function parseCreatePrInput(value: unknown): CreatePullRequestInput | { error: string } {
   const input = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
   if (typeof input.title !== "string" || typeof input.branch !== "string") {

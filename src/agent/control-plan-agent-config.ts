@@ -23,28 +23,51 @@ export type ControlPlanAgentSetup = {
   env: Env;
   id: string;
   task: CodingTaskRecord | null;
-  taskStub: ControlPlanFinalizeContext["taskStub"];
+  taskStub: ControlPlanFinalizeContext["taskStub"] & {
+    recordSandboxEvent?: (data: Record<string, unknown>) => Promise<void>;
+  };
   taskRecord: () => Promise<CodingTaskRecord | null>;
+  requestId?: string;
 };
 
 /** Build the coding harness for a Flue Workflow run. */
 export async function createControlPlanAgentConfig(setup: ControlPlanAgentSetup) {
-  const { env, id, task, taskStub, taskRecord } = setup;
+  const { env, id, task, taskStub, taskRecord, requestId } = setup;
   const tracing = await getWorkerTracing();
   const logger = createLogger({
     service: "control-plan",
-    fields: { taskId: id, sandboxId: `control-plan-${id}` },
+    fields: {
+      taskId: id,
+      sandboxId: `control-plan-${id}`,
+      ...(requestId ? { requestId } : {}),
+    },
   });
   const sandboxId = `control-plan-${id}`;
   const sandboxSessionId = `flue-${sandboxId}`;
   const onRecoveryEvent = (event: SandboxRecoveryEvent): void => {
     logger.warn("sandbox recovery event", {
+      event: "task.sandbox.recovery",
       operation: event.operation,
       errorKind: event.errorKind,
       attempt: event.attempt,
       retryable: event.retryable,
       sessionReacquired: event.sessionReacquired,
     });
+    const persistence = taskStub?.recordSandboxEvent?.({
+      operation: event.operation,
+      errorKind: event.errorKind,
+      attempt: event.attempt,
+      retryable: event.retryable,
+      sessionReacquired: event.sessionReacquired,
+    });
+    if (persistence) {
+      void persistence.catch((error: unknown) => {
+        logger.warn("sandbox recovery event persistence failed", {
+          event: "task.sandbox.recovery.persist_failed",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
   };
   const sandbox = () =>
     getSandbox(env.Sandbox, sandboxId, {
@@ -60,6 +83,7 @@ export async function createControlPlanAgentConfig(setup: ControlPlanAgentSetup)
         workload: "coding-task",
         task_id: id.slice(0, 64),
         repository: task?.repository || "unknown",
+        ...(requestId ? { request_id: requestId.slice(0, 64) } : {}),
       },
     });
   const sandboxSession = () =>

@@ -23,6 +23,7 @@ type TaskStub = {
   get(): Promise<CodingTaskRecord | null>;
   beginPublication(sessionId: string): Promise<PublicationClaimResult>;
   recordPublication(result: CodingTaskResult): Promise<CodingTaskRecord | null>;
+  recordSandboxEvent?(data: Record<string, unknown>): Promise<void>;
 };
 
 export type ControlPlanFinalizeContext = {

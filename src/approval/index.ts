@@ -5,6 +5,9 @@
 import { classifyCommand } from "./classifier";
 import { checkHardline } from "./hardline";
 import { trackApproval, type ObservabilityConfig } from "../core/observability";
+import { createLogger } from "../core/logger";
+
+const logger = createLogger({ service: "control-plan.approval" });
 
 export type ApprovalDecision = {
   id: string;
@@ -132,7 +135,11 @@ export async function requireApproval(
   // Missing durable approval state is a safety failure. A production worker
   // must never turn an unavailable approval store into an implicit approval.
   if (!doBinding) {
-    console.error("[approval] ApprovalDO binding is missing; failing closed");
+    logger.error("approval store missing; failing closed", {
+      event: "approval.store.missing",
+      approvalId: id,
+      sessionId,
+    });
     return { id, decision: "timeout", actor: "missing_approval_store", denied: true };
   }
 
@@ -158,7 +165,12 @@ export async function requireApproval(
       }),
     });
   } catch (err) {
-    console.error("[approval] DO request failed:", err);
+    logger.error("approval request failed", {
+      event: "approval.request.failed",
+      approvalId: id,
+      sessionId,
+      error: err instanceof Error ? err.message : String(err),
+    });
     return { id, decision: "timeout", denied: true };
   }
 
@@ -239,7 +251,11 @@ async function waitForResolutionViaWs(
         resolvePayload(await response.json());
       } catch (err) {
         pollingAvailable = false;
-        console.error("[approval] state poll failed:", err);
+        logger.warn("approval state poll failed", {
+          event: "approval.poll.failed",
+          approvalId: id,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     };
 
@@ -271,7 +287,11 @@ async function waitForResolutionViaWs(
               const data = typeof event.data === "string" ? JSON.parse(event.data) : null;
               if (data) resolvePayload(data);
             } catch (err) {
-              console.error("[approval] WS message parse error:", err);
+              logger.warn("approval websocket message parse failed", {
+                event: "approval.websocket.parse_failed",
+                approvalId: id,
+                error: err instanceof Error ? err.message : String(err),
+              });
             }
           });
           ws.addEventListener("close", () => {
@@ -283,10 +303,18 @@ async function waitForResolutionViaWs(
             void pollOnce();
           });
         } else {
-          console.error("[approval] WS upgrade failed", wsResp.status);
+          logger.warn("approval websocket upgrade failed", {
+            event: "approval.websocket.upgrade_failed",
+            approvalId: id,
+            status: wsResp.status,
+          });
         }
       } catch (err) {
-        console.error("[approval] WS wait failed:", err);
+        logger.warn("approval websocket wait failed", {
+          event: "approval.websocket.wait_failed",
+          approvalId: id,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
 
       await pollOnce();

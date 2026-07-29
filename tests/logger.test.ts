@@ -250,4 +250,11 @@ describe("request ID helpers", () => {
   it("requestIdFrom() accepts a plain record (launcher / fetch.headers.raw())", () => {
     expect(requestIdFrom({ "x-request-id": "plain-1" })).toBe("plain-1");
   });
+
+  it("replaces oversized or malformed upstream IDs", () => {
+    expect(requestIdFrom(new Headers({ "x-request-id": "x".repeat(129) }))).toMatch(
+      /^[a-f0-9]{16}$/,
+    );
+    expect(requestIdFrom(new Headers({ "x-request-id": "bad id" }))).toMatch(/^[a-f0-9]{16}$/);
+  });
 });

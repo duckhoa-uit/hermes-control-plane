@@ -16,13 +16,17 @@ import {
   type WorkflowRuntime,
 } from "./specialist-workflows";
 import { resolveWorkflowRuntime } from "./workflow-runtime";
+import { createLogger } from "../core/logger";
 import { withCustomSpan, type WorkerTracing } from "../core/tracing";
+
+const logger = createLogger({ service: "control-plan.mcp" });
 
 export type ControlPlanMcpOptions = {
   env: Env;
   origin: string;
   runtime?: WorkflowRuntime;
   tracing?: WorkerTracing;
+  requestId?: string;
 };
 
 const taskStateSchema = z.enum([
@@ -247,6 +251,7 @@ export async function createControlPlanMcpHandler(options: ControlPlanMcpOptions
             baseBranch: resolvedBaseBranch,
             branch,
             task,
+            requestId: options.requestId,
           },
           options.tracing,
         );
@@ -614,7 +619,14 @@ async function refreshWorkflowTask(
   task: CodingTaskRecord,
   options: ControlPlanMcpOptions,
 ): Promise<CodingTaskRecord> {
-  if (!task.workflowRunId) return task;
+  if (
+    !task.workflowRunId ||
+    task.state === "completed" ||
+    task.state === "failed" ||
+    task.state === "cancelled"
+  ) {
+    return task;
+  }
   try {
     const run = await withCustomSpan(
       options.tracing,
@@ -629,7 +641,6 @@ async function refreshWorkflowTask(
         (await taskStub(options.env, task.id).markCancelled(workflowSummary(run.error))) ?? task
       );
     }
-    if (task.state === "cancelled") return task;
     if (run.status === "completed") {
       const output = parseWorkflowOutput(run.result);
       if (!output) {
@@ -660,7 +671,14 @@ async function refreshWorkflowTask(
       (await taskStub(options.env, task.id).markTerminal("failed", workflowSummary(run.error))) ??
       task
     );
-  } catch {
+  } catch (error) {
+    logger.error("workflow reconciliation failed", {
+      event: "task.workflow.reconciliation_failed",
+      taskId: task.id,
+      workflowRunId: task.workflowRunId,
+      requestId: options.requestId,
+      error: error instanceof Error ? error.message : String(error),
+    });
     return task;
   }
 }
@@ -733,6 +751,7 @@ export async function invokeCodingTaskWorkflow(
     baseBranch: string;
     branch: string;
     task: string;
+    requestId?: string;
   },
   tracing?: WorkerTracing,
 ): Promise<{ runId: string }> {
@@ -744,6 +763,7 @@ export async function invokeCodingTaskWorkflow(
       "control_plan.task_id": input.taskId,
       "control_plan.repository": input.repository,
       "control_plan.workflow": "coding-task",
+      "control_plan.request_id": input.requestId,
     },
     () => resolveWorkflowRuntime(runtime).invoke(workflow, { input }),
   );

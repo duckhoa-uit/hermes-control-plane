@@ -251,6 +251,8 @@ export function createLogger(opts: CreateLoggerOptions = {}): Logger {
 // calls add it back as a header for log correlation.
 
 const REQUEST_ID_HEADER = "x-request-id";
+export const REQUEST_ID_MAX_LENGTH = 128;
+const REQUEST_ID_RE = /^[A-Za-z0-9._:-]+$/;
 
 /** Returns a 16-char hex request ID. Uses crypto.randomUUID() when
  *  available (both runtimes ship it). */
@@ -274,7 +276,11 @@ export function requestIdFrom(headers: Headers | Record<string, string | undefin
     const rec = headers as Record<string, string | undefined>;
     return rec[k] ?? rec[k.toUpperCase()] ?? rec[k.toLowerCase()];
   };
-  return get(REQUEST_ID_HEADER) ?? get("cf-ray") ?? newRequestId();
+  const candidate = get(REQUEST_ID_HEADER) ?? get("cf-ray");
+  if (candidate && candidate.length <= REQUEST_ID_MAX_LENGTH && REQUEST_ID_RE.test(candidate)) {
+    return candidate;
+  }
+  return newRequestId();
 }
 
 /** Returns the canonical header name to use when forwarding a request ID. */

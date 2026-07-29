@@ -18,6 +18,7 @@ const codingTaskInput = v.object({
   baseBranch: v.pipe(v.string(), v.minLength(1), v.maxLength(255)),
   branch: v.pipe(v.string(), v.regex(/^control-plan\/[a-f0-9]{16}$/)),
   task: v.pipe(v.string(), v.minLength(1), v.maxLength(8000)),
+  requestId: v.optional(v.pipe(v.string(), v.maxLength(128))),
 });
 
 type CodingTaskInput = v.InferOutput<typeof codingTaskInput>;
@@ -45,6 +46,7 @@ const codingTaskAgent = defineAgent<Env>(async ({ id, env }) => {
     task,
     taskStub,
     taskRecord: () => taskStub.get(),
+    requestId: input.requestId,
   });
 });
 
