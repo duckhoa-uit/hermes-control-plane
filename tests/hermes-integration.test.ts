@@ -52,6 +52,12 @@ describe("Hermes integration contract", () => {
   it("teaches coding lifecycle, approval, and terminal outcome handling", () => {
     expect(delegation).toContain("lifecycle");
     expect(delegation).toContain("pollAfterMs");
+    expect(delegation).toContain("Resolve inputs before spawning");
+    expect(delegation).toContain("git remote get-url origin");
+    expect(delegation).toContain("git symbolic-ref --short refs/remotes/origin/HEAD");
+    expect(delegation).toContain("idempotencyKey` is optional");
+    expect(delegation).toContain("omit `idempotencyKey`");
+    expect(delegation).toContain("do not edit, delete, move, commit, or test implementation files");
     expect(delegation).toContain("pass its `id` as `approvalId`");
     expect(delegation).toContain("capacity_exceeded");
     expect(delegation).toContain("idempotency_conflict");
@@ -62,9 +68,11 @@ describe("Hermes integration contract", () => {
 
   it("keeps specialist skills snapshot-only and publication-free", () => {
     expect(prReview).toContain("at most 200,000 characters");
+    expect(prReview).toContain("Gather the snapshot before calling MCP");
     expect(prReview).toContain("verify `reviewedHeadSha`");
     expect(prReview).toContain("Never claim that this workflow posted");
     expect(sentryTriage).toContain("at most 150,000 characters");
+    expect(sentryTriage).toContain("Gather the snapshot before calling MCP");
     expect(sentryTriage).toContain("Distinguish evidence from inference");
     expect(sentryTriage).toContain("not authorization to create a coding task");
   });

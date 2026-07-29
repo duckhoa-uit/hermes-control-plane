@@ -14,8 +14,26 @@ metadata:
 
 # Control Plan PR Review
 
-Use this skill when Hermes already has the PR snapshot and wants an isolated,
-read-only review. Control Plan does not fetch GitHub for this workflow.
+Use this skill when Hermes needs an isolated, read-only review of a GitHub
+pull request. This workflow is separate from coding delegation and never edits
+or publishes code.
+
+## Gather the snapshot before calling MCP
+
+Control Plan does not fetch GitHub for this workflow. Resolve the repository and
+PR context first:
+
+1. Use the explicit `owner/repo` and PR number from the request, issue, or
+   current GitHub context.
+2. If Hermes is in a Git worktree with a current PR context, use read-only Git
+   commands and the GitHub integration to obtain the exact base and head SHAs.
+3. Fetch the complete bounded unified diff for those exact SHAs. If the PR head
+   changes, discard the snapshot and start again.
+4. Include only relevant code context and metadata. Remove secrets, cookies,
+   tokens, and unrelated repository data.
+
+If repository, PR number, exact SHAs, or a complete bounded diff is missing,
+do not start the workflow. Gather the missing snapshot or report the blocker.
 
 ## Required snapshot
 

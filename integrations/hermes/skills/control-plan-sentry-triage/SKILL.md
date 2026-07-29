@@ -14,8 +14,24 @@ metadata:
 
 # Control Plan Sentry Triage
 
-Use this skill when Hermes already has the relevant Sentry snapshot. Control
-Plan has no Sentry connector and cannot fetch missing issue data.
+Use this skill when Hermes needs an isolated, read-only classification of a
+Sentry issue. This workflow is separate from coding delegation and never fixes,
+assigns, comments on, or publishes changes.
+
+## Gather the snapshot before calling MCP
+
+Control Plan has no Sentry connector and cannot fetch missing issue data.
+Hermes must resolve the Sentry organization, project, issue ID, and bounded
+snapshot first:
+
+1. Use the explicit organization, project, and issue ID from the request or
+   current Sentry context.
+2. Fetch the relevant event, telemetry, release/environment information, and
+   bounded code context through Hermes' available Sentry integration.
+3. Keep only evidence relevant to the issue, remove credentials, cookies,
+   personal data that is not needed, and unrelated logs.
+4. If the evidence is incomplete, either gather the missing data or report the
+   missing fields instead of starting an under-specified triage run.
 
 ## Required snapshot
 
