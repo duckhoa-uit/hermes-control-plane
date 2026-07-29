@@ -3,8 +3,8 @@ export type SpanAttributes = Record<string, string | number | boolean | undefine
 
 /**
  * Create a Cloudflare custom span without making tracing a correctness
- * dependency. The same helper is usable from unit tests with a small fake
- * tracer and from Flue/Worker code with the request or runtime tracer.
+ * dependency. The helper uses enterSpan because every current call site keeps
+ * the operation inside the callback lifetime.
  */
 export async function withCustomSpan<T>(
   tracing: WorkerTracing | undefined,
@@ -14,7 +14,7 @@ export async function withCustomSpan<T>(
 ): Promise<T> {
   if (!tracing) return operation();
 
-  return tracing.startActiveSpan(name, async (span) => {
+  return tracing.enterSpan(name, async (span) => {
     for (const [key, value] of Object.entries(attributes)) {
       if (value !== undefined) span.setAttribute(key, value);
     }
@@ -27,8 +27,6 @@ export async function withCustomSpan<T>(
       span.setAttribute("error.type", error instanceof Error ? error.name : "unknown");
       span.setAttribute("error.message", error instanceof Error ? error.message : String(error));
       throw error;
-    } finally {
-      span.end();
     }
   });
 }

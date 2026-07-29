@@ -6,21 +6,33 @@ function tracer() {
   return {
     spans,
     tracing: {
-      startActiveSpan(name: string, callback: (span: unknown) => unknown) {
+      enterSpan(name: string, callback: (span: unknown) => unknown) {
         const record: { name: string; attributes: Record<string, unknown>; ended: boolean } = {
           name,
           attributes: {},
           ended: false,
         };
         spans.push(record);
-        return callback({
-          setAttribute(key: string, value: unknown) {
-            record.attributes[key] = value;
-          },
-          end() {
-            record.ended = true;
-          },
-        });
+        try {
+          const result = callback({
+            setAttribute(key: string, value: unknown) {
+              record.attributes[key] = value;
+            },
+            end() {
+              record.ended = true;
+            },
+          });
+          if (result && typeof (result as Promise<unknown>).then === "function") {
+            return (result as Promise<unknown>).finally(() => {
+              record.ended = true;
+            });
+          }
+          record.ended = true;
+          return result;
+        } catch (error) {
+          record.ended = true;
+          throw error;
+        }
       },
     } as never,
   };
