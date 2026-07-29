@@ -5,7 +5,12 @@ import {
   createFinalizeChangeAction,
   type ControlPlanFinalizeContext,
 } from "./control-plan-finalize-action";
-import { cloudflareSessionSandbox, getOrCreateSession } from "./cloudflare-session-sandbox";
+import {
+  cloudflareSessionSandbox,
+  getOrCreateSession,
+  type SandboxRecoveryEvent,
+} from "./cloudflare-session-sandbox";
+import { createLogger } from "../core/logger";
 import { ensureTaskWorkspace } from "./task-workspace";
 import { withDefaultExecTimeout } from "./sandbox-timeout";
 import { getWorkerTracing, withCustomSpan } from "../core/tracing";
@@ -26,8 +31,21 @@ export type ControlPlanAgentSetup = {
 export async function createControlPlanAgentConfig(setup: ControlPlanAgentSetup) {
   const { env, id, task, taskStub, taskRecord } = setup;
   const tracing = await getWorkerTracing();
+  const logger = createLogger({
+    service: "control-plan",
+    fields: { taskId: id, sandboxId: `control-plan-${id}` },
+  });
   const sandboxId = `control-plan-${id}`;
   const sandboxSessionId = `flue-${sandboxId}`;
+  const onRecoveryEvent = (event: SandboxRecoveryEvent): void => {
+    logger.warn("sandbox recovery event", {
+      operation: event.operation,
+      errorKind: event.errorKind,
+      attempt: event.attempt,
+      retryable: event.retryable,
+      sessionReacquired: event.sessionReacquired,
+    });
+  };
   const sandbox = () =>
     getSandbox(env.Sandbox, sandboxId, {
       // HITL approvals can pause a task for hours. The task DO destroys this
@@ -83,10 +101,14 @@ export async function createControlPlanAgentConfig(setup: ControlPlanAgentSetup)
     tools: [],
     cwd: workspacePath,
     sandbox: withDefaultExecTimeout(
-      cloudflareSessionSandbox(sandbox(), {
-        cwd: "/workspace",
-        sessionId: sandboxSessionId,
-      }),
+      cloudflareSessionSandbox(
+        sandbox(),
+        {
+          cwd: "/workspace",
+          sessionId: sandboxSessionId,
+        },
+        { onRecoveryEvent },
+      ),
       DEFAULT_SANDBOX_EXEC_TIMEOUT_MS,
     ),
     durability: {

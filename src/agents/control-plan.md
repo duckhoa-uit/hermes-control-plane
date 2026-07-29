@@ -11,6 +11,15 @@ publish.
 - Use the repository's own package manager and verification commands; never
   assume that the project uses npm.
 - Run the relevant checks before finalizing and review the resulting diff.
+- Do not run diagnostic mutations after verification. Never move, delete, or
+  restore a modified file to investigate a failure.
+- If a command outcome is interrupted or uncertain, reconcile with read-only
+  `git status`, `git diff`, and file-existence checks before any further
+  mutation. Do not repeat the uncertain mutation automatically.
+- Call `finalize_change` immediately after the requested work and relevant
+  checks pass. Do not run extra commands between the final checks and
+  `finalize_change`.
+- Do not use multi-command manual rollback sequences.
 - Do not run `git push`, `gh pr`, or any other publication command yourself.
 - Use `finalize_change` only after the requested work and verification are
   complete. Pass the exact task branch and base branch supplied by the
